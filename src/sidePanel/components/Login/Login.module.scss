@@ -1,0 +1,366 @@
+// 变量定义 - 与Chat组件保持一致
+$primary-color: #6366f1;
+$primary-light: #818cf8;
+$primary-dark: #4f46e5;
+$accent-color: #ec4899;
+$accent-light: #f472b6;
+
+// 背景色系
+$bg-gradient: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 50%, #e2e8f0 100%);
+$bg-light: #ffffff;
+$bg-glass: rgba(255, 255, 255, 0.9);
+$bg-message-user: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+
+// 文字颜色
+$text-primary: #1e293b;
+$text-secondary: #64748b;
+$text-muted: #94a3b8;
+$text-white: #ffffff;
+
+// 边框和阴影
+$border-color: rgba(0, 0, 0, 0.06);
+$border-light: rgba(0, 0, 0, 0.04);
+$shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.05), 0 1px 2px rgba(0, 0, 0, 0.1);
+$shadow-md: 0 4px 6px rgba(0, 0, 0, 0.07), 0 2px 4px rgba(0, 0, 0, 0.06);
+$shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.1), 0 4px 6px rgba(0, 0, 0, 0.05);
+$shadow-xl: 0 20px 25px rgba(0, 0, 0, 0.1), 0 10px 10px rgba(0, 0, 0, 0.04);
+
+// 圆角
+$radius-sm: 8px;
+$radius-md: 12px;
+$radius-lg: 16px;
+$radius-xl: 20px;
+$radius-full: 9999px;
+
+// 登录容器
+.loginContainer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  background: $bg-gradient;
+  position: relative;
+  overflow: hidden;
+  padding: 20px;
+}
+
+// 背景装饰
+.backgroundDecoration {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: 
+    radial-gradient(circle at 20% 30%, rgba(99, 102, 241, 0.08), transparent 50%),
+    radial-gradient(circle at 80% 70%, rgba(139, 92, 246, 0.08), transparent 50%),
+    radial-gradient(circle at 50% 50%, rgba(148, 163, 184, 0.04), transparent 60%);
+  pointer-events: none;
+  will-change: opacity;
+  transform: translateZ(0);
+}
+
+// 登录卡片
+.loginCard {
+  width: 100%;
+  max-width: 400px;
+  background: $bg-light;
+  backdrop-filter: blur(20px) saturate(180%);
+  border-radius: $radius-xl;
+  padding: 40px 32px;
+  box-shadow: $shadow-xl;
+  border: 1px solid $border-light;
+  position: relative;
+  z-index: 1;
+  animation: fadeInUp 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(30px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+// Logo区域
+.logoWrapper {
+  text-align: center;
+  margin-bottom: 32px;
+}
+
+.logoIcon {
+  width: 64px;
+  height: 64px;
+  margin: 0 auto 16px;
+  border-radius: $radius-lg;
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.1) 0%, rgba(139, 92, 246, 0.1) 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 16px rgba(99, 102, 241, 0.15);
+  animation: float 3s ease-in-out infinite;
+}
+
+@keyframes float {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-8px);
+  }
+}
+
+.logoTitle {
+  margin: 0 0 8px 0 !important;
+  color: $text-primary;
+  font-weight: 600;
+  letter-spacing: -0.3px;
+}
+
+.logoSubtitle {
+  color: $text-secondary;
+  font-size: 14px;
+}
+
+// Tabs样式
+.loginTabs {
+  margin-top: 24px;
+  
+  :global(.ant-tabs-nav) {
+    margin-bottom: 24px;
+  }
+  
+  :global(.ant-tabs-tab) {
+    font-size: 14px;
+    padding: 12px 16px;
+  }
+  
+  :global(.ant-tabs-tab-active) {
+    font-weight: 500;
+  }
+  
+  :global(.ant-tabs-ink-bar) {
+    background: $bg-message-user;
+  }
+}
+
+// 登录表单
+.loginForm {
+  margin-top: 0;
+}
+
+.input {
+  height: 48px;
+  border-radius: $radius-md;
+  border: 1px solid $border-color;
+  transition: all 0.2s ease;
+  
+  &:hover {
+    border-color: rgba(99, 102, 241, 0.3);
+  }
+  
+  &:focus,
+  &.ant-input-focused {
+    border-color: $primary-color;
+    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+  }
+}
+
+.inputIcon {
+  color: $text-muted;
+  font-size: 16px;
+}
+
+.loginButton {
+  height: 48px;
+  border-radius: $radius-md;
+  background: $bg-message-user;
+  border: none;
+  font-size: 16px;
+  font-weight: 500;
+  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  margin-top: 8px;
+  
+  &:hover:not(:disabled) {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 16px rgba(99, 102, 241, 0.4);
+  }
+  
+  &:active:not(:disabled) {
+    transform: translateY(0);
+    box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3);
+  }
+  
+  &:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+}
+
+// 底部
+.footer {
+  margin-top: 24px;
+  text-align: center;
+}
+
+.footerText {
+  color: $text-muted;
+  font-size: 12px;
+}
+
+// 验证码输入区域
+.codeInputWrapper {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.codeInput {
+  flex: 1;
+  height: 48px;
+  border-radius: $radius-md;
+  border: 1px solid $border-color;
+  transition: all 0.2s ease;
+  
+  &:hover {
+    border-color: rgba(99, 102, 241, 0.3);
+  }
+  
+  &:focus,
+  &.ant-input-focused {
+    border-color: $primary-color;
+    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+  }
+}
+
+.sendCodeButton {
+  height: 48px;
+  min-width: 120px;
+  border-radius: $radius-md;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+// 二维码登录区域
+.qrcodeWrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 20px 0;
+  min-height: 300px;
+}
+
+.qrcodeContainer {
+  width: 250px;
+  height: 300px;
+  background: $bg-light;
+  border-radius: $radius-lg;
+  padding: 0;
+  box-shadow: $shadow-md;
+  border: 1px solid $border-color;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 16px;
+  overflow: hidden;
+  
+  // 确保iframe或嵌入内容正常显示
+  iframe {
+    border: none;
+    width: 100%;
+    height: 100%;
+  }
+}
+
+.qrcodeImage {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.qrcodeHint {
+  color: $text-secondary;
+  font-size: 14px;
+  text-align: center;
+  margin-top: 8px;
+}
+
+.qrcodeLoading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+}
+
+.qrcodeLoadingText {
+  color: $text-secondary;
+  font-size: 14px;
+}
+
+.qrcodeScanned {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+}
+
+.qrcodeScannedText {
+  color: $primary-color;
+  font-size: 16px;
+  font-weight: 500;
+}
+
+.qrcodeExpired {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+}
+
+.qrcodeExpiredText {
+  color: $text-muted;
+  font-size: 14px;
+}
+
+.refreshButton {
+  height: 40px;
+  border-radius: $radius-md;
+  background: $bg-message-user;
+  border: none;
+  font-size: 14px;
+  font-weight: 500;
+  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3);
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  
+  &:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(99, 102, 241, 0.4);
+  }
+  
+  &:active:not(:disabled) {
+    transform: translateY(0);
+    box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3);
+  }
+}
+
+// 响应式调整
+@media (max-width: 480px) {
+  .loginCard {
+    padding: 32px 24px;
+  }
+  
+  .logoIcon {
+    width: 56px;
+    height: 56px;
+  }
+}
+

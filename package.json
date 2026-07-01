@@ -1,0 +1,45 @@
+{
+  "name": "gancao-copliot",
+  "version": "1.0.0",
+  "description": "Chrome Extension with React 18, Vite & Antd 4",
+  "scripts": {
+    "build": "vite build",
+    "test": "vitest run --config vitest.config.ts",
+    "watch": "vite build --watch"
+  },
+  "dependencies": {
+    "@ant-design/icons": "^6.1.0",
+    "@langchain/core": "^1.1.15",
+    "@langchain/openai": "^1.2.2",
+    "@medv/finder": "^4.0.2",
+    "@tesseract.js-data/chi_sim": "^1.0.0",
+    "@tesseract.js-data/eng": "^1.0.0",
+    "antd": "^4.24.15",
+    "base-element-react": "2.5.67",
+    "big.js": "^6.2.1",
+    "jszip": "^3.10.1",
+    "lodash-es": "^4.17.21",
+    "mammoth": "^1.12.0",
+    "moment": "^2.30.1",
+    "pdfjs-dist": "^6.0.227",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-router-dom": "^7.13.0",
+    "reactflow": "^11.11.4",
+    "tesseract.js": "^7.0.0",
+    "xlsx": "^0.18.5",
+    "zod": "^4.3.5"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.260",
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "@vitejs/plugin-react": "^4.2.1",
+    "fake-indexeddb": "^6.2.5",
+    "jsdom": "^29.1.1",
+    "sass": "^1.97.1",
+    "typescript": "^5.3.3",
+    "vite": "^5.1.0",
+    "vitest": "^2.1.9"
+  }
+}

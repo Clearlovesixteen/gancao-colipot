@@ -1,0 +1,41 @@
+{
+  "manifest_version": 3,
+  "name": "gancao-copliot",
+  "version": "1.0.0",
+  "action": {},
+  "permissions": ["sidePanel", "tabs", "storage", "scripting", "activeTab", "downloads"],
+  "optional_permissions": ["debugger"],
+  "host_permissions": [
+    "<all_urls>",
+    "https://oapi.dingtalk.com/*",
+    "https://login.dingtalk.com/*",
+    "https://api.86gamestore.com/*",
+    "https://api.deepseek.com/*",
+    "https://sso-server.gancao.com/*",
+    "https://*.gancao.com/*",
+    "https://g.alicdn.com/*"
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self' https://*.gancao.com https://api.86gamestore.com https://api.deepseek.com https://oapi.dingtalk.com https://login.dingtalk.com; object-src 'self'"
+  },
+  "side_panel": {
+    "default_path": "sidePanel.html"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["gancao-console-bridge.js"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}
