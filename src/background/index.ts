@@ -1,7 +1,6 @@
 import { GLMClient, Message } from '../sidePanel/utils/glm-client';
 import { AutomationRunner } from './automation';
 import { ComputerUseRunner } from './computerUseRunner';
-import { runSearchEngineSkill } from './computerUseSkills/searchEngineSkill';
 import { understandComputerUseIntent as understandComputerUseIntentCore } from './computerUseIntent';
 import { createComputerUsePlan as createComputerUsePlanCore } from './computerUsePlanner';
 import { parseComputerUseTask } from './computerUseTaskParser';
@@ -188,9 +187,10 @@ async function callComputerUseJson(system: string, user: unknown): Promise<unkno
   return parsed;
 }
 
-async function understandComputerUseIntentWithLLM(goal: string): Promise<ComputerUseIntent> {
+async function understandComputerUseIntentWithLLM(goal: string, taskIntent?: ComputerUseTaskIntent): Promise<ComputerUseIntent> {
   return await understandComputerUseIntentCore({
     goal,
+    taskIntent,
     callLLM: ({ system, user }) => callComputerUseJson(system, user),
   });
 }
@@ -822,24 +822,12 @@ async function runComputerUseOnTab(options: {
     });
 
     const intent = options.intent || parseComputerUseTask(options.goal, options.startUrl);
-    const canUseSearchSkill = intent.actionType === 'search' && Boolean(intent.query && intent.startUrl);
-    const runPromise = canUseSearchSkill
-      ? runSearchEngineSkill({
-        tabId: options.tabId,
-        runId,
-        goal: options.goal,
-        intent,
-        signal: controller.signal,
-        navigate: navigateTab,
-        executeBrowserTool,
-        emit,
-      })
-      : new ComputerUseRunner({
+    const runPromise = new ComputerUseRunner({
         tabId: options.tabId,
         runId,
         goal: options.goal,
         maxSteps: Math.max(1, Math.min(Number(options.maxSteps || 8), 30)),
-        startUrl: options.startUrl || intent.startUrl,
+        startUrl: intent.actionType === 'search' ? options.startUrl : options.startUrl || intent.startUrl,
         allowHighRisk: options.allowHighRisk === true,
         signal: controller.signal,
         navigate: navigateTab,
@@ -851,7 +839,7 @@ async function runComputerUseOnTab(options: {
           action,
           click: () => executeContentTool(options.tabId, 'click_element', action),
         }),
-        understandIntent: ({ goal }) => understandComputerUseIntentWithLLM(goal),
+        understandIntent: ({ goal }) => understandComputerUseIntentWithLLM(goal, intent),
         createPlan: createComputerUsePlanWithLLM,
         planNextAction: planComputerUseAction,
         confirmAction: waitForComputerUseConfirmation,

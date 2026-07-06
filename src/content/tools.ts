@@ -536,7 +536,7 @@ function elementBox(element: Element): ElementBox {
 function inferElementRegion(element: Element): BrowserPageRegionType {
   if (element.closest('[role="dialog"],[aria-modal="true"],.ant-modal,.modal,.el-dialog')) return 'modal';
   if (element.closest('aside,[class*="sidebar"],[class*="sider"],.ant-layout-sider,.el-aside')) return 'sidebar';
-  if (element.closest('#content_left,#search,#rso,#b_results,.b_results,.result,[class*="result"],.b_algo')) return 'search_results';
+  if (element.closest('#content_left,#search,#rso,#b_results,.b_results,.result,[class*="result"],.b_algo,ytd-search,ytd-video-renderer,ytd-rich-item-renderer,ytd-compact-video-renderer,ytd-grid-video-renderer')) return 'search_results';
   if (element.closest('.ant-table,table,[role="table"],[role="grid"]')) return 'table_area';
   if (element.closest('header,nav,[role="navigation"],#s-top-left,#u1,[class*="header"],[class*="navbar"],[class*="top-nav"]')) return 'top_nav';
   if (element.closest('footer,[class*="footer"]')) return 'footer';
@@ -560,7 +560,7 @@ function collectPageRegions(): BrowserPageRegion[] {
     { type: 'modal', selector: '[role="dialog"],[aria-modal="true"],.ant-modal,.modal,.el-dialog' },
     { type: 'top_nav', selector: 'header,nav,[role="navigation"],#s-top-left,#u1,[class*="header"],[class*="navbar"],[class*="top-nav"]' },
     { type: 'sidebar', selector: 'aside,[class*="sidebar"],[class*="sider"],.ant-layout-sider,.el-aside' },
-    { type: 'search_results', selector: '#content_left,#search,#rso,#b_results,.b_results' },
+    { type: 'search_results', selector: '#content_left,#search,#rso,#b_results,.b_results,ytd-search,ytd-item-section-renderer,#contents' },
     { type: 'table_area', selector: '.ant-table,table,[role="table"],[role="grid"]' },
     { type: 'main', selector: 'main,#main,#app,.app,.content,[class*="content"],[class*="main"]' },
     { type: 'footer', selector: 'footer,[class*="footer"]' },
@@ -813,7 +813,7 @@ function targetNotFoundMessage(defaultMessage: string): string {
 
 export async function observePage(args: any = {}): Promise<BrowserObservation> {
   observedElementRegistry.clear();
-  const limit = Math.max(1, Math.min(Number(args.limit || 80), 200));
+  const limit = Math.max(1, Math.min(Number(args.limit || 80), 650));
   const candidates = getAllElementsIncludingShadow(document.body)
     .filter((element) => (isInteractiveElement(element) || isNavigationCandidateElement(element)) && isVisibleElement(element))
     .map((element, sourceIndex) => {
@@ -1048,7 +1048,7 @@ async function assertPage(args: any): Promise<any> {
 }
 
 function isBadSearchResultAnchor(anchor: HTMLAnchorElement): boolean {
-  const text = getCleanText(anchor);
+  const text = getSearchResultAnchorText(anchor);
   const href = anchor.href || '';
   if (!href || !/^https?:\/\//i.test(href)) return true;
   if (!text || /^(新闻|网页|贴吧|知道|图片|视频|地图|文库|资讯|购物|更多|设置|登录|百度首页|上一页|下一页|\d+)$/i.test(text)) return true;
@@ -1079,13 +1079,24 @@ type SearchResultCandidate = {
   container: Element;
 };
 
+function getSearchResultAnchorText(anchor: HTMLAnchorElement): string {
+  return String(
+    getCleanText(anchor)
+    || anchor.getAttribute('title')
+    || anchor.getAttribute('aria-label')
+    || ''
+  ).replace(/\s+/g, ' ').trim();
+}
+
 function resultAnchorPriority(anchor: HTMLAnchorElement): number {
   const selector = generateSelector(anchor);
-  const closest = anchor.closest('#content_left,.result,[class*="result"],.c-container,#b_results,.b_algo,#rso,#search');
+  const closest = anchor.closest('#content_left,.result,[class*="result"],.c-container,#b_results,.b_algo,#rso,#search,ytd-video-renderer,ytd-rich-item-renderer,ytd-compact-video-renderer,ytd-grid-video-renderer');
   let priority = 0;
   if (anchor.closest('#content_left')) priority += 80;
+  if (anchor.closest('ytd-video-renderer,ytd-rich-item-renderer,ytd-compact-video-renderer,ytd-grid-video-renderer')) priority += 85;
   if (anchor.closest('.result,[class*="result"],.c-container')) priority += 50;
   if (anchor.closest('h3') || anchor.querySelector('h3')) priority += 30;
+  if (anchor.matches('#video-title,a#video-title-link,[href*="/watch"]')) priority += 45;
   if (closest) priority += 20;
   if (/\bh3\b/i.test(selector)) priority += 10;
   return priority;
@@ -1093,6 +1104,9 @@ function resultAnchorPriority(anchor: HTMLAnchorElement): number {
 
 function pickPrimaryResultAnchor(container: Element): HTMLAnchorElement | null {
   const selectors = [
+    'a#video-title[href]',
+    'a#video-title-link[href]',
+    'a[href*="/watch"]',
     'h3 a[href]',
     'a[href] h3',
     '[class*="title"] a[href]',
@@ -1120,6 +1134,10 @@ function collectSearchResultBlocks(): SearchResultCandidate[] {
     '#b_results > .b_algo',
     '#rso > div',
     '#search .g',
+    'ytd-video-renderer',
+    'ytd-rich-item-renderer',
+    'ytd-compact-video-renderer',
+    'ytd-grid-video-renderer',
   ];
   const blocks = new Set<Element>();
   blockSelectors.forEach((selector) => {
@@ -1143,6 +1161,12 @@ function collectFirstSearchResultCandidates(): HTMLAnchorElement[] {
 
   const anchors = new Set<HTMLAnchorElement>();
   const anchorSelectors = [
+    'ytd-video-renderer a#video-title[href]',
+    'ytd-rich-item-renderer a#video-title-link[href]',
+    'ytd-rich-item-renderer a#video-title[href]',
+    'ytd-compact-video-renderer a#video-title[href]',
+    'ytd-grid-video-renderer a#video-title[href]',
+    'a[href*="/watch"]#video-title',
     '#content_left h3 a[href]',
     '#content_left .result a[href]',
     '#content_left [class*="result"] a[href]',
@@ -1187,9 +1211,9 @@ function getSearchResults(args: any = {}): any {
     count: candidates.length,
     results: candidates.slice(0, limit).map((anchor, index) => ({
       index: index + 1,
-      title: getCleanText(anchor),
-      text: getCleanText(anchor),
-      snippet: getCleanText(anchor.closest('.result,[class*="result"],.b_algo,#content_left,#rso') || anchor.parentElement).slice(0, 240),
+      title: getSearchResultAnchorText(anchor),
+      text: getSearchResultAnchorText(anchor),
+      snippet: getCleanText(anchor.closest('.result,[class*="result"],.b_algo,#content_left,#rso,ytd-video-renderer,ytd-rich-item-renderer,ytd-compact-video-renderer,ytd-grid-video-renderer') || anchor.parentElement).slice(0, 240),
       url: anchor.href,
       href: anchor.href,
       elementId: registerObservedElement(anchor, index),
@@ -1222,7 +1246,7 @@ async function clickSearchResult(args: any): Promise<any> {
   return {
     success: true,
     index: index + 1,
-    text: getCleanText(anchor),
+    text: getSearchResultAnchorText(anchor),
     href,
     selector: generateSelector(anchor),
     candidateCount: candidates.length,

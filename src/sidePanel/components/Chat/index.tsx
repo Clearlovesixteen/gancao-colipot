@@ -128,6 +128,23 @@ function createAiRequestId(): string {
   return `ai_req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function normalizeUserFacingError(error: unknown, fallback = '请稍后重试'): string {
+  const messageText = String((error as any)?.message || error || fallback);
+  if (/Failed to fetch|NetworkError|Load failed/i.test(messageText)) {
+    return '网络请求失败：暂时无法连接模型或后台服务，请检查网络/API 地址后重试。';
+  }
+  if (/HTTP error!\s*status:\s*400/i.test(messageText) && /missing field [`']?content[`']?|deserialize/i.test(messageText)) {
+    return '模型请求格式异常：历史消息里存在缺少 content 的工具调用记录。请重新发送当前问题。';
+  }
+  if (/HTTP error!\s*status:\s*400/i.test(messageText)) {
+    return '模型拒绝了本次请求：请求格式或上下文长度可能不符合接口要求。请缩短内容后重试。';
+  }
+  if (/HTTP error!\s*status:\s*5\d\d|502 Bad Gateway|Bad Gateway/i.test(messageText)) {
+    return '模型服务暂时不可用，请稍后重试。';
+  }
+  return messageText;
+}
+
 function shouldRouteToComputerUse(message: string): boolean {
   return /(自动操作|操作|点击|点一下|填表|输入|选择|勾选|导出|下载|提交|打开.*页面|帮我.*页面|跑流程)/i.test(message.trim());
 }
@@ -1064,7 +1081,7 @@ const Chat: React.FC = () => {
         }
         if (runtimeError || !response?.success) {
           setIsTyping(false);
-          addAssistantMessage(`AI 请求失败：${response?.error || runtimeError || '请稍后重试'}`);
+          addAssistantMessage(`AI 请求失败：${normalizeUserFacingError(response?.error || runtimeError)}`);
           return;
         }
         setIsTyping(false);
@@ -1531,7 +1548,7 @@ const Chat: React.FC = () => {
       appendAgentPrelude(result);
       sendPromptToAI('页面诊断', result.prompt);
     } catch (error: any) {
-      message.error({ content: error?.message || '页面诊断失败', key: 'page_diagnosis' });
+      message.error({ content: normalizeUserFacingError(error, '页面诊断失败'), key: 'page_diagnosis' });
     }
   };
 
@@ -1554,7 +1571,7 @@ const Chat: React.FC = () => {
       setInputValue('');
       sendPromptToAI(question, result.prompt);
     } catch (error: any) {
-      message.error({ content: error?.message || '资料问答失败', key: 'document_qa' });
+      message.error({ content: normalizeUserFacingError(error, '资料问答失败'), key: 'document_qa' });
     }
   }, [appendAgentPrelude, executeBusinessTool, inputValue, sendPromptToAI]);
 
@@ -1883,7 +1900,7 @@ const Chat: React.FC = () => {
             ...current,
             {
               id: `error_${Date.now()}`,
-              content: `AI 请求失败：${response?.error || runtimeError || '请稍后重试'}`,
+              content: `AI 请求失败：${normalizeUserFacingError(response?.error || runtimeError)}`,
               type: 'assistant',
               timestamp: Date.now(),
             },

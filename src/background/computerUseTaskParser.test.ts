@@ -60,4 +60,32 @@ describe('computerUseTaskParser', () => {
       targetResultIndex: 10,
     }));
   });
+
+  it('parses YouTube site search tasks into the search fast path', () => {
+    const intent = parseComputerUseTask('请自动操作：打开youtube，搜索贝爷，然后点击第1个搜索结果');
+
+    expect(intent).toEqual(expect.objectContaining({
+      startUrl: 'https://www.youtube.com/',
+      siteName: 'youtube',
+      actionType: 'search',
+      query: '贝爷',
+      postSearchAction: 'click_first_result',
+      targetResultIndex: 1,
+    }));
+    expect(buildSearchUrl(intent)).toBe('https://www.youtube.com/results?search_query=%E8%B4%9D%E7%88%B7');
+  });
+
+  it('parses YouTube searches when the user says to open a new page first', () => {
+    const intent = parseComputerUseTask('请自动操作：打开新页面youtube，搜索贝爷，然后点击第一个搜索结果');
+
+    expect(intent).toEqual(expect.objectContaining({
+      startUrl: 'https://www.youtube.com/',
+      siteName: 'youtube',
+      actionType: 'search',
+      query: '贝爷',
+      postSearchAction: 'click_first_result',
+      targetResultIndex: 1,
+    }));
+    expect(buildSearchUrl(intent)).toBe('https://www.youtube.com/results?search_query=%E8%B4%9D%E7%88%B7');
+  });
 });

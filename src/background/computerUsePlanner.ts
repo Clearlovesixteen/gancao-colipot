@@ -60,6 +60,13 @@ function getParentTargets(targets: string[]): string[] {
   return ordered.slice(1);
 }
 
+function getParentPathForTarget(path: string[], target?: string): string[] {
+  if (!path.length || !target) return [];
+  const index = path.findIndex((item) => compact(item) === compact(target));
+  if (index <= 0) return [];
+  return path.slice(0, index);
+}
+
 function getObservedOrderIndex(elementOrId: any): number | null {
   const elementId = typeof elementOrId === 'string' ? elementOrId : elementOrId?.elementId;
   const match = String(elementId || '').match(/_(\d+)$/);
@@ -115,9 +122,39 @@ function getNavigationContextText(element: any): string {
   return [
     element?.text,
     element?.parentText,
+    Array.isArray(element?.parentPath) ? element.parentPath.join(' ') : undefined,
     element?.context,
     element?.selector,
   ].filter(Boolean).join(' ');
+}
+
+function getSemanticNavigationCandidates(context: ComputerUsePageContext): any[] {
+  const seen = new Set<string>();
+  const candidates = [
+    ...context.navigationCandidates,
+    ...(context.collections || [])
+      .filter((collection) => collection.type === 'menu_group')
+      .flatMap((collection) => collection.items.map((item) => ({
+        elementId: item.elementId,
+        selector: item.selector,
+        text: item.text,
+        purpose: item.purpose || item.metadata?.purpose || 'menu_item',
+        parentText: item.parentText || item.parentPath?.join(' '),
+        parentPath: item.parentPath,
+        context: item.context || collection.title,
+        bbox: item.bbox,
+        active: item.active ?? item.metadata?.active,
+        expanded: item.expanded ?? item.metadata?.expanded,
+        clickable: item.clickable,
+        score: (item.confidence || 0) * 10,
+      }))),
+  ];
+  return candidates.filter((candidate) => {
+    const key = candidate.elementId || candidate.selector || `${candidate.text}:${candidate.parentText}:${candidate.context}`;
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function isAggregateNavigationCandidate(element: any, target: string): boolean {
@@ -138,11 +175,24 @@ function navigationMatchesParentPath(element: any, path: string[], target: strin
   return parentTargets.some((parent) => includesAnyTarget(contextText, [parent]));
 }
 
+function isLeafTarget(path: string[], target: string): boolean {
+  return path.length > 1 && compact(path[path.length - 1]) === compact(target);
+}
+
+function navigationMatchesLeafText(element: any, target: string): boolean {
+  const elementText = compact(element?.text);
+  const targetText = compact(target);
+  if (!elementText || !targetText) return false;
+  return elementText === targetText || (elementText.includes(targetText) && elementText.length <= targetText.length + 8);
+}
+
 function findNavigationForTarget(context: ComputerUsePageContext, target: string, path: string[] = [], history: unknown[] = [], phaseMemory?: ComputerUsePhaseMemory): any | null {
   const compactTarget = compact(target);
   if (!compactTarget) return null;
-  const candidates = context.navigationCandidates
+  const targetIsLeaf = isLeafTarget(path, target);
+  const candidates = getSemanticNavigationCandidates(context)
     .filter((element) => includesAnyTarget(`${element.text} ${element.context || ''}`, [target]))
+    .filter((element) => !targetIsLeaf || navigationMatchesLeafText(element, target))
     .filter((element) => !isAggregateNavigationCandidate(element, target))
     .filter((element) => !isFailedCandidate(phaseMemory, element))
     .sort((a, b) => {
@@ -164,7 +214,7 @@ function findNavigationForTarget(context: ComputerUsePageContext, target: string
 }
 
 function getNavigationCandidatesForTarget(context: ComputerUsePageContext, target: string): any[] {
-  return context.navigationCandidates.filter((element) => includesAnyTarget(`${element.text} ${element.context || ''}`, [target]));
+  return getSemanticNavigationCandidates(context).filter((element) => includesAnyTarget(`${element.text} ${element.context || ''}`, [target]));
 }
 
 function hasClickedTargetWithoutAmbiguity(context: ComputerUsePageContext, history: unknown[], target: string, path: string[] = []): boolean {
@@ -187,7 +237,7 @@ function isNavigationActiveOrPageReady(context: ComputerUsePageContext, target: 
 }
 
 function isNavigationTargetActive(context: ComputerUsePageContext, target: string): boolean {
-  return context.navigationCandidates.some((element) => {
+  return getSemanticNavigationCandidates(context).some((element) => {
     if (!element.active) return false;
     return includesAnyTarget(getNavigationContextText(element), [target]);
   });
@@ -352,7 +402,53 @@ function summarizeElement(element: any): any {
   };
 }
 
+function summarizeCollection(collection: any): any {
+  return {
+    id: collection.id,
+    type: collection.type,
+    title: collection.title,
+    confidence: collection.confidence,
+    metadata: collection.metadata,
+    items: Array.isArray(collection.items)
+      ? collection.items.slice(0, 20).map((item: any) => ({
+        index: item.index,
+        text: item.text,
+        elementId: item.elementId,
+        selector: item.selector,
+        parentText: item.parentText,
+        parentPath: item.parentPath,
+        context: item.context,
+        href: item.href,
+        purpose: item.purpose,
+        active: item.active,
+        expanded: item.expanded,
+        clickable: item.clickable,
+        metadata: item.metadata,
+        confidence: item.confidence,
+      }))
+      : [],
+  };
+}
+
 function findBestDownloadAction(context: ComputerUsePageContext, phaseMemory?: ComputerUsePhaseMemory): any | null {
+  const actionGroupCandidates = (context.collections || [])
+    .filter((collection) => collection.type === 'action_group')
+    .flatMap((collection) => collection.items)
+    .filter((item) => (item.purpose || item.metadata?.purpose) === 'download_button')
+    .filter((item) => Boolean(item.elementId || item.selector))
+    .filter((item) => !isFailedCandidate(phaseMemory, item))
+    .sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
+  if (actionGroupCandidates[0]) {
+    const item = actionGroupCandidates[0];
+    return {
+      elementId: item.elementId,
+      selector: item.selector,
+      text: item.text,
+      purpose: item.purpose || item.metadata?.purpose,
+      score: item.confidence,
+    };
+  }
+
   const candidates = [
     ...context.actionCandidates,
     ...context.observation.elements.filter((element) => element.purpose === 'download_button'),
@@ -402,9 +498,133 @@ function findTextActionCandidate(context: ComputerUsePageContext, targets: strin
   return candidates[0] || null;
 }
 
+function formFieldText(element: any): string {
+  return [
+    element.text,
+    element.context,
+    element.parentText,
+    element.placeholder,
+    element.name,
+    element.selector,
+    element.value,
+  ].filter(Boolean).join(' ');
+}
+
+function isFormControl(element: any): boolean {
+  const text = `${element.role || ''} ${element.tag || ''} ${element.selector || ''} ${element.context || ''} ${element.placeholder || ''}`;
+  return /(textbox|combobox|spinbutton|searchbox|input|textarea|select|ant-select|ant-input|ant-picker)/i.test(text);
+}
+
+function findFormFieldCandidate(
+  context: ComputerUsePageContext,
+  formValue: NonNullable<ComputerUsePhase['formValues']>[number],
+  phaseMemory?: ComputerUsePhaseMemory
+): any | null {
+  const label = formValue.label;
+  const control = formValue.control || 'input';
+  const candidates = context.observation.elements
+    .filter((element) => element.visible && element.enabled)
+    .filter((element) => isFormControl(element))
+    .filter((element) => !isFailedCandidate(phaseMemory, element))
+    .map((element) => {
+      let score = (element.score || 0) * 10;
+      const text = formFieldText(element);
+      if (includesAnyTarget(text, [label])) score += 80;
+      if (compact(element.parentText) === compact(label) || compact(element.context) === compact(label)) score += 60;
+      if (compact(element.placeholder) === compact(label) || includesAnyTarget(element.placeholder || '', [label])) score += 30;
+      if (control === 'select' && /(combobox|select|ant-select)/i.test(`${element.role} ${element.selector} ${element.context}`)) score += 35;
+      if (control === 'select' && /(input|textarea|ant-input)/i.test(`${element.tag} ${element.selector}`) && !/ant-select/i.test(`${element.selector} ${element.context}`)) score -= 35;
+      if (control === 'input' && /(input|textarea|textbox|searchbox)/i.test(`${element.role} ${element.tag} ${element.selector}`)) score += 25;
+      if (control === 'input' && /(combobox|ant-select)/i.test(`${element.role} ${element.selector} ${element.context}`)) score -= 25;
+      if (!includesAnyTarget(text, [label])) score -= 50;
+      return { element, score };
+    })
+    .sort((a, b) => b.score - a.score);
+  const best = candidates[0];
+  return best && best.score >= 45 ? best.element : null;
+}
+
+function findActionButtonCandidate(
+  context: ComputerUsePageContext,
+  targets: string[],
+  phaseMemory?: ComputerUsePhaseMemory
+): any | null {
+  const actionItems = (context.collections || [])
+    .filter((collection) => collection.type === 'action_group')
+    .flatMap((collection) => collection.items)
+    .filter((item) => Boolean(item.elementId || item.selector))
+    .filter((item) => !isFailedCandidate(phaseMemory, item))
+    .map((item) => {
+      let score = (item.confidence || 0) * 10;
+      const text = [item.text, item.context, item.parentText, item.purpose, item.metadata?.purpose].filter(Boolean).join(' ');
+      if (includesAnyTarget(text, targets)) score += 80;
+      if (targets.some((target) => /(搜索|查询|筛选)/.test(target)) && item.purpose === 'search_button') score += 50;
+      return { item, score };
+    })
+    .sort((a, b) => b.score - a.score || a.item.index - b.item.index);
+  const itemMatch = actionItems[0];
+  if (itemMatch && itemMatch.score >= 35) {
+    return {
+      elementId: itemMatch.item.elementId,
+      selector: itemMatch.item.selector,
+      text: itemMatch.item.text,
+      purpose: itemMatch.item.purpose || itemMatch.item.metadata?.purpose,
+      score: itemMatch.score,
+    };
+  }
+
+  const candidates = [
+    ...context.actionCandidates,
+    ...context.observation.elements,
+  ]
+    .filter((element) => element.visible && element.enabled)
+    .filter((element) => ['button', 'link', 'menuitem'].includes(element.role) || element.clickable)
+    .filter((element) => !isFailedCandidate(phaseMemory, element))
+    .map((element) => {
+      let score = (element.score || 0) * 10;
+      const text = [element.text, element.context, element.parentText, element.purpose, element.name, element.selector].filter(Boolean).join(' ');
+      if (includesAnyTarget(text, targets)) score += 70;
+      if (targets.some((target) => /(搜索|查询|筛选)/.test(target)) && element.purpose === 'search_button') score += 50;
+      if (compact(element.text) && targets.some((target) => compact(element.text) === compact(target))) score += 40;
+      return { element, score };
+    })
+    .sort((a, b) => b.score - a.score);
+  return candidates[0] && candidates[0].score >= 45 ? candidates[0].element : null;
+}
+
 function findLatestDownloadCandidate(context: ComputerUsePageContext, runState?: ComputerUseRunState, phaseMemory?: ComputerUsePhaseMemory): any | null {
   const filename = baseFileName(runState?.downloadResult?.filename || runState?.downloadResult?.assetTitle);
   const targets = filename ? [filename, filename.replace(/\.[^.]+$/, '')] : [];
+  const fileCollectionItems = (context.collections || [])
+    .filter((collection) => collection.type === 'file_list')
+    .flatMap((collection) => collection.items)
+    .filter((item) => Boolean(item.elementId || item.selector))
+    .filter((item) => !isFailedCandidate(phaseMemory, item))
+    .map((item) => {
+      const text = [
+        item.text,
+        item.context,
+        item.href,
+        item.metadata?.filename,
+        item.metadata?.originalText,
+      ].filter(Boolean).join(' ');
+      let score = (item.confidence || 0) * 10;
+      if (targets.length && includesAnyTarget(text, targets)) score += 100;
+      if (!targets.length && item.index === 1) score += 20;
+      return { item, score };
+    })
+    .sort((a, b) => b.score - a.score || a.item.index - b.item.index);
+  const collectionMatch = fileCollectionItems[0];
+  if (collectionMatch && collectionMatch.score >= (targets.length ? 80 : 20)) {
+    return {
+      elementId: collectionMatch.item.elementId,
+      selector: collectionMatch.item.selector,
+      text: collectionMatch.item.text,
+      purpose: collectionMatch.item.purpose || collectionMatch.item.metadata?.purpose,
+      score: collectionMatch.score,
+    };
+  }
+
   if (targets.length) {
     const matched = findTextActionCandidate(context, targets, [], phaseMemory);
     if (matched) return matched;
@@ -610,6 +830,59 @@ function buildRulePlan(
     return makeWaitPlan(Math.max(0, Number(phase.waitMs || 1000)));
   }
 
+  if (phase?.type === 'fill_form') {
+    const formValue = phase.formValues?.[0];
+    if (!formValue) return makeFinishPlan(`阶段「${phase.goal}」缺少要填写的字段和值。`);
+    const target = findFormFieldCandidate(context, formValue, phaseMemory);
+    if (!target) {
+      return makeFinishPlan(`未找到表单字段：${formValue.label}。请确认字段在当前页面可见，或补充字段位置。`);
+    }
+    const isSelect = formValue.control === 'select';
+    return {
+      summary: `${isSelect ? '选择' : '输入'}${formValue.label}`,
+      confidence: 0.88,
+      steps: [{
+        id: `fill_${compact(formValue.label)}`,
+        action: isSelect ? 'select_option' : 'type',
+        target: {
+          elementId: target.elementId,
+          selector: target.selector,
+          text: target.text || formValue.label,
+        },
+        value: formValue.value,
+        rationale: `${isSelect ? '选择' : '输入'}字段「${formValue.label}」为「${formValue.value}」`,
+        verify: { type: 'value_equals', value: formValue.value },
+      }],
+      successCriteria: [`${formValue.label} = ${formValue.value}`],
+    };
+  }
+
+  if (phase?.type === 'click_action') {
+    const targets = phase.targets?.length ? phase.targets : ['搜索', '查询'];
+    const target = findActionButtonCandidate(context, targets, phaseMemory);
+    if (!target) {
+      return makeFinishPlan(`未找到动作按钮：${targets.join('、')}。请确认按钮在当前页面可见。`);
+    }
+    return {
+      summary: `点击${targets[0]}`,
+      confidence: 0.84,
+      steps: [{
+        id: 'click_action',
+        action: 'click',
+        target: {
+          elementId: target.elementId,
+          selector: target.selector,
+          text: target.text || targets[0],
+          purpose: target.purpose,
+          collectionType: 'action_group',
+        },
+        rationale: `点击当前页面动作按钮：${target.text || targets[0]}`,
+        verify: { type: 'page_changed', value: targets[0] },
+      }],
+      successCriteria: [`已点击 ${targets[0]}`],
+    };
+  }
+
   if (phase?.type === 'open_page_or_center') {
     const targets = phase.targets?.length ? phase.targets : ['文件中心'];
     const currentText = [
@@ -633,6 +906,8 @@ function buildRulePlan(
             selector: target.selector,
             text: target.text,
             purpose: target.purpose,
+            collectionType: 'menu_group',
+            parentPath: [],
           },
           rationale: `当前阶段只需要打开：${targets.join('、')}`,
           verify: { type: 'page_changed', value: targets[0] },
@@ -658,6 +933,8 @@ function buildRulePlan(
             selector: target.selector,
             text: target.text,
             purpose: target.purpose,
+            collectionType: 'file_list',
+            ordinal: filename ? undefined : 1,
           },
           rationale: filename
             ? `根据下载结果文件名匹配文件中心条目：${filename}`
@@ -710,9 +987,11 @@ function buildRulePlan(
   const clickedOnlyParentTarget = !clickedLeafTarget && parentTargets.some((target) => hasClickedTargetText(history, target));
   const pathReached = navigationPath.length ? hasReachedNavigationPath(intent, context, history) : false;
   const isOnTarget = !primaryTarget || includesAnyTarget(navigationPath.length ? strictPageText : loosePageText, [primaryTarget]);
-  const targetReadyForExport = navigationPath.length
-    ? pathReached
-    : (!primaryTarget || clickedLeafTarget || (isOnTarget && !clickedOnlyParentTarget));
+  const targetReadyForExport = phase?.type === 'download_file' && !navigationPath.length
+    ? true
+    : navigationPath.length
+      ? pathReached
+      : (!primaryTarget || clickedLeafTarget || (isOnTarget && !clickedOnlyParentTarget));
 
   const nextPathTarget = dataTask ? getNextNavigationPathTarget(intent, context, history, phaseMemory) : null;
   if (nextPathTarget?.missing) {
@@ -730,6 +1009,8 @@ function buildRulePlan(
           selector: nextPathTarget.element.selector,
           text: nextPathTarget.element.text,
           purpose: nextPathTarget.element.purpose,
+          collectionType: 'menu_group',
+          parentPath: getParentPathForTarget(navigationPath, nextPathTarget.target),
         },
         rationale: `按业务菜单路径进入目标页面：${navigationPath.join(' > ')}`,
         verify: { type: 'page_changed', value: nextPathTarget.target },
@@ -750,6 +1031,8 @@ function buildRulePlan(
           selector: targetNavigation.selector,
           text: targetNavigation.text,
           purpose: targetNavigation.purpose,
+          collectionType: 'menu_group',
+          parentPath: getParentPathForTarget(navigationPath, targetNavigation.text),
         },
         rationale: `先进入目标导航项，再读取目标页表格：${targetNavigation.text}`,
         verify: { type: 'page_changed', value: targetNavigation.text },
@@ -772,6 +1055,7 @@ function buildRulePlan(
             selector: downloadAction.selector,
             text: downloadAction.text,
             purpose: downloadAction.purpose,
+            collectionType: 'action_group',
           },
           rationale: `用户明确要求导出/下载，点击真实导出按钮并等待下载完成：${downloadAction.text || downloadAction.selector}`,
           verify: { type: 'element_exists', value: downloadAction.text },
@@ -794,6 +1078,7 @@ function buildRulePlan(
             selector: expandable.selector,
             text: expandable.text,
             purpose: expandable.purpose,
+            collectionType: 'action_group',
           },
           rationale: `当前未直接看到导出按钮，先展开操作入口：${expandable.text}`,
           verify: { type: 'text_exists', value: expandable.text },
@@ -831,6 +1116,8 @@ function buildRulePlan(
           selector: targetNavigation.selector,
           text: targetNavigation.text,
           purpose: targetNavigation.purpose,
+          collectionType: 'menu_group',
+          parentPath: getParentPathForTarget(navigationPath, targetNavigation.text),
         },
         rationale: `当前页面未确认目标内容，先进入相关导航项：${targetNavigation.text}`,
         verify: { type: 'page_changed', value: targetNavigation.text },
@@ -875,6 +1162,9 @@ export async function createComputerUsePlan(input: {
         '如果页面上下文不足，必须用 finish 说明缺少什么，不要输出无意义 press_key。',
         '涉及导出/下载时，优先导航到目标页面，找到 purpose=download_button 的真实按钮后输出 download_file，不要用 extract_table 代替导出。',
         '涉及列表/表格但用户没有要求导出文件时，优先导航到目标页面并 extract_table。',
+        '优先使用 page.collections 里的语义集合生成 target：搜索结果用 collectionType=search_results + ordinal，菜单/导航用 collectionType=menu_group + parentPath，导出/下载用 collectionType=action_group + purpose=download_button，文件列表用 collectionType=file_list。',
+        '不要直接猜 CSS selector。只有当集合无法表达目标时，才使用 elementId/selector。',
+        '同名菜单必须用 parentPath 消歧；第 N 项必须用 ordinal 表达，不要把第一个候选当成默认值。',
         '如果 history 里最近已经成功 download_file，必须输出 finish，总结下载文件和资料 ID。',
         '如果 history 里最近已经成功 extract_table 且包含 tables，且目标不是导出文件，必须输出 finish，总结已提取的数据，不要重复 extract_table。',
       ].join('\n'),
@@ -888,6 +1178,7 @@ export async function createComputerUsePlan(input: {
           runState: input.runState,
           phaseMemory: input.phaseMemory,
           navigationPath: input.intent.navigationPath,
+          collections: (input.context.collections || []).map(summarizeCollection).slice(0, 30),
           navigationCandidates: input.context.navigationCandidates.map(summarizeElement).slice(0, 50),
           actionCandidates: input.context.actionCandidates.map(summarizeElement).slice(0, 30),
           elements: input.context.observation.elements.map(summarizeElement).slice(0, 80),

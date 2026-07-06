@@ -79,6 +79,23 @@ function stringifyToolResult(result: unknown): string {
   return `${text.slice(0, MAX_TOOL_RESULT_CONTENT_LENGTH)}\n\n[工具结果过长，已截断 ${text.length - MAX_TOOL_RESULT_CONTENT_LENGTH} 字符]`;
 }
 
+function normalizeRequestError(error: any): string {
+  const message = String(error?.message || error || 'AI 请求失败');
+  if (/Failed to fetch|NetworkError|Load failed/i.test(message)) {
+    return '无法连接模型服务，请检查网络、模型接口地址或浏览器扩展是否允许访问模型 API。';
+  }
+  if (/HTTP error!\s*status:\s*400/i.test(message) && /missing field [`']?content[`']?|deserialize/i.test(message)) {
+    return '模型请求格式不完整：有一条历史消息缺少 content。请重新发送本轮消息；如果反复出现，需要检查工具调用消息的组装逻辑。';
+  }
+  if (/HTTP error!\s*status:\s*400/i.test(message)) {
+    return '模型拒绝了本次请求：请求内容格式或上下文过长可能不符合接口要求。请缩短上下文后重试。';
+  }
+  if (/HTTP error!\s*status:\s*5\d\d/i.test(message)) {
+    return '模型服务暂时不可用，请稍后重试。';
+  }
+  return message;
+}
+
 export class GLMClient {
   private messageHandlers: Set<(message: Message) => void> = new Set();
   private statusHandlers: Set<(status: 'connected' | 'disconnected' | 'connecting' | 'error') => void> = new Set();
@@ -267,7 +284,7 @@ export class GLMClient {
         return { success: false, cancelled, error: cancelled ? '已停止生成' : '请求已取消' };
       }
       console.error('[GLMClient] 发送消息失败:', error);
-      this.lastError = error?.message || 'AI 请求失败';
+      this.lastError = normalizeRequestError(error);
       this.setStatus('error');
       return { success: false, error: this.lastError || 'AI 请求失败' };
     }

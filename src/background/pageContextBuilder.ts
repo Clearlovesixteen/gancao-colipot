@@ -3,8 +3,10 @@ import type {
   ComputerUsePhase,
   ComputerUseIntent,
   ComputerUsePageContext,
+  ObservedCollection,
   ObservedElement,
 } from '../shared/automationTypes';
+import { buildObservedCollections } from './collectionBuilder';
 
 type ExecuteBrowserTool = (tabId: number, toolName: string, args: any) => Promise<any>;
 
@@ -24,7 +26,70 @@ function isDataIntent(intent: ComputerUseIntent): boolean {
 function shouldCollectStructuredContext(intent: ComputerUseIntent, phase?: ComputerUsePhase): boolean {
   if (!phase) return isDataIntent(intent);
   return phase.type === 'extract_data'
+    || phase.type === 'open_page_or_center'
+    || phase.type === 'click_latest_download'
     || (!phase.type && isDataIntent(intent));
+}
+
+function shouldCollectSearchResults(intent: ComputerUseIntent, phase?: ComputerUsePhase): boolean {
+  return phase?.type === 'select_collection_item'
+    || phase?.collectionType === 'search_results'
+    || intent.taskType === 'search'
+    || intent.desiredOutput === 'page_state' && Boolean(intent.query);
+}
+
+function buildSearchResultsCollection(result: any): ObservedCollection | null {
+  const results = Array.isArray(result?.results) ? result.results : [];
+  const items = results
+    .filter((item: any) => item?.elementId || item?.selector || item?.href)
+    .map((item: any, index: number) => ({
+      index: Number(item.index || index + 1),
+      text: String(item.title || item.text || item.href || `搜索结果 ${index + 1}`),
+      elementId: item.elementId,
+      selector: item.selector,
+      href: item.href || item.url,
+      context: item.snippet,
+      bbox: item.bbox,
+      purpose: 'search_result',
+      sourceElementIds: item.elementId ? [item.elementId] : undefined,
+      metadata: {
+        url: item.url || item.href,
+        snippet: item.snippet,
+        region: item.region,
+      },
+      confidence: 0.88,
+    }));
+  if (!items.length) return null;
+  return {
+    id: 'collection_search_results_tool',
+    type: 'search_results',
+    title: '自然搜索结果',
+    items,
+    confidence: 0.9,
+    metadata: {
+      source: 'get_search_results',
+      count: result?.count,
+    },
+  };
+}
+
+function mergeCollections(collections: ObservedCollection[]): ObservedCollection[] {
+  const merged: ObservedCollection[] = [];
+  const seenCollections = new Set<string>();
+  for (const collection of collections) {
+    const collectionKey = `${collection.type}:${collection.id}`;
+    if (seenCollections.has(collectionKey)) continue;
+    seenCollections.add(collectionKey);
+    const seenItems = new Set<string>();
+    const items = collection.items.filter((item) => {
+      const key = `${item.index}:${item.elementId || item.selector || item.href || item.text}`;
+      if (seenItems.has(key)) return false;
+      seenItems.add(key);
+      return true;
+    });
+    if (items.length) merged.push({ ...collection, items });
+  }
+  return merged;
 }
 
 function compact(text?: string): string {
@@ -74,7 +139,7 @@ export async function buildComputerUsePageContext(input: {
 }): Promise<ComputerUsePageContext> {
   const observation = normalizeToolResult(await input.executeBrowserTool(input.tabId, 'observe_page', {
     includeScreenshot: false,
-    limit: 160,
+    limit: 520,
   })) as BrowserObservation;
 
   let structuredData: ComputerUsePageContext['structuredData'] | undefined;
@@ -102,6 +167,20 @@ export async function buildComputerUsePageContext(input: {
     pageTextPreview = typeof pageInfo?.text === 'string' ? pageInfo.text.slice(0, 4000) : '';
   }
 
+  let searchResultsCollection: ObservedCollection | null = null;
+  if (shouldCollectSearchResults(input.intent, input.phase)) {
+    const searchResults = await input.executeBrowserTool(input.tabId, 'get_search_results', { limit: 30 })
+      .then(normalizeToolResult)
+      .catch(() => null);
+    searchResultsCollection = buildSearchResultsCollection(searchResults);
+  }
+
+  const collections = mergeCollections([
+    ...(Array.isArray(observation.collections) ? observation.collections : []),
+    ...(searchResultsCollection ? [searchResultsCollection] : []),
+    ...buildObservedCollections({ observation, tableCandidates, phase: input.phase }),
+  ]);
+
   return {
     observation,
     structuredData,
@@ -112,5 +191,6 @@ export async function buildComputerUsePageContext(input: {
     ]),
     tableCandidates,
     actionCandidates: getActionCandidates(observation.elements),
+    collections,
   };
 }

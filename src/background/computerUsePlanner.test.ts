@@ -54,6 +54,122 @@ const intent: ComputerUseIntent = {
 };
 
 describe('computerUsePlanner', () => {
+  it('fills a named text field by label instead of the first input on the page', async () => {
+    const fileNameInput = element({
+      elementId: 'file_name',
+      role: 'textbox',
+      tag: 'input',
+      selector: 'input.file-name',
+      placeholder: '请输入',
+      context: '文件名',
+      parentText: '文件名',
+    } as any);
+    const userAliasInput = element({
+      elementId: 'user_alias',
+      role: 'textbox',
+      tag: 'input',
+      selector: 'input.user-alias',
+      placeholder: '请输入',
+      context: '用户花名',
+      parentText: '用户花名',
+    } as any);
+    const plan = await createComputerUsePlan({
+      intent: {
+        ...intent,
+        taskType: 'form',
+        desiredOutput: 'page_state',
+        rawGoal: '输入用户花名：秋枫',
+        objective: '输入用户花名：秋枫',
+        entities: ['用户花名'],
+      },
+      phase: {
+        id: 'fill_user_alias',
+        type: 'fill_form',
+        goal: '输入用户花名：秋枫',
+        targets: ['用户花名'],
+        formValues: [{ label: '用户花名', value: '秋枫', control: 'input' }],
+      },
+      history: [],
+      context: context({
+        observation: { elements: [fileNameInput, userAliasInput] } as any,
+      }),
+    });
+
+    expect(plan.steps[0]).toEqual(expect.objectContaining({
+      action: 'type',
+      value: '秋枫',
+      target: expect.objectContaining({ elementId: 'user_alias' }),
+    }));
+  });
+
+  it('selects a named select field by label', async () => {
+    const subsystemSelect = element({
+      elementId: 'subsystem',
+      role: 'combobox',
+      tag: 'div',
+      selector: '.ant-select.subsystem',
+      context: '子系统',
+      parentText: '子系统',
+    } as any);
+    const plan = await createComputerUsePlan({
+      intent: {
+        ...intent,
+        taskType: 'form',
+        desiredOutput: 'page_state',
+        rawGoal: '子系统选择智慧药房WMS仓储',
+        objective: '子系统选择智慧药房WMS仓储',
+        entities: ['子系统'],
+      },
+      phase: {
+        id: 'select_subsystem',
+        type: 'fill_form',
+        goal: '选择子系统：智慧药房WMS仓储',
+        targets: ['子系统'],
+        formValues: [{ label: '子系统', value: '智慧药房WMS仓储', control: 'select' }],
+      },
+      history: [],
+      context: context({
+        observation: { elements: [subsystemSelect] } as any,
+      }),
+    });
+
+    expect(plan.steps[0]).toEqual(expect.objectContaining({
+      action: 'select_option',
+      value: '智慧药房WMS仓储',
+      target: expect.objectContaining({ elementId: 'subsystem' }),
+    }));
+  });
+
+  it('clicks a page search action for click_action phases', async () => {
+    const searchButton = element({ elementId: 'query', text: '查询', purpose: 'search_button' });
+    const plan = await createComputerUsePlan({
+      intent: {
+        ...intent,
+        taskType: 'form',
+        desiredOutput: 'page_state',
+        rawGoal: '点击搜索',
+        objective: '点击搜索',
+        entities: ['搜索'],
+      },
+      phase: {
+        id: 'click_search',
+        type: 'click_action',
+        goal: '点击搜索/查询按钮',
+        targets: ['搜索', '查询'],
+      },
+      history: [],
+      context: context({
+        actionCandidates: [searchButton],
+        observation: { elements: [searchButton] } as any,
+      }),
+    });
+
+    expect(plan.steps[0]).toEqual(expect.objectContaining({
+      action: 'click',
+      target: expect.objectContaining({ elementId: 'query', purpose: 'search_button' }),
+    }));
+  });
+
   it('plans download_file when target page already has a download button', async () => {
     const exportButton = element({ elementId: 'export_1', text: '导出', purpose: 'download_button' });
     const plan = await createComputerUsePlan({
@@ -69,7 +185,7 @@ describe('computerUsePlanner', () => {
 
     expect(plan.steps[0]).toEqual(expect.objectContaining({
       action: 'download_file',
-      target: expect.objectContaining({ elementId: 'export_1' }),
+      target: expect.objectContaining({ elementId: 'export_1', purpose: 'download_button', collectionType: 'action_group' }),
     }));
   });
 
@@ -104,7 +220,7 @@ describe('computerUsePlanner', () => {
 
     expect(plan.steps[0]).toEqual(expect.objectContaining({
       action: 'click',
-      target: expect.objectContaining({ elementId: 'menu_1' }),
+      target: expect.objectContaining({ elementId: 'menu_1', collectionType: 'menu_group' }),
     }));
   });
 
@@ -123,7 +239,7 @@ describe('computerUsePlanner', () => {
 
     expect(plan.steps[0]).toEqual(expect.objectContaining({
       action: 'click',
-      target: expect.objectContaining({ elementId: 'menu_warning' }),
+      target: expect.objectContaining({ elementId: 'menu_warning', collectionType: 'menu_group' }),
     }));
   });
 
@@ -144,6 +260,43 @@ describe('computerUsePlanner', () => {
       action: 'click',
       target: expect.objectContaining({ elementId: 'menu_module' }),
     }));
+  });
+
+  it('does not treat a parent menu context match as the leaf menu item', async () => {
+    const drinkIntent: ComputerUseIntent = {
+      ...intent,
+      rawGoal: '请自动操作：打开饮片管理中库存预警的列表，点击导出',
+      objective: '打开饮片管理中库存预警的列表，点击导出',
+      entities: ['饮片管理', '库存预警'],
+      navigationPath: ['饮片管理', '库存预警'],
+    };
+    const parent = element({
+      elementId: 'drink_parent',
+      text: '饮片管理',
+      purpose: 'menu_item',
+      selector: 'div.sidebar-handle',
+      context: 'sidebar | 饮片管理 待入库列表 入库记录 库存列表 药斗库存列表 货架库存列表 库存预警 库存结存',
+      parentText: undefined,
+    });
+    const plan = await createComputerUsePlan({
+      intent: drinkIntent,
+      history: [],
+      context: context({
+        pageTextPreview: '数据权限管理 操作员ID 花名 手机号',
+        navigationCandidates: [parent],
+        observation: { elements: [parent] } as any,
+      }),
+    });
+
+    expect(plan.steps[0]).toEqual(expect.objectContaining({
+      action: 'click',
+      target: expect.objectContaining({
+        elementId: 'drink_parent',
+        text: '饮片管理',
+        parentPath: [],
+      }),
+    }));
+    expect(plan.summary).toContain('饮片管理');
   });
 
   it('does not look for export after only the parent module was clicked and the leaf target is still missing', async () => {
@@ -290,6 +443,43 @@ describe('computerUsePlanner', () => {
     }));
   });
 
+  it('uses menu_group collections when the flat navigation candidate list is truncated', async () => {
+    const drinkIntent: ComputerUseIntent = {
+      ...intent,
+      rawGoal: '请自动操作：导出饮片管理中库存预警的列表',
+      objective: '导出饮片管理中库存预警的列表',
+      entities: ['饮片管理', '库存预警'],
+      navigationPath: ['饮片管理', '库存预警'],
+    };
+    const plan = await createComputerUsePlan({
+      intent: drinkIntent,
+      history: [{
+        action: { action: 'click', elementId: 'drink_parent', text: '饮片管理' },
+        verification: { success: true },
+        result: { success: true },
+      }],
+      context: context({
+        pageTextPreview: '欢迎使用智慧药房WMS',
+        navigationCandidates: [],
+        observation: { elements: [] } as any,
+        collections: [{
+          id: 'collection_menu_group_drink',
+          type: 'menu_group',
+          title: '饮片管理',
+          items: [
+            { index: 1, text: '待入库列表', elementId: 'drink_pending', selector: '#drink-pending', parentText: '饮片管理', context: '饮片管理 待入库列表', purpose: 'menu_item', confidence: 0.8 },
+            { index: 2, text: '库存预警', elementId: 'drink_warning_from_collection', selector: '#drink-warning', parentText: '饮片管理', context: '饮片管理 库存预警', purpose: 'menu_item', confidence: 0.9 },
+          ],
+        }],
+      }),
+    });
+
+    expect(plan.steps[0]).toEqual(expect.objectContaining({
+      action: 'click',
+      target: expect.objectContaining({ elementId: 'drink_warning_from_collection', collectionType: 'menu_group' }),
+    }));
+  });
+
   it('does not click an aggregate submenu wrapper as the leaf target', async () => {
     const drinkIntent: ComputerUseIntent = {
       ...intent,
@@ -421,7 +611,7 @@ describe('computerUsePlanner', () => {
 
     expect(plan.steps[0]).toEqual(expect.objectContaining({
       action: 'download_file',
-      target: expect.objectContaining({ elementId: 'export_drink_warning' }),
+      target: expect.objectContaining({ elementId: 'export_drink_warning', purpose: 'download_button', collectionType: 'action_group' }),
     }));
   });
 
@@ -440,7 +630,7 @@ describe('computerUsePlanner', () => {
 
     expect(plan.steps[0]).toEqual(expect.objectContaining({
       action: 'click',
-      target: expect.objectContaining({ elementId: 'file_center' }),
+      target: expect.objectContaining({ elementId: 'file_center', collectionType: 'menu_group' }),
     }));
   });
 
@@ -475,7 +665,54 @@ describe('computerUsePlanner', () => {
 
     expect(plan.steps[0]).toEqual(expect.objectContaining({
       action: 'click',
-      target: expect.objectContaining({ elementId: 'downloaded_file' }),
+      target: expect.objectContaining({ elementId: 'downloaded_file', collectionType: 'file_list' }),
+    }));
+  });
+
+  it('matches the latest downloaded file from file_list collection context or href', async () => {
+    const plan = await createComputerUsePlan({
+      intent,
+      history: [],
+      phase: { id: 'click_latest_download', type: 'click_latest_download', goal: '点击刚刚下载的文件', usesDownloadResult: true },
+      runState: {
+        currentPhaseIndex: 4,
+        completedPhases: [],
+        downloadResult: {
+          success: true,
+          status: 'completed',
+          message: '已下载',
+          filename: '库存预警_20260701.xlsx',
+          downloadId: 18,
+        },
+      },
+      context: context({
+        pageTextPreview: '文件中心 最近文件',
+        observation: { elements: [] } as any,
+        collections: [{
+          id: 'collection_file_list',
+          type: 'file_list',
+          title: '文件列表',
+          items: [{
+            index: 1,
+            text: '下载',
+            elementId: 'file_download_link',
+            selector: '#file-download',
+            href: 'https://storage.test/库存预警_20260701.xlsx',
+            context: '文件中心 最近文件 库存预警_20260701.xlsx',
+            purpose: 'generic',
+            confidence: 0.9,
+            metadata: { filename: '库存预警_20260701.xlsx', originalText: '下载' },
+          }],
+        }],
+      }),
+    });
+
+    expect(plan.steps[0]).toEqual(expect.objectContaining({
+      action: 'click',
+      target: expect.objectContaining({
+        elementId: 'file_download_link',
+        collectionType: 'file_list',
+      }),
     }));
   });
 
@@ -500,7 +737,7 @@ describe('computerUsePlanner', () => {
 
     expect(plan.steps[0]).toEqual(expect.objectContaining({
       action: 'download_file',
-      target: expect.objectContaining({ elementId: 'export_after_nav' }),
+      target: expect.objectContaining({ elementId: 'export_after_nav', purpose: 'download_button', collectionType: 'action_group' }),
     }));
   });
 

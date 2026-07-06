@@ -168,6 +168,21 @@ describe('page extractor', () => {
     ]));
   });
 
+  it('can observe deep sidebar items beyond the old 200 element cap', async () => {
+    document.body.innerHTML = `
+      <aside class="ant-layout-sider">
+        ${Array.from({ length: 230 }, (_, index) => `<div class="nav-item leaf">普通菜单 ${index}</div>`).join('')}
+        <div class="nav-item leaf">库存预警</div>
+      </aside>
+    `;
+
+    const result = await observePage({ limit: 260 });
+
+    expect(result.elements).toEqual(expect.arrayContaining([
+      expect.objectContaining({ text: '库存预警', purpose: 'menu_item' }),
+    ]));
+  });
+
   it('clicks the first real Baidu result instead of hao123 navigation', async () => {
     document.body.innerHTML = `
       <input id="kw" name="wd" value="菜鸟" />
@@ -295,6 +310,51 @@ describe('page extractor', () => {
       index: 3,
       text: '甘草医生 第三个结果',
       href: 'https://www.baidu.com/link?url=main-3',
+    }));
+  });
+
+  it('extracts YouTube video search results as ordered result blocks', async () => {
+    document.body.innerHTML = `
+      <input id="search" type="search" value="贝爷" />
+      <nav><a id="home" href="https://www.youtube.com/">首页</a></nav>
+      <ytd-video-renderer id="v1">
+        <a id="video-title" href="https://www.youtube.com/watch?v=one" title="贝爷荒野求生 第一集">贝爷荒野求生 第一集</a>
+        <div class="metadata">100万次观看</div>
+      </ytd-video-renderer>
+      <ytd-video-renderer id="v2">
+        <a id="video-title" href="https://www.youtube.com/watch?v=two" title="贝爷荒野求生 第二集">贝爷荒野求生 第二集</a>
+      </ytd-video-renderer>
+      <ytd-video-renderer id="v3">
+        <a id="video-title" href="https://www.youtube.com/watch?v=three" title="贝爷荒野求生 第三集">贝爷荒野求生 第三集</a>
+      </ytd-video-renderer>
+    `;
+    const input = document.querySelector('#search') as HTMLElement;
+    input.getBoundingClientRect = () => ({ x: 180, y: 20, width: 600, height: 40, top: 20, left: 180, right: 780, bottom: 60, toJSON: () => {} }) as DOMRect;
+    const home = document.querySelector('#home') as HTMLElement;
+    home.getBoundingClientRect = () => ({ x: 20, y: 20, width: 40, height: 20, top: 20, left: 20, right: 60, bottom: 40, toJSON: () => {} }) as DOMRect;
+    ['v1', 'v2', 'v3'].forEach((id, index) => {
+      const container = document.querySelector(`#${id}`) as HTMLElement;
+      const anchor = container.querySelector('a') as HTMLElement;
+      const y = 120 + index * 120;
+      container.getBoundingClientRect = () => ({ x: 120, y, width: 760, height: 100, top: y, left: 120, right: 880, bottom: y + 100, toJSON: () => {} }) as DOMRect;
+      anchor.getBoundingClientRect = () => ({ x: 220, y: y + 12, width: 420, height: 26, top: y + 12, left: 220, right: 640, bottom: y + 38, toJSON: () => {} }) as DOMRect;
+    });
+
+    const results = await handleToolExecution('get_search_results', { limit: 5 });
+
+    expect(results.results.map((result: any) => result.text)).toEqual([
+      '贝爷荒野求生 第一集',
+      '贝爷荒野求生 第二集',
+      '贝爷荒野求生 第三集',
+    ]);
+
+    const clicked = await handleToolExecution('click_search_result', { index: 1 });
+
+    expect(clicked).toEqual(expect.objectContaining({
+      success: true,
+      index: 1,
+      text: '贝爷荒野求生 第一集',
+      href: 'https://www.youtube.com/watch?v=one',
     }));
   });
 });

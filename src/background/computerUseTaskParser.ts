@@ -4,6 +4,7 @@ const SITE_ALIASES: Array<{ siteName: string; pattern: RegExp; url: string; sear
   { siteName: 'baidu', pattern: /(?:百度|baidu)/i, url: 'https://www.baidu.com/', searchParam: 'wd' },
   { siteName: 'bing', pattern: /(?:必应|bing)/i, url: 'https://www.bing.com/', searchParam: 'q' },
   { siteName: 'google', pattern: /(?:谷歌|google)/i, url: 'https://www.google.com/', searchParam: 'q' },
+  { siteName: 'youtube', pattern: /(?:youtube|油管|yt\b)/i, url: 'https://www.youtube.com/', searchParam: 'search_query' },
   { siteName: 'zhihu', pattern: /(?:知乎|zhihu)/i, url: 'https://www.zhihu.com/' },
   { siteName: 'taobao', pattern: /(?:淘宝|taobao)/i, url: 'https://www.taobao.com/' },
   { siteName: 'jd', pattern: /(?:京东|jd\.com|jingdong)/i, url: 'https://www.jd.com/' },
@@ -50,7 +51,7 @@ function inferStartTarget(goal: string): { startUrl?: string; siteName?: string;
 
 function stripInstructionNoise(value: string): string {
   return value
-    .replace(/^(?:帮我|请|自动|操作|当前页面|在|到|打开|访问|进入|跳转到|前往|百度|必应|谷歌|google|bing|baidu|搜索|搜|查询|输入|关键词|关键字|内容|为|是|一下|并|然后|再|点击|点|搜索按钮|按钮|：|:|\s)+/i, '')
+    .replace(/^(?:帮我|请|自动|操作|当前页面|在|到|打开|访问|进入|跳转到|前往|百度|必应|谷歌|google|bing|baidu|youtube|油管|yt|搜索|搜|查询|输入|关键词|关键字|内容|为|是|一下|并|然后|再|点击|点|搜索按钮|按钮|：|:|\s)+/i, '')
     .replace(/(?:，|。|；|;|,).+$/g, '')
     .replace(/(?:然后|再|并且|并).+$/g, '')
     .replace(/(?:然后|再)?(?:点击|点)(?:一下)?(?:搜索|查询|百度一下)?(?:按钮)?$/i, '')
@@ -141,7 +142,7 @@ function inferSearchResultIndex(goal: string): number | undefined {
 }
 
 function inferActionType(goal: string, query?: string): ComputerUseTaskIntent['actionType'] {
-  if (query && /(搜索|搜|查询|百度|必应|谷歌|google|bing|baidu)/i.test(goal)) return 'search';
+  if (query && /(搜索|搜|查询|百度|必应|谷歌|google|bing|baidu|youtube|油管|yt\b)/i.test(goal)) return 'search';
   if (/(填写|填表|输入|选择|勾选)/.test(goal)) return 'fill_form';
   if (/(下载|导出|download|export)/i.test(goal)) return 'download';
   if (/(提取|获取|读取|抓取)/.test(goal)) return 'extract';
@@ -190,6 +191,8 @@ export function buildSearchUrl(intent: ComputerUseTaskIntent): string | undefine
     url.pathname = '/s';
   } else if (site.siteName === 'bing' || site.siteName === 'google') {
     url.pathname = '/search';
+  } else if (site.siteName === 'youtube') {
+    url.pathname = '/results';
   }
   url.searchParams.set(site.searchParam, intent.query);
   return url.toString();

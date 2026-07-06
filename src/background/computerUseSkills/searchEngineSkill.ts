@@ -48,9 +48,9 @@ function bestSearchButton(observation: BrowserObservation) {
 function isSearchResultObservation(observation: BrowserObservation, query: string): boolean {
   const decodedUrl = decodeURIComponent(observation.url || '');
   if (observation.pageState?.kind === 'result_page' && decodedUrl.includes(query)) return true;
-  if (/[?&](wd|q)=/i.test(decodedUrl) && decodedUrl.includes(query)) return true;
+  if (/[?&](wd|q|search_query)=/i.test(decodedUrl) && decodedUrl.includes(query)) return true;
   const title = observation.title || '';
-  return title.includes(query) && /(搜索|search|百度|bing|google)/i.test(title);
+  return title.includes(query) && /(搜索|search|百度|bing|google|youtube)/i.test(title);
 }
 
 function safeUrl(value?: string): URL | null {
@@ -129,7 +129,7 @@ function nthSearchResultLink(observation: BrowserObservation, index: number): Ob
 function hasLeftSearchResults(before: BrowserObservation, after: BrowserObservation, query: string): boolean {
   if (!after?.url) return false;
   if (after.url !== before.url && !isSearchResultObservation(after, query)) return true;
-  if (after.title && before.title && after.title !== before.title && !/(搜索|百度|bing|google)/i.test(after.title)) return true;
+  if (after.title && before.title && after.title !== before.title && !/(搜索|百度|bing|google|youtube)/i.test(after.title)) return true;
   return false;
 }
 

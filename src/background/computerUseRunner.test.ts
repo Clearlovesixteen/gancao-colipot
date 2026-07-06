@@ -149,6 +149,7 @@ describe('ComputerUseRunner', () => {
 
   it('finishes download tasks after a real download is captured and saved', async () => {
     const emitted: Array<ComputerUseProgressMessage | ComputerUseFinishedMessage | any> = [];
+    const exportButton = observedElement({ elementId: 'export_1', text: '导出', purpose: 'download_button' });
     const downloadResult = {
       success: true,
       status: 'completed',
@@ -179,7 +180,7 @@ describe('ComputerUseRunner', () => {
       }),
       executeDownloadAction: async () => downloadResult,
       executeBrowserTool: async (_tabId, toolName) => {
-        if (toolName === 'observe_page') return observation();
+        if (toolName === 'observe_page') return { ...observation(), elements: [exportButton] };
         if (toolName === 'extract_page_structured_data') return { tables: [] };
         if (toolName === 'extract_page_tables') return { tables: [] };
         if (toolName === 'get_page_info') return { text: '库存预警 列表数据 导出' };
@@ -198,8 +199,77 @@ describe('ComputerUseRunner', () => {
     expect(finished?.steps[0].result).toEqual(downloadResult);
   });
 
+  it('blocks download phase before target page evidence when no export button is visible', async () => {
+    const emitted: Array<ComputerUseProgressMessage | ComputerUseFinishedMessage | any> = [];
+    let createPlanCalls = 0;
+    const phasedIntent: ComputerUseIntent = {
+      ...downloadIntent,
+      rawGoal: '打开饮片管理中库存预警的列表，点击导出',
+      objective: '进入库存预警后导出',
+      entities: ['饮片管理', '库存预警'],
+      navigationPath: ['饮片管理', '库存预警'],
+      taskPlan: {
+        rawGoal: '打开饮片管理中库存预警的列表，点击导出',
+        summary: '点击导出',
+        phases: [
+          {
+            id: 'download_file',
+            type: 'download_file',
+            goal: '点击真实导出/下载按钮并等待下载完成',
+            targets: ['饮片管理', '库存预警', '导出'],
+            navigationPath: ['饮片管理', '库存预警'],
+          },
+        ],
+      },
+    };
+
+    const runner = new ComputerUseRunner({
+      tabId: 1,
+      runId: 'run_download_precondition',
+      goal: phasedIntent.rawGoal,
+      maxSteps: 5,
+      signal: new AbortController().signal,
+      navigate: async () => {},
+      understandIntent: async () => phasedIntent,
+      createPlan: async () => {
+        createPlanCalls += 1;
+        return {
+          summary: '不应进入规划器',
+          confidence: 0.1,
+          steps: [{ id: 'finish', action: 'finish', rationale: 'unexpected' }],
+          successCriteria: [],
+        };
+      },
+      executeBrowserTool: async (_tabId, toolName) => {
+        if (toolName === 'observe_page') return {
+          ...observation(),
+          url: 'https://wms.test/#/basic-settings/data-permission',
+          title: '智慧药房WMS',
+          elements: [
+            observedElement({ elementId: 'operator', text: '数据权限管理', purpose: 'menu_item', active: true }),
+          ],
+        };
+        if (toolName === 'extract_page_structured_data') return { headings: [], tables: [] };
+        if (toolName === 'extract_page_tables') return { tables: [] };
+        if (toolName === 'get_page_info') return { text: '数据权限管理 新增操作员 查询' };
+        throw new Error(`unexpected tool: ${toolName}`);
+      },
+      confirmAction: async () => true,
+      emit: (message) => emitted.push(message),
+    });
+
+    await runner.run();
+
+    expect(createPlanCalls).toBe(0);
+    const error = emitted.find((message) => message.type === 'COMPUTER_USE_ERROR');
+    expect(error?.phaseType).toBe('download_file');
+    expect(error?.error).toContain('前置条件不满足');
+    expect(error?.error).toContain('饮片管理 > 库存预警');
+  });
+
   it('continues later phases after a successful download instead of finishing early', async () => {
     const emitted: Array<ComputerUseProgressMessage | ComputerUseFinishedMessage | any> = [];
+    const exportButton = observedElement({ elementId: 'export_1', text: '导出', purpose: 'download_button' });
     const phasedIntent: ComputerUseIntent = {
       ...downloadIntent,
       rawGoal: '打开饮片管理中库存预警的列表，点击导出，然后打开文件中心，等待5S，然后点击刚刚下载的文件',
@@ -252,7 +322,7 @@ describe('ComputerUseRunner', () => {
         },
       executeDownloadAction: async () => downloadResult,
       executeBrowserTool: async (_tabId, toolName) => {
-        if (toolName === 'observe_page') return observation();
+        if (toolName === 'observe_page') return { ...observation(), elements: [exportButton] };
         if (toolName === 'extract_page_structured_data') return { tables: [] };
         if (toolName === 'extract_page_tables') return { tables: [] };
         if (toolName === 'get_page_info') return { text: '库存预警 列表数据 导出' };
@@ -333,6 +403,361 @@ describe('ComputerUseRunner', () => {
     expect(emitted.some((message) => message.type === 'COMPUTER_USE_PROGRESS' && message.phaseType === 'download_file')).toBe(false);
     const error = emitted.find((message) => message.type === 'COMPUTER_USE_ERROR');
     expect(error?.phaseType).toBe('navigate_to_page');
+  });
+
+  it('runs search goals through the unified phase runner and clicks the requested result ordinal', async () => {
+    const emitted: Array<ComputerUseProgressMessage | ComputerUseFinishedMessage | any> = [];
+    let page: 'blank' | 'home' | 'results' | 'target' = 'blank';
+    let typedQuery = '';
+    let clickedResultIndex: number | undefined;
+    let clickedElementId: string | undefined;
+    let createPlanCalls = 0;
+
+    const searchIntent: ComputerUseIntent = {
+      rawGoal: '打开百度，输入甘草医生，然后点击第3个搜索结果',
+      taskType: 'search',
+      objective: '打开百度，搜索甘草医生并点击第3个结果',
+      entities: ['甘草医生'],
+      startUrl: 'https://www.baidu.com/',
+      siteName: 'baidu',
+      query: '甘草医生',
+      postSearchAction: 'click_first_result',
+      targetResultIndex: 3,
+      riskLevel: 'low',
+      taskPlan: {
+        rawGoal: '打开百度，输入甘草医生，然后点击第3个搜索结果',
+        summary: '打开百度 -> 搜索甘草医生 -> 点击第3个搜索结果',
+        phases: [
+          { id: 'open_search_site', type: 'open_site', goal: '打开百度', targets: ['百度'], startUrl: 'https://www.baidu.com/', siteName: 'baidu' },
+          { id: 'search_query', type: 'search', goal: '搜索 甘草医生', targets: ['甘草医生'], query: '甘草医生', startUrl: 'https://www.baidu.com/', siteName: 'baidu' },
+          { id: 'select_search_result', type: 'select_collection_item', goal: '点击第3个搜索结果', targets: ['第3个搜索结果'], query: '甘草医生', ordinal: 3, collectionType: 'search_results' },
+        ],
+      },
+    };
+
+    const buildObservation = (): BrowserObservation => {
+      if (page === 'target') {
+        return {
+          ...observation(),
+          url: 'https://www.gancao.com/',
+          title: '甘草医生官网',
+          elements: [],
+        };
+      }
+      if (page === 'results') {
+        return {
+          ...observation(),
+          url: 'https://www.baidu.com/s?wd=%E7%94%98%E8%8D%89%E5%8C%BB%E7%94%9F',
+          title: '甘草医生_百度搜索',
+          pageState: { kind: 'result_page', hasModal: false, hasCaptcha: false, hasLoginSignal: false },
+          elements: [],
+        };
+      }
+      return {
+        ...observation(),
+        url: 'https://www.baidu.com/',
+        title: '百度一下，你就知道',
+        pageState: {
+          kind: 'search_page',
+          mainInputId: 'kw',
+          searchInputId: 'kw',
+          primaryButtonId: 'su',
+          searchButtonId: 'su',
+          hasModal: false,
+          hasCaptcha: false,
+          hasLoginSignal: false,
+        },
+        elements: [
+          observedElement({ elementId: 'kw', role: 'textbox', tag: 'input', text: typedQuery, selector: '#kw', purpose: 'search_input', value: typedQuery }),
+          observedElement({ elementId: 'su', role: 'button', tag: 'button', text: '百度一下', selector: '#su', purpose: 'search_button' }),
+        ],
+      };
+    };
+
+    const runner = new ComputerUseRunner({
+      tabId: 1,
+      runId: 'run_search_phases',
+      goal: searchIntent.rawGoal,
+      maxSteps: 8,
+      signal: new AbortController().signal,
+      navigate: async (_tabId, url) => {
+        page = url.includes('/s?') ? 'results' : 'home';
+      },
+      understandIntent: async () => searchIntent,
+      createPlan: async () => {
+        createPlanCalls += 1;
+        return {
+          summary: '不应进入通用规划器',
+          confidence: 0.1,
+          steps: [{ id: 'finish', action: 'finish', rationale: 'unexpected' }],
+          successCriteria: [],
+        };
+      },
+      executeBrowserTool: async (_tabId, toolName, args) => {
+        if (toolName === 'observe_page') return buildObservation();
+        if (toolName === 'type_text') {
+          typedQuery = args.text || args.value || '';
+          return { success: true };
+        }
+        if (toolName === 'click_element') {
+          if (args.elementId === 'su') page = 'results';
+          if (args.elementId === 'result_3') {
+            clickedElementId = args.elementId;
+            clickedResultIndex = 3;
+            page = 'target';
+          }
+          return { success: true };
+        }
+        if (toolName === 'get_search_results') {
+          return page === 'results'
+            ? {
+              success: true,
+              count: 3,
+              results: [
+                { index: 1, title: '第一条', href: 'https://one.test/', elementId: 'result_1', selector: '#r1' },
+                { index: 2, title: '第二条', href: 'https://two.test/', elementId: 'result_2', selector: '#r2' },
+                { index: 3, title: '甘草医生官网', href: 'https://www.gancao.com/', elementId: 'result_3', selector: '#r3' },
+              ],
+            }
+            : { success: true, count: 0, results: [] };
+        }
+        throw new Error(`unexpected tool: ${toolName}`);
+      },
+      confirmAction: async () => true,
+      emit: (message) => emitted.push(message),
+    });
+
+    await runner.run();
+
+    expect(createPlanCalls).toBe(0);
+    expect(typedQuery).toBe('甘草医生');
+    expect(clickedResultIndex).toBe(3);
+    expect(clickedElementId).toBe('result_3');
+    expect(page).toBe('target');
+    const finished = emitted.find((message) => message.type === 'COMPUTER_USE_FINISHED') as ComputerUseFinishedMessage | undefined;
+    expect(finished?.runState?.completedPhases.map((item) => item.phase.type)).toEqual([
+      'open_site',
+      'search',
+      'select_collection_item',
+    ]);
+    expect(emitted.find((message) => message.type === 'COMPUTER_USE_ERROR')).toBeFalsy();
+  });
+
+  it('completes navigation when the correct leaf click changes the business route without active evidence', async () => {
+    const emitted: Array<ComputerUseProgressMessage | ComputerUseFinishedMessage | any> = [];
+    let page: 'before' | 'target' = 'before';
+    const phasedIntent: ComputerUseIntent = {
+      ...downloadIntent,
+      rawGoal: '打开饮片管理中库存预警的列表',
+      objective: '打开饮片管理中库存预警的列表',
+      entities: ['饮片管理', '库存预警'],
+      navigationPath: ['饮片管理', '库存预警'],
+      taskPlan: {
+        rawGoal: '打开饮片管理中库存预警的列表',
+        summary: '进入目标列表',
+        phases: [
+          { id: 'navigate', type: 'navigate_to_page', goal: '进入 饮片管理 > 库存预警', targets: ['饮片管理', '库存预警'], navigationPath: ['饮片管理', '库存预警'] },
+        ],
+      },
+    };
+    const buildObservation = (): BrowserObservation => ({
+      success: true,
+      url: page === 'target'
+        ? 'https://wms.test/#/management-y/inventory-warning'
+        : 'https://wms.test/#/basic-settings/data-permission',
+      title: '智慧药房WMS',
+      viewport: { width: 1200, height: 800, devicePixelRatio: 1 },
+      scroll: { x: 0, y: 0, maxX: 0, maxY: 1000 },
+      capturedAt: Date.now(),
+      elements: [
+        observedElement({
+          elementId: 'drink_warning',
+          text: '库存预警',
+          purpose: 'menu_item',
+          context: 'sidebar | 饮片管理 待入库列表 库存列表 库存预警 库存结存',
+          parentText: '饮片管理 待入库列表 库存列表 库存预警 库存结存',
+          active: false,
+        }),
+      ],
+    });
+
+    const runner = new ComputerUseRunner({
+      tabId: 1,
+      runId: 'run_route_change_navigation',
+      goal: phasedIntent.rawGoal,
+      maxSteps: 3,
+      signal: new AbortController().signal,
+      navigate: async () => {},
+      understandIntent: async () => phasedIntent,
+      createPlan: async () => ({
+        summary: '点击子菜单',
+        confidence: 0.9,
+        steps: [{
+          id: 'click_leaf',
+          action: 'click',
+          target: {
+            elementId: 'drink_warning',
+            text: '库存预警',
+            parentPath: ['饮片管理'],
+          },
+          rationale: '点击饮片管理下的库存预警',
+          verify: { type: 'page_changed', value: '库存预警' },
+        }],
+        successCriteria: ['进入库存预警列表'],
+      }),
+      executeBrowserTool: async (_tabId, toolName, args) => {
+        if (toolName === 'observe_page') return buildObservation();
+        if (toolName === 'extract_page_structured_data') return { headings: [], tables: [] };
+        if (toolName === 'extract_page_tables') return { tables: [] };
+        if (toolName === 'get_page_info') return { text: buildObservation().elements.map((element) => element.context || element.text).join(' ') };
+        if (toolName === 'click_element') {
+          if (args.elementId === 'drink_warning') page = 'target';
+          return { success: true };
+        }
+        throw new Error(`unexpected tool: ${toolName}`);
+      },
+      confirmAction: async () => true,
+      emit: (message) => emitted.push(message),
+    });
+
+    await runner.run();
+
+    const finished = emitted.find((message) => message.type === 'COMPUTER_USE_FINISHED') as ComputerUseFinishedMessage | undefined;
+    expect(finished?.runState?.completedPhases.map((item) => item.phase.type)).toEqual(['navigate_to_page']);
+    expect(emitted.find((message) => message.type === 'COMPUTER_USE_ERROR')).toBeFalsy();
+  });
+
+  it('allows download after completed navigation evidence and waits for delayed export button', async () => {
+    const emitted: Array<ComputerUseProgressMessage | ComputerUseFinishedMessage | any> = [];
+    let page: 'before' | 'target' = 'before';
+    let targetObserveCount = 0;
+    const phasedIntent: ComputerUseIntent = {
+      ...downloadIntent,
+      rawGoal: '打开饮片管理中库存预警的列表，点击导出',
+      objective: '打开饮片管理中库存预警的列表，点击导出',
+      entities: ['饮片管理', '库存预警'],
+      navigationPath: ['饮片管理', '库存预警'],
+      taskPlan: {
+        rawGoal: '打开饮片管理中库存预警的列表，点击导出',
+        summary: '进入目标列表并导出',
+        phases: [
+          { id: 'navigate', type: 'navigate_to_page', goal: '进入 饮片管理 > 库存预警', targets: ['饮片管理', '库存预警'], navigationPath: ['饮片管理', '库存预警'] },
+          { id: 'download', type: 'download_file', goal: '点击真实导出/下载按钮并等待下载完成', targets: ['饮片管理', '库存预警', '导出'], navigationPath: ['饮片管理', '库存预警'] },
+        ],
+      },
+    };
+    const buildObservation = (): BrowserObservation => {
+      const isTarget = page === 'target';
+      if (isTarget) targetObserveCount += 1;
+      const exportVisible = isTarget && targetObserveCount >= 3;
+      return {
+        success: true,
+        url: isTarget
+          ? 'https://wms.test/#/management-y/inventory-warning'
+          : 'https://wms.test/#/basic-settings/data-permission',
+        title: '智慧药房WMS',
+        viewport: { width: 1200, height: 800, devicePixelRatio: 1 },
+        scroll: { x: 0, y: 0, maxX: 0, maxY: 1000 },
+        capturedAt: Date.now(),
+        elements: [
+          observedElement({
+            elementId: 'drink_parent',
+            text: '饮片管理',
+            purpose: 'menu_item',
+            context: 'sidebar | 饮片管理 待入库列表 库存列表 库存预警 库存结存',
+            active: isTarget,
+            expanded: isTarget,
+          }),
+          observedElement({
+            elementId: 'drink_warning',
+            text: '库存预警',
+            purpose: 'menu_item',
+            context: 'sidebar | 库存预警',
+            parentText: isTarget ? undefined : '饮片管理',
+            active: isTarget,
+          }),
+          ...(exportVisible
+            ? [observedElement({
+              elementId: 'export_button',
+              text: '导 出',
+              role: 'button',
+              purpose: 'download_button',
+              context: 'toolbar | 库存预警',
+              score: 0.95,
+            })]
+            : []),
+        ],
+      };
+    };
+
+    const runner = new ComputerUseRunner({
+      tabId: 1,
+      runId: 'run_download_after_navigation_evidence',
+      goal: phasedIntent.rawGoal,
+      maxSteps: 5,
+      signal: new AbortController().signal,
+      navigate: async () => {},
+      understandIntent: async () => phasedIntent,
+      createPlan: async ({ phase, context }) => {
+        if (phase?.type === 'navigate_to_page') {
+          return {
+            summary: '点击子菜单',
+            confidence: 0.9,
+            steps: [{
+              id: 'click_leaf',
+              action: 'click',
+              target: { elementId: 'drink_warning', text: '库存预警', parentPath: ['饮片管理'] },
+              rationale: '点击饮片管理下的库存预警',
+              verify: { type: 'page_changed', value: '库存预警' },
+            }],
+            successCriteria: ['进入库存预警列表'],
+          };
+        }
+        expect(context.actionCandidates.some((element) => element.elementId === 'export_button')).toBe(true);
+        return {
+          summary: '点击导出',
+          confidence: 0.9,
+          steps: [{
+            id: 'download',
+            action: 'download_file',
+            target: { elementId: 'export_button', text: '导 出', purpose: 'download_button', collectionType: 'action_group' },
+            rationale: '点击真实导出按钮',
+            verify: { type: 'element_exists', value: '导 出' },
+          }],
+          successCriteria: ['捕获下载'],
+        };
+      },
+      executeDownloadAction: async () => ({
+        success: true,
+        status: 'completed',
+        filename: '库存预警.xlsx',
+        downloadId: 88,
+        savedToDocumentCenter: true,
+        assetId: 'asset_88',
+        message: '下载完成',
+      }),
+      executeBrowserTool: async (_tabId, toolName, args) => {
+        if (toolName === 'observe_page') return buildObservation();
+        if (toolName === 'extract_page_structured_data') return { headings: isFinite(targetObserveCount) ? ['库存预警'] : [], tables: [] };
+        if (toolName === 'extract_page_tables') return { tables: [] };
+        if (toolName === 'get_page_info') return { text: buildObservation().elements.map((element) => `${element.text} ${element.context || ''}`).join(' ') };
+        if (toolName === 'click_element') {
+          if (args.elementId === 'drink_warning') page = 'target';
+          return { success: true };
+        }
+        throw new Error(`unexpected tool: ${toolName}`);
+      },
+      confirmAction: async () => true,
+      emit: (message) => emitted.push(message),
+    });
+
+    await runner.run();
+
+    const finished = emitted.find((message) => message.type === 'COMPUTER_USE_FINISHED') as ComputerUseFinishedMessage | undefined;
+    expect(finished?.summary).toContain('库存预警.xlsx');
+    expect(finished?.runState?.completedPhases.map((item) => item.phase.type)).toEqual(['navigate_to_page', 'download_file']);
+    expect(finished?.runState?.completedPhases[0].evidence?.matchedNavigationPath).toEqual(['饮片管理', '库存预警']);
+    expect(emitted.find((message) => message.type === 'COMPUTER_USE_ERROR')).toBeFalsy();
   });
 
   it('emits error instead of finished when max steps are reached without completion', async () => {
@@ -542,7 +967,10 @@ describe('ComputerUseRunner', () => {
         elements.push(observedElement({ elementId: 'export_drink_warning', text: '导 出', role: 'button', purpose: 'download_button', context: 'toolbar | 库存预警', score: 0.95 }));
       }
       if (page === 'file_center') {
-        elements.push(observedElement({ elementId: 'downloaded_file', text: filename, role: 'link', purpose: 'generic', context: '文件中心 | 最近文件' }));
+        elements.push(observedElement({ elementId: 'downloaded_file', text: '下载', role: 'link', purpose: 'generic', context: `文件中心 | 最近文件 | ${filename}`, href: `https://storage.test/${filename}` }));
+      }
+      if (page === 'file_detail') {
+        elements.push(observedElement({ elementId: 'file_detail_title', text: filename, role: 'heading', purpose: 'generic', context: '文件详情', active: true }));
       }
       return {
         success: true,
@@ -553,7 +981,7 @@ describe('ComputerUseRunner', () => {
             : page === 'file_center'
               ? 'https://wms.test/#/file-center'
               : 'https://wms.test/#/file-center/detail',
-        title: page === 'file_center' ? '文件中心' : page === 'file_detail' ? filename : '智慧药房WMS',
+        title: '智慧药房WMS',
         viewport: { width: 1400, height: 900, devicePixelRatio: 1 },
         scroll: { x: 0, y: 0, maxX: 0, maxY: 1000 },
         elements,
@@ -614,6 +1042,7 @@ describe('ComputerUseRunner', () => {
 
     const finished = emitted.find((message) => message.type === 'COMPUTER_USE_FINISHED') as ComputerUseFinishedMessage | undefined;
     expect(finished?.summary).toContain(filename);
+    expect(finished?.summary).toContain('已打开刚下载文件');
     expect(finished?.runState?.completedPhases.map((item) => item.phase.type)).toEqual([
       'navigate_to_page',
       'download_file',

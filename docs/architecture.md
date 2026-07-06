@@ -9,7 +9,7 @@
 
 ## 总体架构图
 
-这张图只表达主调用链：用户从入口层发起动作，所有请求先进入后台中枢，再分发到能力层，最后落到页面执行、本地数据或外部服务。细节模块放在后面的专项图里。
+这张图只表达主调用链：用户从入口层发起动作，所有请求先进入后台中枢，再分发到能力层，最后落到页面执行、本地数据或外部服务。Computer Use 的阶段化执行细节放在后面的专项图里。
 
 ```mermaid
 flowchart LR
@@ -26,7 +26,7 @@ flowchart LR
 
   subgraph Capability["能力层"]
     ChatAI["AI 对话与工具调用"]
-    BrowserAuto["浏览器自动化<br/>固定工作流 / 智能操作"]
+    BrowserAuto["浏览器自动化<br/>固定工作流 / 阶段化智能操作"]
     DocCenter["资料中心<br/>解析 / OCR / 检索 / 结果"]
     Diagnostics["页面诊断与登录态同步"]
   end
@@ -83,11 +83,14 @@ flowchart LR
   GLM["AI 对话客户端<br/>glm-client.ts"]
   Gateway["业务工具网关<br/>handleBusinessTool"]
   Auto["固定工作流<br/>automation.ts"]
-  CU["智能浏览器操作<br/>computerUseRunner.ts"]
-  Intent["意图理解<br/>computerUseIntent.ts"]
-  Planner["规划器<br/>computerUsePlanner.ts"]
-  Context["页面上下文<br/>pageContextBuilder.ts"]
-  Verify["步骤校验<br/>verifyComputerUseStep.ts"]
+  CU["智能浏览器操作调度器<br/>computerUseRunner.ts<br/>阶段循环 / RunState / PhaseMemory"]
+  Intent["意图与任务计划<br/>computerUseIntent.ts<br/>navigationPath / taskPlan"]
+  Planner["阶段规划器<br/>computerUsePlanner.ts<br/>规则优先 + LLM 兜底"]
+  Context["页面上下文<br/>pageContextBuilder.ts<br/>观察页面 / 候选元素 / 结构化数据"]
+  Collections["页面集合构建<br/>collectionBuilder.ts<br/>搜索结果 / 菜单组 / 文件列表 / 表格 / 卡片"]
+  Resolver["目标解析<br/>targetResolver.ts<br/>集合优先 / 序号匹配 / 失败候选避让"]
+  PhaseDone["阶段完成判定<br/>phaseCompletion.ts<br/>导航 / 下载 / 提取 / 打开文件"]
+  Verify["步骤校验<br/>verifyComputerUseStep.ts<br/>动作级校验"]
   Download["下载入库<br/>downloadManager.ts"]
   Trace["任务轨迹<br/>computerUseTrace.ts"]
   DB["资料库<br/>documentDb.ts"]
@@ -104,10 +107,18 @@ flowchart LR
   CU --> Intent
   CU --> Context
   CU --> Planner
+  CU --> Resolver
+  CU --> PhaseDone
   CU --> Content
   CU --> Verify
   CU --> Download
   CU --> Trace
+  Context --> Collections
+  Planner --> Collections
+  Planner --> Resolver
+  Resolver --> Content
+  PhaseDone --> Context
+  PhaseDone --> Download
   Download --> DB
 ```
 
@@ -117,28 +128,39 @@ flowchart LR
 flowchart LR
   Start["侧边栏或工作流发起<br/>RUN_COMPUTER_USE / computerTask"]
   Router["后台 runComputerUseOnTab<br/>创建 runId / AbortController / 初始轨迹"]
-  Parser["快速任务解析<br/>computerUseTaskParser.ts<br/>识别搜索起始 URL 等"]
-  SearchSkill["搜索引擎专项技能<br/>computerUseSkills/searchEngineSkill.ts"]
-  Intent["意图理解<br/>computerUseIntent.ts<br/>任务类型 / 目标实体 / 期望输出 / 风险"]
-  Context["页面上下文构建<br/>pageContextBuilder.ts<br/>观察页面 / 结构化数据 / 表格 / 导航候选"]
-  Planner["规划器<br/>computerUsePlanner.ts<br/>规则优先 + 大模型兜底"]
-  Act["动作执行<br/>content tools 或 downloadManager<br/>点击 / 输入 / 提取表格 / 下载文件"]
-  Verify["步骤校验<br/>verifyComputerUseStep.ts<br/>URL / 文本 / 元素 / 表格 / 下载结果"]
+  Parser["轻量预解析<br/>computerUseTaskParser.ts<br/>识别 URL / 站点别名 / 低风险信号"]
+  Intent["意图与任务计划<br/>computerUseIntent.ts<br/>统一生成 taskPlan.phases"]
+  PhaseLoop["阶段循环<br/>ComputerUsePhase<br/>按阶段推进"]
+  Context["页面上下文构建<br/>pageContextBuilder.ts<br/>观察页面 / 候选元素 / 结构化数据"]
+  Collections["语义集合<br/>collectionBuilder.ts + get_search_results<br/>菜单组 / 搜索结果 / 文件列表 / 表格"]
+  Planner["阶段规划器<br/>computerUsePlanner.ts<br/>规则优先 + LLM 兜底"]
+  Resolver["目标解析<br/>targetResolver.ts<br/>优先匹配 collections，再回退元素"]
+  Act["动作执行<br/>content tools 或 downloadManager<br/>点击 / 输入 / 快捷键 / 提取 / 下载"]
+  Verify["动作级校验<br/>verifyComputerUseStep.ts<br/>URL / 文本 / 元素 / 表格 / 下载结果"]
+  PhaseDone["阶段完成判定<br/>phaseCompletion.ts<br/>是否进入下一阶段 / 是否结束"]
+  Memory["运行状态与阶段记忆<br/>RunState / PhaseMemory<br/>下载结果 / 已完成阶段 / 失败候选"]
   Trace["轨迹记录<br/>computerUseTrace.ts<br/>观察 / 计划 / 动作 / 结果 / 错误"]
   UI["侧边栏任务卡片<br/>日志 / 复制 / 重试 / 高风险确认"]
 
   Start --> Router
   Router --> Parser
-  Parser -->|"搜索型任务"| SearchSkill
-  Parser -->|"普通任务"| Intent
-  Intent --> Context
+  Parser --> Intent
+  Intent --> PhaseLoop
+  PhaseLoop --> Context
+  PhaseLoop --> Memory
+  Context --> Collections
   Context --> Planner
-  Planner --> Act
+  Collections --> Planner
+  Planner --> Resolver
+  Resolver --> Act
   Act --> Verify
-  Verify -->|"成功，继续或完成"| Context
-  Verify -->|"失败，可恢复"| Context
+  Verify --> PhaseDone
+  PhaseDone -->|"阶段完成"| PhaseLoop
+  PhaseDone -->|"任务完成"| Trace
+  PhaseDone -->|"未完成，继续观察"| Context
+  Resolver -->|"目标缺失或候选失败"| Memory
+  Memory --> Planner
   Verify -->|"阻塞或连续失败"| Trace
-  SearchSkill --> Trace
   Act --> Trace
   Router --> Trace
   Trace --> UI
@@ -240,17 +262,23 @@ flowchart LR
 | `src/sidePanel` | 用户主入口：登录、聊天、附件解析、结构化 OCR、资料中心入口、工具箱、智能操作任务卡片。 |
 | `src/dashboard` | 工作流增删改查、可视化编排、固定流程运行控制和运行日志展示。 |
 | `src/background/index.ts` | 插件核心编排：运行时消息、权限、标签页控制、AI 客户端、工具路由、自动化调度、下载入库、登录态同步。 |
-| `src/background/computerUse*.ts` | 智能浏览器操作子系统：意图理解、页面上下文、规则/LLM 规划、执行结果校验、轨迹记录。 |
+| `src/background/computerUse*.ts` | 智能浏览器操作子系统：意图理解、任务计划、阶段循环、规则/LLM 规划、动作校验和轨迹记录。 |
+| `src/background/collectionBuilder.ts` | 从页面观察结果中整理语义集合：搜索结果、菜单组、文件列表、表格和卡片，减少规划器直接面对零散 DOM 的成本。 |
+| `src/background/targetResolver.ts` | 把计划步骤中的目标解析成真实元素或坐标，优先使用集合、序号、父路径和阶段记忆，避免重复点击失败候选。 |
+| `src/background/phaseCompletion.ts` | 统一判断阶段是否完成，覆盖页面导航、下载完成、数据提取、打开文件中心和点击最近下载文件等场景。 |
 | `src/background/downloadManager.ts` | 真实导出/下载动作：监听 `chrome.downloads`，尝试读取下载内容，解析后保存到资料中心。 |
-| `src/content` | 页面侧执行层：DOM 观察、元素语义识别、搜索结果提取、浏览器动作、页面结构化提取、控制台错误缓存、登录态读取。 |
+| `src/content` | 页面侧执行层：DOM 观察、元素语义识别、搜索结果提取、点击/双击/右键/坐标点击/快捷键等浏览器动作、页面结构化提取、控制台错误缓存、登录态读取。 |
 | `src/shared` | 跨入口共享类型、业务工具声明、文件解析、文档分块、OCR 结构化、Computer Use 结果汇总、导出器。 |
 | `src/sidePanel/utils/documentStore.ts` 与 `src/background/documentDb.ts` | 两套入口各自访问同一个 `gancao_document_center` IndexedDB，用于资料、内容、分块、结果和原始文件。 |
 | `public` | Manifest、HTML 壳、钉钉登录脚本、页面控制台桥接脚本。 |
 
 ## 架构备注
 
-- `background/index.ts` 仍是最核心的编排点，但 Computer Use 已经拆成多个独立模块，执行链路比上一版更清晰。
-- `content/tools.ts` 现在不只是执行动作，还会给元素打上 `purpose`、`region`、`context`、`score`，供智能操作规划使用。
+- `background/index.ts` 仍是最核心的编排点，但 Computer Use 已经拆成“意图/计划、页面上下文、集合构建、目标解析、阶段完成判定、轨迹记录”等独立模块。
+- Computer Use 现在以 `ComputerUseTaskPlan` 和 `ComputerUsePhase` 推进任务，`RunState` 记录下载结果、完成阶段和警告，`PhaseMemory` 记录失败候选，避免在同一阶段反复点错。
+- `pageContextBuilder.ts` 会把 `observe_page` 结果加工成 `ObservedCollection`，规划器和目标解析器优先使用这些集合，而不是只依赖零散元素列表。
+- 搜索任务不再作为入口级独立链路分流：`open_site / search / select_collection_item` 也进入统一 phase runner。搜索结果由 `get_search_results` 转成 `search_results` 集合，再通过 `TargetResolver` 按 ordinal 解析第 N 个自然结果。
+- `content/tools.ts` 现在不只是执行动作，还会给元素打上 `purpose`、`region`、`context`、`score`，并支持双击、右键、坐标点击、清空输入、聚焦和快捷键等更细的操作。
 - 自动操作结果会进入内存轨迹 `computerUseTrace.ts`，侧边栏再以任务卡片形式展示、复制和重试。
 - 下载文件不再只是点击按钮：`download_file` 会等待真实下载事件，并尽量把下载文件解析后写入资料中心。
 - 资料中心同时接收上传文件、OCR 结构化结果、网页结构化采集和下载文件；最终统一走文档分块与检索工具。

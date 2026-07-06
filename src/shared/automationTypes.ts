@@ -55,6 +55,43 @@ export interface BrowserPageRegion {
   bbox?: ElementBox;
 }
 
+export type ObservedCollectionType =
+  | 'search_results'
+  | 'menu_group'
+  | 'file_list'
+  | 'table'
+  | 'action_group'
+  | 'cards'
+  | 'list';
+
+export interface ObservedCollectionItem {
+  index: number;
+  text: string;
+  elementId?: string;
+  selector?: string;
+  parentText?: string;
+  parentPath?: string[];
+  context?: string;
+  href?: string;
+  bbox?: ElementBox;
+  purpose?: string;
+  active?: boolean;
+  expanded?: boolean;
+  clickable?: boolean;
+  sourceElementIds?: string[];
+  metadata?: Record<string, unknown>;
+  confidence: number;
+}
+
+export interface ObservedCollection {
+  id: string;
+  type: ObservedCollectionType;
+  title?: string;
+  items: ObservedCollectionItem[];
+  metadata?: Record<string, unknown>;
+  confidence?: number;
+}
+
 export type ElementPurpose =
   | 'search_input'
   | 'search_button'
@@ -97,6 +134,7 @@ export interface BrowserObservation {
     maxY: number;
   };
   elements: ObservedElement[];
+  collections?: ObservedCollection[];
   regions?: BrowserPageRegion[];
   pageState?: BrowserPageState;
   screenshot?: string;
@@ -123,6 +161,10 @@ export interface ComputerUseIntent {
   entities: string[];
   desiredOutput?: 'page_state' | 'table_data' | 'download_file' | 'summary';
   startUrl?: string;
+  siteName?: string;
+  query?: string;
+  postSearchAction?: 'click_first_result';
+  targetResultIndex?: number;
   riskLevel: 'low' | 'medium' | 'high';
   ambiguity?: string[];
   navigationPath?: string[];
@@ -141,6 +183,7 @@ export interface ComputerUsePageContext {
   navigationCandidates: ObservedElement[];
   tableCandidates: unknown[];
   actionCandidates: ObservedElement[];
+  collections?: ObservedCollection[];
 }
 
 export interface PlannedStep {
@@ -150,7 +193,12 @@ export interface PlannedStep {
     elementId?: string;
     selector?: string;
     text?: string;
+    href?: string;
     purpose?: string;
+    collectionType?: ObservedCollectionType;
+    collectionId?: string;
+    ordinal?: number;
+    parentPath?: string[];
     x?: number;
     y?: number;
   };
@@ -213,12 +261,24 @@ export interface ComputerUseDownloadResult {
   needsManualImport?: boolean;
 }
 
+export interface ComputerUsePhaseEvidence {
+  urlBefore?: string;
+  urlAfter?: string;
+  titleAfter?: string;
+  routeChanged?: boolean;
+  activeTexts?: string[];
+  matchedTargets?: string[];
+  matchedNavigationPath?: string[];
+  visibleActionPurposes?: string[];
+}
+
 export type ComputerUsePhaseType =
   | 'open_site'
   | 'search'
   | 'select_collection_item'
   | 'extract_data'
   | 'click_action'
+  | 'fill_form'
   | 'navigate_to_page'
   | 'download_file'
   | 'open_page_or_center'
@@ -226,20 +286,36 @@ export type ComputerUsePhaseType =
   | 'click_latest_download'
   | 'generic';
 
+export type ComputerUsePhaseSource = 'llm' | 'fallback' | 'generated' | 'repair';
+
 export interface ComputerUsePhase {
   id: string;
   type: ComputerUsePhaseType;
   goal: string;
   targets?: string[];
   navigationPath?: string[];
+  startUrl?: string;
+  siteName?: string;
+  query?: string;
+  ordinal?: number;
+  collectionType?: ObservedCollectionType;
+  formValues?: Array<{
+    label: string;
+    value: string;
+    control?: 'input' | 'select' | 'checkbox';
+  }>;
   waitMs?: number;
   usesDownloadResult?: boolean;
+  source?: ComputerUsePhaseSource;
+  repairReason?: string;
 }
 
 export interface ComputerUseTaskPlan {
   rawGoal: string;
   summary: string;
   phases: ComputerUsePhase[];
+  source?: ComputerUsePhaseSource | 'mixed';
+  repairReason?: string;
 }
 
 export interface ComputerUsePhaseResult {
@@ -247,6 +323,7 @@ export interface ComputerUsePhaseResult {
   success: boolean;
   summary?: string;
   result?: unknown;
+  evidence?: ComputerUsePhaseEvidence;
 }
 
 export interface ComputerUseRunState {
@@ -281,6 +358,7 @@ export type BrowserActionTarget = {
   elementId?: string;
   selector?: string;
   text?: string;
+  parentPath?: string[];
   x?: number;
   y?: number;
   timeoutMs?: number;
@@ -430,6 +508,7 @@ export interface ComputerUseAction {
   elementId?: string;
   selector?: string;
   text?: string;
+  parentPath?: string[];
   x?: number;
   y?: number;
   key?: string;
