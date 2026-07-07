@@ -31,6 +31,28 @@ function uniqueNonEmpty(values: Array<string | undefined>): string[] {
   return Array.from(new Set(values.map((value) => (value || '').trim()).filter(Boolean)));
 }
 
+function extractOrdinal(text: string): number | undefined {
+  const arabic = text.match(/第\s*(\d+)\s*(?:个|条|行|项|结果|数据)?/);
+  if (arabic) return Math.max(1, Number(arabic[1]));
+  const chineseMap: Record<string, number> = {
+    一: 1,
+    二: 2,
+    两: 2,
+    三: 3,
+    四: 4,
+    五: 5,
+    六: 6,
+    七: 7,
+    八: 8,
+    九: 9,
+    十: 10,
+  };
+  const chinese = text.match(/第\s*([一二两三四五六七八九十])\s*(?:个|条|行|项|结果|数据)?/);
+  if (chinese?.[1]) return chineseMap[chinese[1]];
+  if (/(第一条|第一行|第一项|首条|首行|首个)/.test(text)) return 1;
+  return undefined;
+}
+
 function extractQuotedEntities(goal: string): string[] {
   const entities: string[] = [];
   const patterns = [/“([^”]+)”/g, /"([^"]+)"/g, /'([^']+)'/g, /`([^`]+)`/g];
@@ -267,13 +289,16 @@ function buildTaskPlan(goal: string, intent: Omit<ComputerUseIntent, 'taskPlan'>
       });
     }
     if (DOWNLOAD_KEYWORDS.test(afterUrlGoal)) {
+      const ordinal = extractOrdinal(afterUrlGoal);
       phases.push({
         id: 'download_file_after_form',
         type: 'download_file',
-        goal: /第[一二三四五六七八九十\d]+条|第一条|首条|第一行/.test(afterUrlGoal)
-          ? '下载第一条数据'
+        goal: ordinal
+          ? `下载第${ordinal}条数据`
           : '点击真实导出/下载按钮并等待下载完成',
         targets: uniqueNonEmpty(['下载', '导出']),
+        ordinal,
+        collectionType: ordinal ? 'table_row_group' : undefined,
       });
     }
     return {

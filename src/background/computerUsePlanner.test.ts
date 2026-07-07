@@ -140,6 +140,62 @@ describe('computerUsePlanner', () => {
     }));
   });
 
+  it('prefers form_group semantic fields over raw element order', async () => {
+    const rawFirstInput = element({
+      elementId: 'wrong_first',
+      role: 'textbox',
+      tag: 'input',
+      selector: '#wrong-first',
+      parentText: '文件名',
+      context: '文件名',
+    });
+    const rawAliasInput = element({
+      elementId: 'alias_input',
+      role: 'textbox',
+      tag: 'input',
+      selector: '#alias',
+      parentText: '用户花名',
+      context: '用户花名',
+    });
+
+    const plan = await createComputerUsePlan({
+      intent: {
+        ...intent,
+        taskType: 'form',
+        desiredOutput: 'page_state',
+        rawGoal: '输入用户花名：秋枫',
+        objective: '输入用户花名：秋枫',
+        entities: ['用户花名'],
+      },
+      phase: {
+        id: 'fill_alias',
+        type: 'fill_form',
+        goal: '输入用户花名：秋枫',
+        targets: ['用户花名'],
+        formValues: [{ label: '用户花名', value: '秋枫', control: 'input' }],
+      },
+      history: [],
+      context: context({
+        observation: { elements: [rawFirstInput, rawAliasInput] } as any,
+        collections: [{
+          id: 'collection_form_group',
+          type: 'form_group',
+          title: '页面表单',
+          items: [
+            { index: 1, text: '文件名', elementId: 'wrong_first', selector: '#wrong-first', confidence: 0.8, metadata: { label: '文件名', controlType: 'input' } },
+            { index: 2, text: '用户花名', elementId: 'alias_input', selector: '#alias', confidence: 0.8, metadata: { label: '用户花名', controlType: 'input' } },
+          ],
+        }],
+      }),
+    });
+
+    expect(plan.steps[0]).toEqual(expect.objectContaining({
+      action: 'type',
+      value: '秋枫',
+      target: expect.objectContaining({ elementId: 'alias_input' }),
+    }));
+  });
+
   it('clicks a page search action for click_action phases', async () => {
     const searchButton = element({ elementId: 'query', text: '查询', purpose: 'search_button' });
     const plan = await createComputerUsePlan({
@@ -167,6 +223,83 @@ describe('computerUsePlanner', () => {
     expect(plan.steps[0]).toEqual(expect.objectContaining({
       action: 'click',
       target: expect.objectContaining({ elementId: 'query', purpose: 'search_button' }),
+    }));
+  });
+
+  it('downloads the requested ordinal table row action instead of a page-level button', async () => {
+    const rowDownload = element({
+      elementId: 'row_download_1',
+      role: 'button',
+      tag: 'button',
+      text: '下载',
+      selector: '#row-download-1',
+      purpose: 'download_button',
+      region: 'table_area',
+    });
+    const toolbarExport = element({
+      elementId: 'toolbar_export',
+      role: 'button',
+      tag: 'button',
+      text: '导出',
+      selector: '#toolbar-export',
+      purpose: 'download_button',
+    });
+    const plan = await createComputerUsePlan({
+      intent: {
+        ...intent,
+        rawGoal: '下载第一条数据',
+        objective: '下载第一条数据',
+      },
+      phase: {
+        id: 'download_first_row',
+        type: 'download_file',
+        goal: '下载第1条数据',
+        targets: ['下载', '导出'],
+        ordinal: 1,
+        collectionType: 'table_row_group',
+      },
+      history: [],
+      context: context({
+        observation: { elements: [toolbarExport, rowDownload] } as any,
+        actionCandidates: [toolbarExport, rowDownload],
+        collections: [
+          {
+            id: 'collection_table_rows',
+            type: 'table_row_group',
+            title: '表格行',
+            items: [{
+              index: 1,
+              text: '库存预警-秋枫.xlsx | 已生成',
+              confidence: 0.8,
+              metadata: {
+                actions: [{
+                  text: '下载',
+                  purpose: 'download_button',
+                  elementId: 'row_download_1',
+                  selector: '#row-download-1',
+                }],
+              },
+            }],
+          },
+          {
+            id: 'collection_action_group',
+            type: 'action_group',
+            title: '页面动作',
+            items: [
+              { index: 1, text: '导出', elementId: 'toolbar_export', selector: '#toolbar-export', purpose: 'download_button', confidence: 0.95 },
+            ],
+          },
+        ],
+      }),
+    });
+
+    expect(plan.steps[0]).toEqual(expect.objectContaining({
+      action: 'download_file',
+      target: expect.objectContaining({
+        elementId: 'row_download_1',
+        collectionType: 'table_row_group',
+        ordinal: 1,
+      }),
     }));
   });
 

@@ -415,4 +415,76 @@ describe('targetResolver', () => {
     expect(resolved.blocked).toBeFalsy();
     expect(resolved.step.target?.elementId).toBe('drink_warning');
   });
+
+  it('resolves row-scoped download actions from table_row_group', () => {
+    const step: PlannedStep = {
+      id: 'download_first_row',
+      action: 'download_file',
+      target: {
+        collectionType: 'table_row_group',
+        ordinal: 1,
+        purpose: 'download_button',
+        text: '下载',
+      },
+      rationale: '下载第一条数据',
+    };
+    const phase: ComputerUsePhase = {
+      id: 'download_row',
+      type: 'download_file',
+      goal: '下载第一条数据',
+      targets: ['下载'],
+      ordinal: 1,
+      collectionType: 'table_row_group',
+    };
+    const context = makeContext({
+      collections: [{
+        id: 'table_rows',
+        type: 'table_row_group',
+        title: '表格行',
+        items: [{
+          index: 1,
+          text: '库存预警-秋枫.xlsx | 已生成',
+          confidence: 0.8,
+          metadata: {
+            actions: [{
+              text: '下载',
+              purpose: 'download_button',
+              elementId: 'row_download_1',
+              selector: '#row-download-1',
+            }],
+          },
+        }],
+      }],
+      observation: {
+        ...baseObservation,
+        elements: [
+          ...baseObservation.elements,
+          {
+            elementId: 'row_download_1',
+            role: 'button',
+            tag: 'button',
+            text: '下载',
+            selector: '#row-download-1',
+            selectors: ['#row-download-1'],
+            bbox: { x: 900, y: 200, width: 48, height: 32 },
+            visible: true,
+            enabled: true,
+            clickable: true,
+            purpose: 'download_button',
+            score: 0.9,
+          },
+        ],
+      },
+    });
+
+    const resolved = resolvePlannedStepTarget({ step, context, phase });
+
+    expect(resolved.blocked).toBeFalsy();
+    expect(resolved.step.target).toEqual(expect.objectContaining({
+      elementId: 'row_download_1',
+      selector: '#row-download-1',
+      purpose: 'download_button',
+    }));
+    expect(resolved.candidate?.source).toBe('collection');
+  });
 });

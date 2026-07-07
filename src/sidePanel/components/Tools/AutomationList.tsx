@@ -100,7 +100,7 @@ const AutomationList: React.FC<AutomationListProps> = ({ onBack }) => {
     message.info('已请求停止');
   };
 
-  const openDashboard = (path: string = '/workflows') => {
+  const openDashboard = (path: string = '/tasks') => {
     chrome.tabs.create({ url: `dashboard.html#${path}` });
   };
 
@@ -111,7 +111,7 @@ const AutomationList: React.FC<AutomationListProps> = ({ onBack }) => {
         <div style={{ display: 'flex', alignItems: 'center', marginBottom: 12 }}>
           <Button type="text" icon={<ArrowLeftOutlined />} onClick={onBack} style={{ marginRight: 8 }} />
           <Title level={5} style={{ margin: 0, flex: 1 }}>自动化工作流</Title>
-          <Tooltip title="打开完整控制台">
+          <Tooltip title="打开自动化任务中心">
             <Button icon={<ThunderboltOutlined />} onClick={() => openDashboard()} />
           </Tooltip>
         </div>
@@ -146,6 +146,9 @@ const AutomationList: React.FC<AutomationListProps> = ({ onBack }) => {
             onClick={() => openDashboard('/workflows')}
           >
             新建
+          </Button>
+          <Button size="small" onClick={() => openDashboard('/tasks')}>
+            任务中心
           </Button>
         </div>
       </div>

@@ -522,6 +522,43 @@ function findFormFieldCandidate(
 ): any | null {
   const label = formValue.label;
   const control = formValue.control || 'input';
+  const formItems = (context.collections || [])
+    .filter((collection) => collection.type === 'form_group')
+    .flatMap((collection) => collection.items)
+    .filter((item) => Boolean(item.elementId || item.selector))
+    .filter((item) => !isFailedCandidate(phaseMemory, item))
+    .map((item) => {
+      let score = (item.confidence || 0) * 10;
+      const metadata = item.metadata || {};
+      const text = [
+        item.text,
+        item.context,
+        item.parentText,
+        metadata.label,
+        metadata.placeholder,
+        metadata.controlType,
+      ].filter(Boolean).join(' ');
+      if (includesAnyTarget(text, [label])) score += 90;
+      if (compact(String(metadata.label || '')) === compact(label) || compact(item.text) === compact(label)) score += 70;
+      if (control === 'select' && /select|combobox/.test(String(metadata.controlType || ''))) score += 45;
+      if (control === 'select' && /input|textarea/.test(String(metadata.controlType || ''))) score -= 35;
+      if (control === 'input' && /input|textarea|date/.test(String(metadata.controlType || ''))) score += 30;
+      if (control === 'input' && /select|combobox/.test(String(metadata.controlType || ''))) score -= 25;
+      if (!includesAnyTarget(text, [label])) score -= 50;
+      return { item, score };
+    })
+    .sort((a, b) => b.score - a.score);
+  const formItemMatch = formItems[0];
+  if (formItemMatch && formItemMatch.score >= 45) {
+    return {
+      elementId: formItemMatch.item.elementId,
+      selector: formItemMatch.item.selector,
+      text: formItemMatch.item.text,
+      purpose: formItemMatch.item.purpose,
+      score: formItemMatch.score,
+    };
+  }
+
   const candidates = context.observation.elements
     .filter((element) => element.visible && element.enabled)
     .filter((element) => isFormControl(element))
@@ -590,6 +627,45 @@ function findActionButtonCandidate(
     })
     .sort((a, b) => b.score - a.score);
   return candidates[0] && candidates[0].score >= 45 ? candidates[0].element : null;
+}
+
+function findTableRowActionCandidate(
+  context: ComputerUsePageContext,
+  targets: string[],
+  ordinal?: number,
+  phaseMemory?: ComputerUsePhaseMemory
+): any | null {
+  if (!ordinal) return null;
+  const row = (context.collections || [])
+    .filter((collection) => collection.type === 'table_row_group')
+    .flatMap((collection) => collection.items)
+    .filter((item) => item.index === ordinal)
+    .sort((a, b) => (b.confidence || 0) - (a.confidence || 0))[0];
+  if (!row) return null;
+
+  const actions = Array.isArray(row.metadata?.actions) ? row.metadata.actions as any[] : [];
+  const matched = actions
+    .filter((action) => action?.elementId)
+    .filter((action) => !isFailedCandidate(phaseMemory, action))
+    .map((action) => {
+      let score = 0;
+      const text = [action.text, action.purpose, action.riskLevel].filter(Boolean).join(' ');
+      if (includesAnyTarget(text, targets)) score += 80;
+      if (targets.some((target) => /(导出|下载|download|export)/i.test(target)) && action.purpose === 'download_button') score += 100;
+      if (targets.some((target) => /(编辑|修改|edit)/i.test(target)) && /(编辑|修改|edit)/i.test(text)) score += 70;
+      return { action, score };
+    })
+    .sort((a, b) => b.score - a.score)[0];
+
+  if (!matched || matched.score < 40) return null;
+  return {
+    elementId: matched.action.elementId,
+    selector: matched.action.selector,
+    text: matched.action.text || targets[0],
+    purpose: matched.action.purpose,
+    score: matched.score,
+    rowText: row.text,
+  };
 }
 
 function findLatestDownloadCandidate(context: ComputerUsePageContext, runState?: ComputerUseRunState, phaseMemory?: ComputerUsePhaseMemory): any | null {
@@ -859,7 +935,8 @@ function buildRulePlan(
 
   if (phase?.type === 'click_action') {
     const targets = phase.targets?.length ? phase.targets : ['搜索', '查询'];
-    const target = findActionButtonCandidate(context, targets, phaseMemory);
+    const target = findTableRowActionCandidate(context, targets, phase.ordinal, phaseMemory)
+      || findActionButtonCandidate(context, targets, phaseMemory);
     if (!target) {
       return makeFinishPlan(`未找到动作按钮：${targets.join('、')}。请确认按钮在当前页面可见。`);
     }
@@ -1042,10 +1119,13 @@ function buildRulePlan(
   }
 
   if ((downloadTask || phase?.type === 'download_file') && targetReadyForExport) {
-    const downloadAction = findBestDownloadAction(context, phaseMemory);
+    const downloadAction = findTableRowActionCandidate(context, ['下载', '导出'], phase?.ordinal, phaseMemory)
+      || findBestDownloadAction(context, phaseMemory);
     if (downloadAction) {
       return {
-        summary: `点击真实导出/下载按钮：${downloadAction.text || downloadAction.selector}`,
+        summary: phase?.ordinal
+          ? `点击第${phase.ordinal}条数据的下载按钮：${downloadAction.text || downloadAction.selector}`
+          : `点击真实导出/下载按钮：${downloadAction.text || downloadAction.selector}`,
         confidence: 0.84,
         steps: [{
           id: 'download_file',
@@ -1055,9 +1135,12 @@ function buildRulePlan(
             selector: downloadAction.selector,
             text: downloadAction.text,
             purpose: downloadAction.purpose,
-            collectionType: 'action_group',
+            collectionType: phase?.ordinal ? 'table_row_group' : 'action_group',
+            ordinal: phase?.ordinal,
           },
-          rationale: `用户明确要求导出/下载，点击真实导出按钮并等待下载完成：${downloadAction.text || downloadAction.selector}`,
+          rationale: phase?.ordinal
+            ? `用户明确要求下载第${phase.ordinal}条数据，点击该行的下载动作并等待下载完成：${downloadAction.text || downloadAction.selector}`
+            : `用户明确要求导出/下载，点击真实导出按钮并等待下载完成：${downloadAction.text || downloadAction.selector}`,
           verify: { type: 'element_exists', value: downloadAction.text },
           highRisk: false,
         }],

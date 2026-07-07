@@ -127,7 +127,15 @@ function getNavigationCandidates(elements: ObservedElement[], targets: string[] 
 
 function getActionCandidates(elements: ObservedElement[]): ObservedElement[] {
   return elements
-    .filter((element) => ['download_button', 'submit_button', 'search_button', 'login_button'].includes(element.purpose || '') && element.visible && element.enabled)
+    .filter((element) => [
+      'download_button',
+      'submit_button',
+      'search_button',
+      'save_button',
+      'delete_button',
+      'danger_button',
+      'login_button',
+    ].includes(element.purpose || '') && element.visible && element.enabled)
     .slice(0, 60);
 }
 

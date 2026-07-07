@@ -44,6 +44,7 @@ export type BrowserPageRegionType =
   | 'main'
   | 'search_results'
   | 'table_area'
+  | 'form_area'
   | 'modal'
   | 'footer'
   | 'unknown';
@@ -60,9 +61,13 @@ export type ObservedCollectionType =
   | 'menu_group'
   | 'file_list'
   | 'table'
+  | 'table_row_group'
+  | 'form_group'
   | 'action_group'
   | 'cards'
   | 'list';
+
+export type ActionRiskLevel = 'low' | 'medium' | 'high';
 
 export interface ObservedCollectionItem {
   index: number;
@@ -79,6 +84,7 @@ export interface ObservedCollectionItem {
   expanded?: boolean;
   clickable?: boolean;
   sourceElementIds?: string[];
+  riskLevel?: ActionRiskLevel;
   metadata?: Record<string, unknown>;
   confidence: number;
 }
@@ -96,6 +102,9 @@ export type ElementPurpose =
   | 'search_input'
   | 'search_button'
   | 'submit_button'
+  | 'save_button'
+  | 'delete_button'
+  | 'danger_button'
   | 'login_button'
   | 'close_modal'
   | 'download_button'
@@ -118,6 +127,13 @@ export interface BrowserPageState {
   searchButtonId?: string;
 }
 
+export interface BrowserPageSignal {
+  type: 'login' | 'captcha' | 'permission' | 'empty' | 'console_error' | 'resource_error' | 'network_error';
+  message: string;
+  severity: 'info' | 'warning' | 'error';
+  source?: string;
+}
+
 export interface BrowserObservation {
   success: true;
   url: string;
@@ -137,6 +153,7 @@ export interface BrowserObservation {
   collections?: ObservedCollection[];
   regions?: BrowserPageRegion[];
   pageState?: BrowserPageState;
+  pageSignals?: BrowserPageSignal[];
   screenshot?: string;
   capturedAt: number;
 }
@@ -473,6 +490,102 @@ export interface AutomationWorkflow {
   variables?: Record<string, unknown>;
   steps: AutomationStep[];
 };
+
+export type AutomationRunKind =
+  | 'computer_use'
+  | 'workflow'
+  | 'page_monitor'
+  | 'page_diagnosis'
+  | 'document_qa'
+  | 'ocr'
+  | 'extract';
+
+export type AutomationRunStatus =
+  | 'draft'
+  | 'idle'
+  | 'scheduled'
+  | 'running'
+  | 'success'
+  | 'partial'
+  | 'failed'
+  | 'stopped';
+
+export interface AutomationRunTraceSummary {
+  entryCount?: number;
+  currentPhase?: string;
+  lastAction?: string;
+  lastPageTitle?: string;
+  lastPageUrl?: string;
+  lastError?: string;
+  copiedFromRunId?: string;
+  traceRunId?: string;
+  phaseCount?: number;
+  lastVerification?: string;
+  snapshotHash?: string;
+}
+
+export interface AutomationRunSchedule {
+  enabled: boolean;
+  intervalMinutes?: number;
+  cron?: string;
+  nextRunAt?: number;
+  timezone?: string;
+}
+
+export interface AutomationRun {
+  id: string;
+  title: string;
+  kind: AutomationRunKind;
+  status: AutomationRunStatus;
+  goal?: string;
+  source?: 'chat' | 'dashboard' | 'workflow' | 'monitor' | 'system';
+  workflowId?: string;
+  templateId?: string;
+  createdAt: number;
+  updatedAt: number;
+  startedAt?: number;
+  endedAt?: number;
+  schedule?: AutomationRunSchedule;
+  resultSummary?: string;
+  error?: string;
+  traceSummary?: AutomationRunTraceSummary;
+  tags?: string[];
+  metadata?: Record<string, unknown>;
+}
+
+export type PageMonitorExtractMode = 'page_text' | 'table_summary' | 'context_summary';
+
+export interface PageMonitorSnapshot {
+  hash: string;
+  mode: PageMonitorExtractMode;
+  title: string;
+  url: string;
+  text: string;
+  capturedAt: number;
+  tableCount?: number;
+}
+
+export interface PageMonitorMetadata {
+  url: string;
+  intervalMinutes: number;
+  extractMode: PageMonitorExtractMode;
+  lastSnapshot?: PageMonitorSnapshot;
+  lastChangedAt?: number;
+  lastCheckedAt?: number;
+  lastRunError?: string;
+}
+
+export interface AutomationTaskTemplate {
+  id: string;
+  title: string;
+  category: 'monitor' | 'extract' | 'diagnosis' | 'document' | 'computer_use' | 'workflow';
+  kind: AutomationRunKind;
+  description: string;
+  defaultGoal: string;
+  riskLevel: ActionRiskLevel;
+  requiredContext?: Array<'page' | 'documents' | 'files' | 'auth'>;
+  tags?: string[];
+}
 
 export type AutomationProgressMessage = {
   type: 'AUTOMATION_PROGRESS';

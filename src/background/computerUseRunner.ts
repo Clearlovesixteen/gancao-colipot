@@ -557,6 +557,8 @@ function validatePhasePreconditions(input: {
   if (input.phase.type === 'download_file') {
     const expectedPath = input.phase.navigationPath?.length
       ? input.phase.navigationPath
+      : input.phase.collectionType === 'table_row_group' || input.phase.ordinal
+        ? []
       : input.intent.navigationPath || [];
     if (expectedPath.length) {
       const reached = hasCompletedNavigationPath(input.runState, expectedPath) || isPhaseTargetReached({

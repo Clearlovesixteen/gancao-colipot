@@ -38,12 +38,12 @@ describe('ocrStructurer', () => {
   it('keeps markdown readable for document QA context', () => {
     const result = structureOcrText({
       text: '合同编号：A-001\n甲方：测试公司',
-      warnings: ['本地 OCR 置信度较低'],
+      warnings: ['PaddleOCR 置信度较低'],
     });
     const markdown = structuredOcrToMarkdown(result);
 
     expect(markdown).toContain('## 关键字段');
     expect(markdown).toContain('合同编号：A-001');
-    expect(markdown).toContain('本地 OCR 置信度较低');
+    expect(markdown).toContain('PaddleOCR 置信度较低');
   });
 });

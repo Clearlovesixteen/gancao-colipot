@@ -562,6 +562,7 @@ function collectPageRegions(): BrowserPageRegion[] {
     { type: 'sidebar', selector: 'aside,[class*="sidebar"],[class*="sider"],.ant-layout-sider,.el-aside' },
     { type: 'search_results', selector: '#content_left,#search,#rso,#b_results,.b_results,ytd-search,ytd-item-section-renderer,#contents' },
     { type: 'table_area', selector: '.ant-table,table,[role="table"],[role="grid"]' },
+    { type: 'form_area', selector: 'form,.ant-form,.el-form,[role="form"],[class*="form"],[class*="filter"],[class*="search"]' },
     { type: 'main', selector: 'main,#main,#app,.app,.content,[class*="content"],[class*="main"]' },
     { type: 'footer', selector: 'footer,[class*="footer"]' },
   ];
@@ -611,7 +612,13 @@ function inferElementPurpose(element: Element, role: string): { purpose: Element
       if (element.id === 'su' || input.value === '百度一下') score = 0.98;
       return { purpose: 'search_button', score };
     }
-    if (/(提交|确定|确认|保存|下一步|完成|submit|ok|confirm|save|next)/i.test(descriptor)) {
+    if (/(删除|作废|移除|delete|remove|void)/i.test(descriptor)) {
+      return { purpose: 'delete_button', score: 0.86 };
+    }
+    if (/(保存|save)/i.test(descriptor)) {
+      return { purpose: 'save_button', score: 0.78 };
+    }
+    if (/(提交|确定|确认|下一步|完成|发送|支付|购买|submit|ok|confirm|next|send|pay|buy)/i.test(descriptor)) {
       return { purpose: 'submit_button', score: 0.76 };
     }
     if (/(登录|登陆|sign in|login)/i.test(descriptor)) {
@@ -643,6 +650,9 @@ function getObservationCandidatePriority(element: Element, role: string, purpose
     download_button: 1000,
     search_input: 930,
     search_button: 920,
+    delete_button: 880,
+    danger_button: 870,
+    save_button: 850,
     submit_button: 830,
     login_button: 820,
     menu_item: 760,
@@ -674,7 +684,7 @@ function inferPageState(elements: ObservedElement[]): BrowserPageState {
     .sort((a, b) => (b.score || 0) - (a.score || 0))[0];
   const mainInput = searchInput || elements.find((element) => element.role === 'textbox' && element.visible && element.enabled);
   const primaryButton = searchButton || elements
-    .filter((element) => ['search_button', 'submit_button', 'login_button'].includes(element.purpose || ''))
+    .filter((element) => ['search_button', 'submit_button', 'save_button', 'delete_button', 'danger_button', 'login_button'].includes(element.purpose || ''))
     .sort((a, b) => (b.score || 0) - (a.score || 0))[0]
     || elements.find((element) => element.role === 'button' && element.visible && element.enabled);
   const hasCaptcha = /(验证码|captcha|滑块|人机验证|安全验证)/i.test(bodyText);

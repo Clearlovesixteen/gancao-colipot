@@ -47,6 +47,10 @@ function itemPurpose(item: ObservedCollectionItem): string {
   return String(item.purpose || item.metadata?.purpose || '');
 }
 
+function rowActionPurpose(action: any): string {
+  return String(action?.purpose || action?.metadata?.purpose || '');
+}
+
 function elementText(element: ObservedElement): string {
   return [element.text, element.parentText, element.context, element.href, element.purpose].filter(Boolean).join(' ');
 }
@@ -164,6 +168,38 @@ function findCollectionCandidate(input: {
     || (input.phase?.type === 'click_latest_download' ? 'file_list' : undefined);
   const collections = (input.context.collections || [])
     .filter((collection) => collectionMatches(collection, inferredType, target?.collectionId));
+
+  const rowActionCandidates = collections
+    .filter((collection) => collection.type === 'table_row_group')
+    .flatMap((collection) => collection.items.map((item) => ({ collection, item })))
+    .filter(({ item }) => !target?.ordinal || item.index === target.ordinal)
+    .flatMap(({ collection, item }) => {
+      const actions = Array.isArray(item.metadata?.actions) ? item.metadata.actions as any[] : [];
+      return actions.map((action) => {
+        let score = scoreCollectionItem({ item, collection, step: input.step, phase: input.phase, runState: input.runState });
+        const actionText = [action?.text, rowActionPurpose(action)].filter(Boolean).join(' ');
+        if (target?.purpose && includesTarget(rowActionPurpose(action), target.purpose)) score += 90;
+        if (target?.text && includesTarget(actionText, target.text)) score += 60;
+        if ((input.step.action === 'download_file' || input.phase?.type === 'download_file') && rowActionPurpose(action) === 'download_button') score += 110;
+        if (target?.ordinal && item.index === target.ordinal) score += 80;
+        return { collection, item, action, score };
+      });
+    })
+    .filter(({ action }) => Boolean(action?.elementId || action?.selector))
+    .filter(({ action }) => input.step.action !== 'download_file' || rowActionPurpose(action) === 'download_button')
+    .filter(({ action }) => !isFailed(input.phaseMemory, action))
+    .sort((a, b) => b.score - a.score || a.item.index - b.item.index);
+  const bestRowAction = rowActionCandidates[0];
+  if (bestRowAction && bestRowAction.score >= 30) {
+    return {
+      elementId: bestRowAction.action.elementId,
+      selector: bestRowAction.action.selector,
+      text: bestRowAction.action.text || bestRowAction.item.text,
+      purpose: rowActionPurpose(bestRowAction.action) || target?.purpose || '',
+      source: 'collection',
+    };
+  }
+
   const candidates = collections.flatMap((collection) => (
     collection.items.map((item) => ({ collection, item, score: scoreCollectionItem({ item, collection, step: input.step, phase: input.phase, runState: input.runState }) }))
   ))

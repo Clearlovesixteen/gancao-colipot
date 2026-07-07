@@ -6,7 +6,15 @@ import { createComputerUsePlan as createComputerUsePlanCore } from './computerUs
 import { parseComputerUseTask } from './computerUseTaskParser';
 import { performDownloadFileAction } from './downloadManager';
 import { getComputerUseTrace, listComputerUseTraces, recordComputerUseTraceEvent } from './computerUseTrace';
+import {
+  clearPageMonitorAlarm,
+  handlePageMonitorAlarm,
+  runPageMonitorNow,
+  syncPageMonitorAlarms,
+  upsertPageMonitorAlarm,
+} from './pageMonitorRunner';
 import type {
+  AutomationRunTraceSummary,
   AutomationWorkflow,
   BrowserObservation,
   ComputerUseAction,
@@ -19,6 +27,7 @@ import type {
   ComputerUseRunState,
   ComputerUseTaskIntent,
 } from '../shared/automationTypes';
+import { getAutomationRun, patchAutomationRun } from '../shared/automationRunStore';
 import { BUSINESS_TOOL_NAMES } from '../shared/businessTools';
 import type { PageAuthSnapshot } from '../shared/authBridge';
 import type { DocumentAsset, DocumentContent, PageStructuredData, RequirementTaskResult } from '../shared/documentTypes';
@@ -853,6 +862,114 @@ async function runComputerUseOnTab(options: {
   });
 }
 
+function summarizeComputerUseTrace(runId: string): { traceSummary: AutomationRunTraceSummary; traceSnapshot: unknown } {
+  const trace = getComputerUseTrace(runId);
+  const entries = trace?.entries || [];
+  const lastEntry = entries[entries.length - 1] as any;
+  const lastObservation = [...entries].reverse().find((entry: any) => entry.observation)?.observation as BrowserObservation | undefined;
+  const phaseEntries = entries.filter((entry: any) => entry.phaseType || entry.phaseGoal);
+  return {
+    traceSnapshot: trace || null,
+    traceSummary: {
+      traceRunId: runId,
+      entryCount: entries.length,
+      phaseCount: new Set(phaseEntries.map((entry: any) => `${entry.phaseIndex ?? ''}:${entry.phaseType ?? ''}:${entry.phaseGoal ?? ''}`)).size,
+      currentPhase: lastEntry?.phaseGoal || lastEntry?.phaseType,
+      lastAction: lastEntry?.action?.action,
+      lastPageTitle: lastObservation?.title,
+      lastPageUrl: lastObservation?.url,
+      lastError: lastEntry?.error,
+      lastVerification: lastEntry?.verification ? JSON.stringify(lastEntry.verification).slice(0, 500) : undefined,
+    },
+  };
+}
+
+async function runAutomationTaskRecord(taskId: string): Promise<{ success: boolean; runId?: string; error?: string }> {
+  const run = await getAutomationRun(taskId);
+  if (!run) return { success: false, error: '未找到自动化任务' };
+
+  if (run.kind === 'page_monitor') {
+    const result = await runPageMonitorNow(taskId, { executeBrowserTool });
+    return result.success ? { success: true, runId: taskId } : { success: false, error: result.error };
+  }
+
+  if (run.kind !== 'computer_use') {
+    return { success: false, error: '当前任务类型暂不支持直接运行' };
+  }
+
+  const goal = String(run.goal || '').trim();
+  if (!goal) return { success: false, error: '任务缺少目标描述' };
+
+  const authError = await requireBusinessAuth();
+  if (authError) return { success: false, error: authError.error || '未登录' };
+
+  const explicitStartUrl = typeof run.metadata?.startUrl === 'string' ? String(run.metadata.startUrl).trim() : '';
+  const intent = parseComputerUseTask(goal, explicitStartUrl);
+  const startUrl = intent.startUrl || '';
+  if (startUrl) {
+    const startUrlAccessError = getTabContentAccessError({ url: startUrl } as chrome.tabs.Tab);
+    if (startUrlAccessError) return { success: false, error: `起始页面不可自动操作：${startUrlAccessError}` };
+  }
+
+  const tabId = await getCurrentActiveTab();
+  if (!tabId) return { success: false, error: '无法获取活动标签页' };
+  if (!startUrl) {
+    const tabCheck = await getCurrentAutomatableTab();
+    if ('error' in tabCheck) return { success: false, error: tabCheck.error };
+  }
+
+  const computerUseRunId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  await patchAutomationRun(taskId, {
+    status: 'running',
+    startedAt: Date.now(),
+    endedAt: undefined,
+    error: undefined,
+    resultSummary: undefined,
+    metadata: {
+      ...(run.metadata || {}),
+      computerUseRunId,
+    },
+  });
+
+  runComputerUseOnTab({
+    tabId,
+    runId: computerUseRunId,
+    goal,
+    intent,
+    maxSteps: Number(run.metadata?.maxSteps || 12),
+    startUrl: startUrl || undefined,
+    allowHighRisk: run.metadata?.allowHighRisk === true,
+  }).then(async (result: any) => {
+    const { traceSummary, traceSnapshot } = summarizeComputerUseTrace(computerUseRunId);
+    await patchAutomationRun(taskId, {
+      status: result?.result?.partial ? 'partial' : 'success',
+      endedAt: Date.now(),
+      resultSummary: result?.summary || '自动操作完成',
+      traceSummary,
+      metadata: {
+        ...(run.metadata || {}),
+        computerUseRunId,
+        traceSnapshot,
+      },
+    });
+  }).catch(async (error: any) => {
+    const { traceSummary, traceSnapshot } = summarizeComputerUseTrace(computerUseRunId);
+    await patchAutomationRun(taskId, {
+      status: error?.message === '已停止' ? 'stopped' : 'failed',
+      endedAt: Date.now(),
+      error: error?.message || '自动操作失败',
+      traceSummary,
+      metadata: {
+        ...(run.metadata || {}),
+        computerUseRunId,
+        traceSnapshot,
+      },
+    });
+  });
+
+  return { success: true, runId: computerUseRunId };
+}
+
 async function getUploadedFiles(): Promise<any[]> {
   const result = await chrome.storage.local.get('uploadedFiles');
   return Array.isArray(result.uploadedFiles) ? result.uploadedFiles : [];
@@ -1548,6 +1665,20 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   }
 });
 
+chrome.runtime.onInstalled.addListener(() => {
+  syncPageMonitorAlarms().catch((error) => console.warn('同步页面监控 alarm 失败:', error));
+});
+
+chrome.runtime.onStartup?.addListener(() => {
+  syncPageMonitorAlarms().catch((error) => console.warn('启动时同步页面监控 alarm 失败:', error));
+});
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  handlePageMonitorAlarm(alarm.name, { executeBrowserTool }).catch((error) => {
+    console.warn('页面监控执行失败:', error);
+  });
+});
+
 // 监听 sidePanel , content script 的消息
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // 截图功能
@@ -1652,7 +1783,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
         // 直接发送消息
         const messageHistory = message.messageHistory || [];
-        const result = await glmClient.send(messageHistory, undefined, message.requestId);
+        const result = await glmClient.send(messageHistory, undefined, message.requestId, message.memoryContext);
         sendResponse({
           ...result,
           error: result.success ? undefined : result.error || glmClient.getLastError() || 'AI 请求失败',
@@ -1777,6 +1908,67 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
     }
     sendResponse({ success: false, error: '未找到正在运行的自动操作' });
+    return true;
+  } else if (message.type === 'RUN_AUTOMATION_TASK') {
+    (async () => {
+      try {
+        const taskId = String(message.taskId || '');
+        if (!taskId) {
+          sendResponse({ success: false, error: '缺少任务 ID' });
+          return;
+        }
+        sendResponse(await runAutomationTaskRecord(taskId));
+      } catch (error: any) {
+        sendResponse({ success: false, error: error?.message || '启动任务失败' });
+      }
+    })();
+    return true;
+  } else if (message.type === 'STOP_AUTOMATION_TASK') {
+    (async () => {
+      const taskId = String(message.taskId || '');
+      const run = taskId ? await getAutomationRun(taskId) : null;
+      const computerUseRunId = String(run?.metadata?.computerUseRunId || '');
+      if (computerUseRunId) {
+        const controller = computerUseRunners.get(computerUseRunId);
+        if (controller) {
+          controller.abort();
+          computerUseRunners.delete(computerUseRunId);
+        }
+      }
+      if (run) await patchAutomationRun(taskId, { status: 'stopped', endedAt: Date.now() });
+      sendResponse({ success: Boolean(run) });
+    })();
+    return true;
+  } else if (message.type === 'RUN_PAGE_MONITOR_NOW') {
+    (async () => {
+      try {
+        const runId = String(message.runId || '');
+        if (!runId) {
+          sendResponse({ success: false, error: '缺少监控任务 ID' });
+          return;
+        }
+        sendResponse(await runPageMonitorNow(runId, { executeBrowserTool }));
+      } catch (error: any) {
+        sendResponse({ success: false, error: error?.message || '页面监控失败' });
+      }
+    })();
+    return true;
+  } else if (message.type === 'UPSERT_PAGE_MONITOR_ALARM') {
+    (async () => {
+      try {
+        const runId = String(message.runId || '');
+        const run = runId ? await getAutomationRun(runId) : null;
+        if (!run) {
+          sendResponse({ success: false, error: '未找到监控任务' });
+          return;
+        }
+        if (run.schedule?.enabled) await upsertPageMonitorAlarm(run);
+        else await clearPageMonitorAlarm(run.id);
+        sendResponse({ success: true });
+      } catch (error: any) {
+        sendResponse({ success: false, error: error?.message || '更新监控计划失败' });
+      }
+    })();
     return true;
   } else if (message.type === 'CONFIRM_COMPUTER_USE_ACTION') {
     const key = `${String(message.runId || '')}:${Number(message.stepIndex || 0)}`;

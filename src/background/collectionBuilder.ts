@@ -1,4 +1,5 @@
 import type {
+  ActionRiskLevel,
   BrowserObservation,
   ComputerUsePhase,
   ObservedCollection,
@@ -53,6 +54,10 @@ function pushCollection(collections: ObservedCollection[], collection: ObservedC
       ? 160
       : collection.type === 'action_group'
         ? 120
+        : collection.type === 'form_group'
+          ? 160
+          : collection.type === 'table_row_group'
+            ? 160
         : 80;
   collections.push({
     ...collection,
@@ -179,17 +184,49 @@ function buildFileList(elements: ObservedElement[], phase?: ComputerUsePhase): O
   } : null;
 }
 
+function inferActionPurpose(element: ObservedElement): string | undefined {
+  if (element.purpose && element.purpose !== 'generic') return element.purpose;
+  const text = `${element.text} ${element.context || ''} ${element.name || ''} ${element.placeholder || ''}`;
+  if (/(导\s*出|下载|export|download|excel|csv)/i.test(text)) return 'download_button';
+  if (/(查询|搜索|检索|筛选|search|filter)/i.test(text)) return 'search_button';
+  if (/(保存|save)/i.test(text)) return 'save_button';
+  if (/(删除|作废|移除|delete|remove)/i.test(text)) return 'delete_button';
+  if (/(提交|发送|支付|购买|下单|submit|send|pay|buy)/i.test(text)) return 'submit_button';
+  return element.purpose;
+}
+
+function inferActionRisk(element: ObservedElement): ActionRiskLevel {
+  const purpose = inferActionPurpose(element);
+  const text = `${element.text} ${element.context || ''} ${element.name || ''}`;
+  if (purpose === 'delete_button' || /(删除|作废|支付|购买|下单|delete|pay|buy)/i.test(text)) return 'high';
+  if (purpose === 'submit_button' || purpose === 'save_button' || /(提交|保存|发送|同步|禁用|启用|submit|save|send|sync)/i.test(text)) return 'high';
+  if (purpose === 'download_button' || /(导\s*出|下载|上传|修改|export|download|upload|edit)/i.test(text)) return 'medium';
+  return 'low';
+}
+
 function isActionCandidate(element: ObservedElement): boolean {
   if (!element.visible || !element.enabled) return false;
-  if (['download_button', 'submit_button', 'search_button', 'login_button', 'close_modal'].includes(element.purpose || '')) return true;
+  const inferredPurpose = inferActionPurpose(element);
+  if ([
+    'download_button',
+    'submit_button',
+    'search_button',
+    'save_button',
+    'delete_button',
+    'danger_button',
+    'login_button',
+    'close_modal',
+  ].includes(inferredPurpose || '')) return true;
   if (!['button', 'link', 'menuitem', 'option'].includes(element.role)) return false;
-  return /(导\s*出|下载|export|download|excel|csv|更多|操作|批量操作|more|actions?)/i.test(`${element.text} ${element.context || ''} ${element.name || ''} ${element.placeholder || ''}`);
+  return /(导\s*出|下载|查询|搜索|检索|重置|保存|提交|删除|作废|发送|export|download|excel|csv|search|save|submit|delete|更多|操作|批量操作|more|actions?)/i.test(`${element.text} ${element.context || ''} ${element.name || ''} ${element.placeholder || ''}`);
 }
 
 function actionConfidence(element: ObservedElement): number {
-  if (element.purpose === 'download_button') return 0.93;
-  if (element.purpose === 'submit_button') return 0.78;
-  if (element.purpose === 'search_button') return 0.72;
+  const purpose = inferActionPurpose(element);
+  if (purpose === 'download_button') return 0.93;
+  if (purpose === 'delete_button' || purpose === 'danger_button') return 0.84;
+  if (purpose === 'submit_button' || purpose === 'save_button') return 0.78;
+  if (purpose === 'search_button') return 0.72;
   if (/(更多|操作|批量操作|more|actions?)/i.test(`${element.text} ${element.context || ''}`)) return 0.64;
   return 0.58;
 }
@@ -211,7 +248,20 @@ function buildActionGroup(elements: ObservedElement[]): ObservedCollection | nul
         || Number(a.bbox?.y || 0) - Number(b.bbox?.y || 0)
         || Number(a.bbox?.x || 0) - Number(b.bbox?.x || 0);
     })
-    .map((element, index) => elementToCollectionItem(element, index + 1, actionConfidence(element)));
+    .map((element, index) => {
+      const purpose = inferActionPurpose(element);
+      const riskLevel = inferActionRisk(element);
+      return {
+        ...elementToCollectionItem({ ...element, purpose: purpose as any }, index + 1, actionConfidence(element)),
+        purpose,
+        riskLevel,
+        metadata: {
+          ...elementToCollectionItem(element, index + 1).metadata,
+          purpose,
+          riskLevel,
+        },
+      };
+    });
 
   return items.length ? {
     id: 'collection_action_group',
@@ -221,7 +271,78 @@ function buildActionGroup(elements: ObservedElement[]): ObservedCollection | nul
     confidence: 0.78,
     metadata: {
       purposes: Array.from(new Set(items.map((item) => item.purpose).filter(Boolean))),
+      risks: Array.from(new Set(items.map((item) => item.riskLevel).filter(Boolean))),
     },
+  } : null;
+}
+
+function inferFormLabel(element: ObservedElement): string {
+  const candidates = [
+    element.parentText,
+    element.context,
+    element.placeholder,
+    element.name,
+    element.text,
+  ].filter(Boolean).map((item) => String(item).trim());
+  const label = candidates.find((item) => item && compact(item).length <= 48) || candidates[0] || '未命名字段';
+  return label.replace(/\s+/g, ' ').slice(0, 80);
+}
+
+function controlType(element: ObservedElement): string {
+  const descriptor = `${element.role} ${element.tag} ${element.selector || ''} ${element.context || ''}`.toLowerCase();
+  if (/select|combobox|dropdown/.test(descriptor)) return 'select';
+  if (/checkbox/.test(descriptor)) return 'checkbox';
+  if (/radio/.test(descriptor)) return 'radio';
+  if (/date|picker|calendar/.test(descriptor)) return 'date';
+  if (/textarea/.test(descriptor)) return 'textarea';
+  return 'input';
+}
+
+function isFormControl(element: ObservedElement): boolean {
+  if (!element.visible || !element.enabled) return false;
+  if (['search_input'].includes(element.purpose || '')) return true;
+  if (['textbox', 'combobox', 'checkbox', 'radio', 'spinbutton'].includes(element.role)) return true;
+  if (['input', 'textarea', 'select'].includes(String(element.tag || '').toLowerCase())) return true;
+  return /(ant-input|ant-select|ant-picker|el-input|el-select|textarea|form-item)/i.test(`${element.selector || ''} ${element.context || ''}`);
+}
+
+function buildFormGroup(elements: ObservedElement[]): ObservedCollection | null {
+  const seen = new Set<string>();
+  const formControls = elements
+    .filter(isFormControl)
+    .filter((element) => {
+      const key = element.elementId || element.selector || `${inferFormLabel(element)}:${controlType(element)}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .sort((a, b) => Number(a.bbox?.y || 0) - Number(b.bbox?.y || 0) || Number(a.bbox?.x || 0) - Number(b.bbox?.x || 0))
+    .map((element, index) => {
+      const label = inferFormLabel(element);
+      const item = elementToCollectionItem({
+        ...element,
+        text: label,
+        purpose: element.purpose || 'generic',
+      }, index + 1, element.value ? 0.76 : 0.7);
+      return {
+        ...item,
+        metadata: {
+          ...(item.metadata || {}),
+          label,
+          value: element.value,
+          placeholder: element.placeholder,
+          controlType: controlType(element),
+          checked: element.checked,
+        },
+      };
+    });
+
+  return formControls.length ? {
+    id: 'collection_form_group',
+    type: 'form_group',
+    title: '页面表单',
+    items: formControls,
+    confidence: 0.72,
   } : null;
 }
 
@@ -243,6 +364,65 @@ function buildTableCollection(tableCandidates: unknown[]): ObservedCollection | 
     title: '页面表格',
     items,
     confidence: 0.8,
+  } : null;
+}
+
+function rowBucketKey(element: ObservedElement): string {
+  const y = Number(element.bbox?.y || 0);
+  return String(Math.round(y / 12) * 12);
+}
+
+function buildTableRowGroup(elements: ObservedElement[]): ObservedCollection | null {
+  const tableElements = elements
+    .filter((element) => element.visible)
+    .filter((element) => element.region === 'table_area' || element.purpose === 'table' || /table|tbody|tr|td|ant-table/i.test(`${element.selector || ''} ${element.context || ''}`))
+    .filter((element) => compact(`${element.text} ${element.context || ''}`).length > 0);
+
+  const buckets = new Map<string, ObservedElement[]>();
+  for (const element of tableElements) {
+    const key = rowBucketKey(element);
+    buckets.set(key, [...(buckets.get(key) || []), element]);
+  }
+
+  const rows = Array.from(buckets.entries())
+    .map(([key, rowElements]) => {
+      const sorted = rowElements.sort((a, b) => Number(a.bbox?.x || 0) - Number(b.bbox?.x || 0));
+      const text = sorted.map((element) => element.text || element.context || '').filter(Boolean).join(' | ');
+      const actions = sorted
+        .filter(isActionCandidate)
+        .map((element) => ({
+          text: element.text,
+          purpose: inferActionPurpose(element),
+          riskLevel: inferActionRisk(element),
+          elementId: element.elementId,
+          selector: element.selector,
+        }));
+      return { key, sorted, text, actions };
+    })
+    .filter((row) => compact(row.text).length > 1)
+    .sort((a, b) => Number(a.key) - Number(b.key))
+    .slice(0, 120)
+    .map((row, index) => ({
+      index: index + 1,
+      text: row.text.slice(0, 240),
+      elementId: row.sorted.find((element) => element.clickable || element.enabled)?.elementId,
+      selector: row.sorted.find((element) => element.clickable || element.enabled)?.selector,
+      bbox: row.sorted[0]?.bbox,
+      sourceElementIds: row.sorted.map((element) => element.elementId).filter(Boolean),
+      metadata: {
+        rowText: row.text,
+        actions: row.actions,
+        columnText: row.sorted.map((element) => element.text).filter(Boolean).slice(0, 24),
+      },
+      confidence: row.actions.length ? 0.74 : 0.62,
+    }));
+
+  return rows.length ? {
+    id: 'collection_table_rows',
+    type: 'table_row_group',
+    title: '表格行',
+    items: rows,
+    confidence: 0.66,
   } : null;
 }
 
@@ -272,10 +452,14 @@ export function buildObservedCollections(input: {
   const searchResults = buildSearchResults(elements);
   if (searchResults) pushCollection(collections, searchResults);
   for (const menuGroup of buildMenuGroups(elements)) pushCollection(collections, menuGroup);
+  const formGroup = buildFormGroup(elements);
+  if (formGroup) pushCollection(collections, formGroup);
   const fileList = buildFileList(elements, input.phase);
   if (fileList) pushCollection(collections, fileList);
   const tables = buildTableCollection(input.tableCandidates || []);
   if (tables) pushCollection(collections, tables);
+  const tableRows = buildTableRowGroup(elements);
+  if (tableRows) pushCollection(collections, tableRows);
   const actionGroup = buildActionGroup(elements);
   if (actionGroup) pushCollection(collections, actionGroup);
   const cards = buildCards(elements);

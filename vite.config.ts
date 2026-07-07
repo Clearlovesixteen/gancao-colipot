@@ -49,47 +49,49 @@ function copyPublicPlugin() {
 
       copyRecursive(publicDir, distDir);
 
-      const tesseractDir = resolve(distDir, 'tesseract');
-      const langDir = resolve(tesseractDir, 'lang-data');
-      const coreDir = resolve(tesseractDir, 'core');
-      mkdirSync(langDir, { recursive: true });
-      mkdirSync(coreDir, { recursive: true });
+      const ortDir = resolve(distDir, 'paddleocr/ort');
+      mkdirSync(ortDir, { recursive: true });
 
       const maybeCopy = (src: string, dest: string) => {
         if (existsSync(src)) copyFileSync(src, dest);
       };
-      const maybeCopyResolved = (specifier: string, dest: string) => {
-        try {
-          maybeCopy(require.resolve(specifier), dest);
-        } catch {
-          // Optional dependency layout can differ between package managers.
-        }
-      };
 
-      maybeCopy(
-        resolve(__dirname, 'node_modules/tesseract.js/dist/worker.min.js'),
-        resolve(tesseractDir, 'worker.min.js')
-      );
-      maybeCopy(resolve(dirname(require.resolve('tesseract.js/package.json')), 'dist/worker.min.js'), resolve(tesseractDir, 'worker.min.js'));
       try {
-        const corePackageDir = dirname(require.resolve('tesseract.js-core/package.json'));
-        readdirSync(corePackageDir)
-          .filter((file) => /^tesseract-core.*\.wasm(\.js)?$/.test(file))
+        const ortDistDir = dirname(require.resolve('onnxruntime-web'));
+        readdirSync(ortDistDir)
+          .filter((file) => /^ort-wasm.*\.(wasm|mjs)$/.test(file))
           .forEach((file) => {
-            maybeCopy(resolve(corePackageDir, file), resolve(coreDir, file));
+            maybeCopy(resolve(ortDistDir, file), resolve(ortDir, file));
           });
       } catch {
-        maybeCopyResolved('tesseract.js-core/tesseract-core.wasm.js', resolve(coreDir, 'tesseract-core.wasm.js'));
-        maybeCopyResolved('tesseract.js-core/tesseract-core.wasm', resolve(coreDir, 'tesseract-core.wasm'));
+        const ortDistDir = dirname(require.resolve('onnxruntime-web/wasm'));
+        const maybeCopyResolved = (specifier: string, dest: string) => {
+          try {
+            maybeCopy(resolve(ortDistDir, specifier), dest);
+          } catch {
+            // Optional dependency layout can differ between package managers.
+          }
+        };
+        [
+          'ort-wasm.wasm',
+          'ort-wasm-simd.wasm',
+          'ort-wasm-threaded.wasm',
+          'ort-wasm-simd-threaded.wasm',
+        ].forEach((file) => {
+          maybeCopyResolved(file, resolve(ortDir, file));
+        });
       }
-      maybeCopy(
-        resolve(__dirname, 'node_modules/@tesseract.js-data/eng/4.0.0/eng.traineddata.gz'),
-        resolve(langDir, 'eng.traineddata.gz')
-      );
-      maybeCopy(
-        resolve(__dirname, 'node_modules/@tesseract.js-data/chi_sim/4.0.0/chi_sim.traineddata.gz'),
-        resolve(langDir, 'chi_sim.traineddata.gz')
-      );
+
+      const requiredModels = [
+        'PP-OCRv5_mobile_det.tar',
+        'PP-OCRv5_mobile_rec.tar',
+      ];
+      requiredModels.forEach((file) => {
+        const modelPath = resolve(distDir, 'paddleocr/models', file);
+        if (!existsSync(modelPath)) {
+          throw new Error(`PaddleOCR model asset missing: public/paddleocr/models/${file}`);
+        }
+      });
     },
   };
 }
@@ -105,6 +107,7 @@ export default defineConfig({
         dashboard: resolve(__dirname, 'src/dashboard/index.tsx'),
         background: resolve(__dirname, 'src/background/index.ts'),
         content: resolve(__dirname, 'src/content/index.ts'),
+        paddleocrSandbox: resolve(__dirname, 'src/sidePanel/utils/paddleocrSandbox.ts'),
       },
       output: {
         entryFileNames: '[name].js',

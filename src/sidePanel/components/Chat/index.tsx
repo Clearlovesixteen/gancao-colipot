@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Input, Button, Space, Typography, Spin, Avatar, Badge, Image, Tag, Drawer, Tooltip, Dropdown, Menu, message, Modal, Tabs, Card, Table, Empty, Timeline, Collapse } from 'antd';
-import { SendOutlined, UserOutlined, RobotOutlined, ThunderboltOutlined, PaperClipOutlined, DeleteOutlined, ToolOutlined, AppstoreOutlined, MoreOutlined, StopOutlined, CopyOutlined, ReloadOutlined } from '@ant-design/icons';
+import { Input, Button, Space, Typography, Spin, Avatar, Badge, Image, Tag, Drawer, Tooltip, Dropdown, Menu, message, Modal, Tabs, Card, Table, Empty, Timeline, Collapse, List } from 'antd';
+import { SendOutlined, UserOutlined, RobotOutlined, ThunderboltOutlined, PaperClipOutlined, DeleteOutlined, ToolOutlined, AppstoreOutlined, MoreOutlined, StopOutlined, CopyOutlined, ReloadOutlined, HistoryOutlined, PlusOutlined } from '@ant-design/icons';
 import { Message } from '../../utils/sse';
 import Tools from '../Tools';
 import moment from 'moment';
@@ -29,6 +29,18 @@ import { getOcrErrorMessage, runOcr } from '../../utils/ocrEngine';
 import { structureOcrText, structuredOcrToMarkdown } from '../../../shared/ocrStructurer';
 import { formatComputerUseTablesMessage, getLatestExtractedTablesFromSteps } from '../../../shared/computerUseResults';
 import type { BrowserObservation, ComputerUseAction, ComputerUseTrace, ComputerUseTraceEntry } from '../../../shared/automationTypes';
+import { getQuickCommands, type CopilotCommandId } from '../../utils/copilotCommands';
+import {
+  buildMemoryContext,
+  createChatSession,
+  getChatSessionMessages,
+  inferMemoryType,
+  listChatSessions,
+  saveChatMessage,
+  upsertUserMemory,
+  type ChatSession,
+  type StoredChatMessage,
+} from '../../../shared/userMemoryStore';
 
 const { TextArea } = Input;
 const { Text, Title } = Typography;
@@ -817,6 +829,9 @@ const Chat: React.FC = () => {
   const [isTyping, setIsTyping] = useState(false);
   const [attachedFiles, setAttachedFiles] = useState<FileAttachment[]>([]);
   const [toolsVisible, setToolsVisible] = useState(false);
+  const [sessionsVisible, setSessionsVisible] = useState(false);
+  const [chatSessions, setChatSessions] = useState<ChatSession[]>([]);
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [ocrViewer, setOcrViewer] = useState<OcrViewerState | null>(null);
   const [computerUseRunId, setComputerUseRunId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -827,18 +842,112 @@ const Chat: React.FC = () => {
   const shouldAutoScrollRef = useRef(true);
   const computerUseRunIdRef = useRef<string | null>(null);
   const startComputerUseRef = useRef<((goal?: string) => void) | null>(null);
+  const currentSessionIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    currentSessionIdRef.current = currentSessionId;
+  }, [currentSessionId]);
+
+  const refreshChatSessions = useCallback(async () => {
+    setChatSessions(await listChatSessions());
+  }, []);
+
+  const toStoredChatMessage = useCallback((msg: ChatMessage, sessionId: string): StoredChatMessage => ({
+    id: msg.id,
+    sessionId,
+    role: msg.type === 'user' ? 'user' : msg.type === 'assistant' ? 'assistant' : msg.type === 'system' ? 'system' : 'assistant',
+    content: msg.llmContent || msg.content || '',
+    kind: msg.kind,
+    attachments: msg.attachments?.map((item) => ({
+      id: item.id,
+      name: item.name,
+      type: item.type,
+      size: item.size,
+    })),
+    toolCalls: msg.tool_calls?.map((tool) => ({ name: tool.name, arguments: tool.arguments })),
+    computerUseRunId: msg.computerUseTrace?.runId,
+    timestamp: msg.timestamp || Date.now(),
+  }), []);
+
+  const persistChatMessage = useCallback((msg: ChatMessage) => {
+    const sessionId = currentSessionIdRef.current;
+    if (!sessionId || !msg?.id) return;
+    saveChatMessage(toStoredChatMessage(msg, sessionId))
+      .then(refreshChatSessions)
+      .catch((error) => console.warn('[ChatMemory] 保存聊天消息失败:', error));
+  }, [refreshChatSessions, toStoredChatMessage]);
+
+  const toChatMessage = useCallback((msg: StoredChatMessage): ChatMessage => ({
+    id: msg.id,
+    content: msg.content,
+    llmContent: msg.content,
+    type: msg.role === 'user' ? 'user' : msg.role === 'system' ? 'system' : 'assistant',
+    timestamp: msg.timestamp,
+    kind: msg.kind as ChatMessage['kind'],
+    attachments: msg.attachments?.map((item) => ({
+      id: item.id || `${msg.id}_${item.name}`,
+      fileId: item.id || '',
+      name: item.name,
+      type: item.type || '',
+      size: item.size || 0,
+      parseStatus: 'parsed',
+      nativeUploadStatus: 'skipped',
+      ocrStatus: 'not_needed',
+    })),
+    tool_calls: msg.toolCalls?.map((tool, index) => ({
+      id: `${msg.id}_tool_${index}`,
+      name: tool.name,
+      arguments: tool.arguments || {},
+    })),
+  }), []);
+
+  const loadChatSession = useCallback(async (sessionId: string) => {
+    const storedMessages = await getChatSessionMessages(sessionId);
+    setCurrentSessionId(sessionId);
+    currentSessionIdRef.current = sessionId;
+    setMessages(storedMessages.map(toChatMessage));
+    setSessionsVisible(false);
+    shouldAutoScrollRef.current = true;
+    setTimeout(() => messagesEndRef.current?.scrollIntoView({ block: 'end' }), 0);
+  }, [toChatMessage]);
+
+  const createNewChatSession = useCallback(async () => {
+    const session = await createChatSession();
+    await refreshChatSessions();
+    setCurrentSessionId(session.id);
+    currentSessionIdRef.current = session.id;
+    setMessages([]);
+    setSessionsVisible(false);
+  }, [refreshChatSessions]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const sessions = await listChatSessions();
+      const session = sessions[0] || await createChatSession();
+      const storedMessages = await getChatSessionMessages(session.id);
+      if (cancelled) return;
+      setChatSessions(sessions[0] ? sessions : [session]);
+      setCurrentSessionId(session.id);
+      currentSessionIdRef.current = session.id;
+      setMessages(storedMessages.map(toChatMessage));
+    })().catch((error) => console.warn('[ChatMemory] 初始化会话失败:', error));
+
+    return () => {
+      cancelled = true;
+    };
+  }, [toChatMessage]);
 
   const addAssistantMessage = useCallback((content: string) => {
-    setMessages(prev => [
-      ...prev,
-      {
-        id: `assistant_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-        content,
-        type: 'assistant',
-        timestamp: Date.now(),
-      },
-    ]);
-  }, []);
+    const assistantMessage: ChatMessage = {
+      id: `assistant_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      content,
+      type: 'assistant',
+      timestamp: Date.now(),
+    };
+    setMessages(prev => [...prev, assistantMessage]);
+    persistChatMessage(assistantMessage);
+  }, [persistChatMessage]);
 
   const handleUnauthenticated = useCallback(async () => {
     message.warning('登录已失效，请重新登录');
@@ -895,22 +1004,41 @@ const Chat: React.FC = () => {
     }
   }, []);
 
+  const handleRememberMessage = useCallback(async (msg: ChatMessage) => {
+    const content = (msg.llmContent || msg.content || '').trim();
+    if (!content) {
+      message.warning('这条消息没有可保存的内容');
+      return;
+    }
+    try {
+      const memory = await upsertUserMemory({
+        content,
+        type: inferMemoryType(content),
+        sourceSessionId: currentSessionIdRef.current || undefined,
+        sourceMessageId: msg.id,
+        confidence: 0.9,
+      });
+      message.success(`已记住：${memory.title}`);
+    } catch (error: any) {
+      message.error(error?.message || '保存长期记忆失败');
+    }
+  }, []);
+
   const addOcrResultMessage = useCallback((data: OcrResultMessageData) => {
     const statusText = data.status === 'success' ? 'OCR 完成'
       : data.status === 'low_confidence' ? 'OCR 低置信度完成'
         : 'OCR 未识别到文字';
-    setMessages(prev => [
-      ...prev,
-      {
-        id: `ocr_result_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-        content: `${statusText}：${data.fileName}\n资料 ID：${data.documentId}`,
-        type: 'assistant',
-        timestamp: Date.now(),
-        kind: 'ocr_result',
-        ocrResult: data,
-      },
-    ]);
-  }, []);
+    const ocrMessage: ChatMessage = {
+      id: `ocr_result_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      content: `${statusText}：${data.fileName}\n资料 ID：${data.documentId}`,
+      type: 'assistant',
+      timestamp: Date.now(),
+      kind: 'ocr_result',
+      ocrResult: data,
+    };
+    setMessages(prev => [...prev, ocrMessage]);
+    persistChatMessage(ocrMessage);
+  }, [persistChatMessage]);
 
   const upsertComputerUseTaskMessage = useCallback((
     runId: string,
@@ -929,35 +1057,36 @@ const Chat: React.FC = () => {
           currentStep: '准备启动',
           entries: [],
         };
-        return {
+        const updatedMessage: ChatMessage = {
           ...item,
           content: goal,
           timestamp: Date.now(),
           computerUseTrace: updater(currentTrace),
         };
+        persistChatMessage(updatedMessage);
+        return updatedMessage;
       });
 
       if (found) return nextMessages;
 
-      return [
-        ...nextMessages,
-        {
-          id: `computer_task_${runId}`,
-          content: goal,
-          type: 'assistant',
-          timestamp: Date.now(),
-          kind: 'computer_use_task',
-          computerUseTrace: updater({
-            runId,
-            goal,
-            status: 'running',
-            currentStep: '准备启动',
-            entries: [],
-          }),
-        },
-      ];
+      const taskMessage: ChatMessage = {
+        id: `computer_task_${runId}`,
+        content: goal,
+        type: 'assistant',
+        timestamp: Date.now(),
+        kind: 'computer_use_task',
+        computerUseTrace: updater({
+          runId,
+          goal,
+          status: 'running',
+          currentStep: '准备启动',
+          entries: [],
+        }),
+      };
+      persistChatMessage(taskMessage);
+      return [...nextMessages, taskMessage];
     });
-  }, []);
+  }, [persistChatMessage]);
 
   const mergeComputerUseEvent = useCallback((event: any) => {
     const runId = String(event.runId || '');
@@ -1052,6 +1181,7 @@ const Chat: React.FC = () => {
       timestamp: Date.now(),
       requestId,
     };
+    persistChatMessage(userMessage);
 
     setMessages(prev => {
       const updatedMessages = [...prev, userMessage];
@@ -1063,11 +1193,13 @@ const Chat: React.FC = () => {
           nativeFiles: msg.nativeFiles,
         }));
 
-      chrome.runtime.sendMessage({
-        type: 'SEND_MESSAGE',
-        requestId,
-        messageHistory,
-      }, async (response) => {
+      buildMemoryContext(llmContent || content, currentSessionIdRef.current || undefined)
+        .then((memoryContext) => chrome.runtime.sendMessage({
+          type: 'SEND_MESSAGE',
+          requestId,
+          messageHistory,
+          memoryContext: memoryContext.contextText,
+        }, async (response) => {
         const runtimeError = chrome.runtime.lastError?.message;
         if (activeAiRequestIdRef.current !== requestId) return;
         if (response?.code === 'UNAUTHENTICATED') {
@@ -1085,13 +1217,17 @@ const Chat: React.FC = () => {
           return;
         }
         setIsTyping(false);
-      });
+        }))
+        .catch((error) => {
+          setIsTyping(false);
+          addAssistantMessage(`AI 请求失败：${normalizeUserFacingError(error)}`);
+        });
 
       return updatedMessages;
     });
 
     setIsTyping(true);
-  }, [addAssistantMessage, handleUnauthenticated]);
+  }, [addAssistantMessage, handleUnauthenticated, persistChatMessage]);
 
   const sendDirectPrompt = useCallback((content: string) => {
     sendPromptToAI(content);
@@ -1122,7 +1258,9 @@ const Chat: React.FC = () => {
     const requestId = activeAiRequestIdRef.current;
     if (requestId) {
       stoppedAiRequestIdsRef.current.add(requestId);
+      activeAiRequestIdRef.current = null;
     }
+    setIsTyping(false);
 
     chrome.runtime.sendMessage({ type: 'STOP_AI_MESSAGE' }, (response) => {
       const runtimeError = chrome.runtime.lastError?.message;
@@ -1150,6 +1288,7 @@ const Chat: React.FC = () => {
       timestamp: Date.now(),
     };
     setMessages(prev => [...prev, userMessage]);
+    persistChatMessage(userMessage);
     setInputValue('');
     setIsTyping(true);
     let startupSettled = false;
@@ -1191,7 +1330,7 @@ const Chat: React.FC = () => {
         result: { summary: '后台已接收自动操作任务，正在准备观察当前页面...' },
       });
     });
-  }, [addAssistantMessage, handleUnauthenticated, inputValue, mergeComputerUseEvent]);
+  }, [addAssistantMessage, handleUnauthenticated, inputValue, mergeComputerUseEvent, persistChatMessage]);
 
   useEffect(() => {
     startComputerUseRef.current = startComputerUse;
@@ -1229,6 +1368,7 @@ const Chat: React.FC = () => {
         ) {
           return;
         }
+        persistChatMessage(newMsg);
         
         // 处理steam消息
         setMessages(prev => {
@@ -1322,7 +1462,7 @@ const Chat: React.FC = () => {
     return () => {
       chrome.runtime.onMessage.removeListener(messageListener);
     };
-  }, [addAssistantMessage, fetchComputerUseTrace, handleUnauthenticated, mergeComputerUseEvent]);
+  }, [addAssistantMessage, fetchComputerUseTrace, handleUnauthenticated, mergeComputerUseEvent, persistChatMessage]);
 
   useEffect(() => {
     scrollToBottom('auto');
@@ -1595,6 +1735,37 @@ const Chat: React.FC = () => {
     }
   };
 
+  const handleCopilotCommand = useCallback((commandId: CopilotCommandId) => {
+    switch (commandId) {
+      case 'computer_use':
+        startComputerUse();
+        break;
+      case 'page_diagnosis':
+        handleRunPageDiagnosisAgent();
+        break;
+      case 'document_qa':
+        handleAskDocumentsAgent();
+        break;
+      case 'document_status':
+        handleListDocuments();
+        break;
+      case 'page_summary':
+        setInputValue('请总结当前页面，输出核心内容、关键字段、风险点和待办。');
+        break;
+      case 'extract_table':
+        setInputValue('请提取当前页面的表格或列表数据。');
+        break;
+      case 'task_list':
+        setInputValue('请基于当前上下文生成任务清单，按优先级列出负责人、截止时间和风险。');
+        break;
+      case 'ocr':
+        message.info('请先添加图片或扫描文件，然后在附件菜单中执行 OCR。');
+        break;
+      default:
+        break;
+    }
+  }, [handleAskDocumentsAgent, startComputerUse]);
+
   const handleSummarizeFile = async (file: FileAttachment) => {
     try {
       message.loading({ content: '正在读取资料片段...', key: `summary_${file.fileId}` });
@@ -1863,6 +2034,7 @@ const Chat: React.FC = () => {
       timestamp: Date.now(),
       requestId,
     };
+    persistChatMessage(userMessage);
 
     setMessages(prev => {
       const updatedMessages = [...prev, userMessage];
@@ -1878,11 +2050,13 @@ const Chat: React.FC = () => {
       setInputValue('');
       setAttachedFiles([]);
       
-      chrome.runtime.sendMessage({
-        type: 'SEND_MESSAGE',
-        requestId,
-        messageHistory: messageHistory,
-      }, async (response) => {
+      buildMemoryContext(llmContent || displayContent, currentSessionIdRef.current || undefined)
+        .then((memoryContext) => chrome.runtime.sendMessage({
+          type: 'SEND_MESSAGE',
+          requestId,
+          messageHistory: messageHistory,
+          memoryContext: memoryContext.contextText,
+        }, async (response) => {
         const runtimeError = chrome.runtime.lastError?.message;
         if (activeAiRequestIdRef.current !== requestId) return;
         if (response?.code === 'UNAUTHENTICATED') {
@@ -1908,7 +2082,11 @@ const Chat: React.FC = () => {
           return;
         }
         setIsTyping(false);
-      });
+        }))
+        .catch((error) => {
+          setIsTyping(false);
+          addAssistantMessage(`AI 请求失败：${normalizeUserFacingError(error)}`);
+        });
 
       return updatedMessages;
     });
@@ -2242,12 +2420,28 @@ const Chat: React.FC = () => {
             </Title>
           </div>
         </div>
-        <Button 
-          type="text" 
-          icon={<AppstoreOutlined style={{ fontSize: '18px' }} />}
-          onClick={() => setToolsVisible(true)}
-          style={{ marginRight: -8 }}
-        />
+        <Space size={4}>
+          <Tooltip title="会话历史">
+            <Button
+              type="text"
+              icon={<HistoryOutlined style={{ fontSize: '18px' }} />}
+              onClick={() => setSessionsVisible(true)}
+            />
+          </Tooltip>
+          <Tooltip title="新对话">
+            <Button
+              type="text"
+              icon={<PlusOutlined style={{ fontSize: '18px' }} />}
+              onClick={createNewChatSession}
+            />
+          </Tooltip>
+          <Button
+            type="text"
+            icon={<AppstoreOutlined style={{ fontSize: '18px' }} />}
+            onClick={() => setToolsVisible(true)}
+            style={{ marginRight: -8 }}
+          />
+        </Space>
       </div>
 
      
@@ -2390,6 +2584,13 @@ const Chat: React.FC = () => {
                           onSave={msg.type === 'assistant' ? saveTextMessageToDocuments : undefined}
                         />
                       )}
+                      {textContent && (
+                        <Space size={6} className={styles.messageActions}>
+                          <Button style={{ color: 'red' }} size="small" type="link" onClick={() => handleRememberMessage(msg)}>
+                            记住这条
+                          </Button>
+                        </Space>
+                      )}
                       {renderToolCalls(msg.tool_calls)}
                       <div className={styles.messageTime}>
                         {moment(msg.timestamp).format('HH:mm')}
@@ -2422,18 +2623,13 @@ const Chat: React.FC = () => {
       
       <div className={styles.inputArea}>
         <div className={styles.quickActions}>
-          <Button size="small" onClick={() => startComputerUse()}>
-            自动操作
-          </Button>
-          <Button size="small" onClick={handleRunPageDiagnosisAgent}>
-            页面诊断
-          </Button>
-          <Button size="small" onClick={() => handleAskDocumentsAgent()}>
-            问资料
-          </Button>
-          <Button size="small" onClick={handleListDocuments}>
-            资料状态
-          </Button>
+          {getQuickCommands().map((command) => (
+            <Tooltip key={command.id} title={command.description}>
+              <Button size="small" onClick={() => handleCopilotCommand(command.id)}>
+                {command.title}
+              </Button>
+            </Tooltip>
+          ))}
         </div>
         {attachedFiles.length > 0 && (
           <div className={styles.attachedFiles}>
@@ -2661,6 +2857,42 @@ const Chat: React.FC = () => {
           headerStyle={{ padding: '16px 20px' }}
         >
           <Tools />
+        </Drawer>
+        <Drawer
+          title="会话历史"
+          placement="right"
+          onClose={() => setSessionsVisible(false)}
+          visible={sessionsVisible}
+          width="100%"
+          bodyStyle={{ padding: 12 }}
+          headerStyle={{ padding: '16px 20px' }}
+          extra={<Button size="small" icon={<PlusOutlined />} onClick={createNewChatSession}>新对话</Button>}
+        >
+          <List
+            dataSource={chatSessions}
+            locale={{ emptyText: <Empty description="暂无会话" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
+            renderItem={(session) => (
+              <List.Item>
+                <Card
+                  size="small"
+                  hoverable
+                  style={{
+                    width: '100%',
+                    borderColor: session.id === currentSessionId ? '#6366f1' : undefined,
+                  }}
+                  onClick={() => loadChatSession(session.id)}
+                >
+                  <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                    <Text strong ellipsis>{session.title}</Text>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      {session.messageCount} 条消息 · {moment(session.updatedAt).fromNow()}
+                    </Text>
+                    {session.summary && <Text type="secondary" style={{ fontSize: 12 }} ellipsis>{session.summary}</Text>}
+                  </Space>
+                </Card>
+              </List.Item>
+            )}
+          />
         </Drawer>
         <Modal
           title={ocrViewer ? `OCR 文本 - ${ocrViewer.fileName}` : 'OCR 文本'}

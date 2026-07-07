@@ -10,3 +10,17 @@ declare module '*.scss' {
   export default content;
 }
 
+declare module '@paddleocr/paddleocr-js' {
+  export const PaddleOCR: {
+    create(options?: Record<string, unknown>): Promise<{
+      predict(input: unknown, params?: Record<string, unknown>): Promise<Array<{
+        items?: Array<{
+          text?: string;
+          score?: number;
+          poly?: Array<{ x?: number; y?: number } | [number, number]>;
+        }>;
+      }>>;
+      dispose?: () => Promise<void>;
+    }>;
+  };
+}

@@ -3,7 +3,7 @@
   "name": "gancao-copliot",
   "version": "1.0.0",
   "action": {},
-  "permissions": ["sidePanel", "tabs", "storage", "scripting", "activeTab", "downloads"],
+  "permissions": ["sidePanel", "tabs", "storage", "scripting", "activeTab", "downloads", "alarms"],
   "optional_permissions": ["debugger"],
   "host_permissions": [
     "<all_urls>",
@@ -16,7 +16,11 @@
     "https://g.alicdn.com/*"
   ],
   "content_security_policy": {
-    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self' https://*.gancao.com https://api.86gamestore.com https://api.deepseek.com https://oapi.dingtalk.com https://login.dingtalk.com; object-src 'self'"
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self' https://*.gancao.com https://api.86gamestore.com https://api.deepseek.com https://oapi.dingtalk.com https://login.dingtalk.com; object-src 'self'",
+    "sandbox": "sandbox allow-scripts allow-forms allow-popups allow-modals; script-src 'self' 'unsafe-inline' 'unsafe-eval'; child-src 'self';"
+  },
+  "sandbox": {
+    "pages": ["paddleocrSandbox.html"]
   },
   "side_panel": {
     "default_path": "sidePanel.html"

@@ -1,16 +1,21 @@
 import React from 'react';
 import { HashRouter, Routes, Route, Link, useLocation } from 'react-router-dom';
 import { Layout, Menu, Typography } from 'antd';
-import { RobotOutlined, SettingOutlined, HomeOutlined } from '@ant-design/icons';
+import { RobotOutlined, DashboardOutlined } from '@ant-design/icons';
 import WorkflowList from './pages/WorkflowList';
 import WorkflowEditor from './pages/WorkflowEditor';
+import AutomationTaskCenter from './pages/AutomationTaskCenter';
 
 const { Header, Sider, Content } = Layout;
 const { Title } = Typography;
 
 const AppLayout: React.FC = () => {
   const location = useLocation();
-  const selectedKey = location.pathname.startsWith('/workflow') ? 'workflows' : 'home';
+  const selectedKey = location.pathname.startsWith('/tasks')
+    ? 'tasks'
+    : location.pathname.startsWith('/workflow')
+      ? 'workflows'
+      : 'tasks';
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
@@ -24,6 +29,9 @@ const AppLayout: React.FC = () => {
           selectedKeys={[selectedKey]}
           style={{ borderRight: 0 }}
         >
+          <Menu.Item key="tasks" icon={<DashboardOutlined />}>
+            <Link to="/tasks">自动化任务中心</Link>
+          </Menu.Item>
           <Menu.Item key="workflows" icon={<RobotOutlined />}>
             <Link to="/workflows">自动化工作流</Link>
           </Menu.Item>
@@ -38,7 +46,8 @@ const AppLayout: React.FC = () => {
         </Header>
         <Content style={{ margin: '24px', background: '#fff', borderRadius: 8, overflow: 'hidden' }}>
           <Routes>
-            <Route path="/" element={<WorkflowList />} />
+            <Route path="/" element={<AutomationTaskCenter />} />
+            <Route path="/tasks" element={<AutomationTaskCenter />} />
             <Route path="/workflows" element={<WorkflowList />} />
             <Route path="/workflow/:id" element={<WorkflowEditor />} />
             <Route path="/settings" element={<div style={{ padding: 24 }}>设置功能开发中...</div>} />

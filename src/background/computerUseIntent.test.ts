@@ -190,7 +190,9 @@ describe('computerUseIntent', () => {
     }));
     expect(intent.taskPlan?.phases[6]).toEqual(expect.objectContaining({
       type: 'download_file',
-      goal: '下载第一条数据',
+      goal: '下载第1条数据',
+      ordinal: 1,
+      collectionType: 'table_row_group',
     }));
   });
 
@@ -318,6 +320,29 @@ describe('computerUseIntent', () => {
     expect(intent.taskPlan?.phases[0]).toEqual(expect.objectContaining({
       type: 'open_page_or_center',
       targets: ['文件中心'],
+    }));
+  });
+
+  it('keeps row ordinal intent for file center download workflows', () => {
+    const intent = inferComputerUseIntentByRule(
+      '打开饮片管理中库存预警的列表，点击导出，然后打开http://admin-file-center.dev.igancao.cn/#/export，然后子系统选择智慧药房WMS仓储，再输入用户花名：秋枫，再点击搜索，下载第一条数据'
+    );
+
+    const phases = intent.taskPlan?.phases || [];
+    expect(phases.map((phase) => phase.type)).toEqual([
+      'navigate_to_page',
+      'download_file',
+      'open_site',
+      'fill_form',
+      'fill_form',
+      'click_action',
+      'download_file',
+    ]);
+    expect(phases.at(-1)).toEqual(expect.objectContaining({
+      type: 'download_file',
+      goal: '下载第1条数据',
+      ordinal: 1,
+      collectionType: 'table_row_group',
     }));
   });
 });

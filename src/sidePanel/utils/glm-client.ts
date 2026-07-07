@@ -101,10 +101,12 @@ export class GLMClient {
   private statusHandlers: Set<(status: 'connected' | 'disconnected' | 'connecting' | 'error') => void> = new Set();
   private currentStatus: 'connected' | 'disconnected' | 'connecting' | 'error' = 'disconnected';
   private abortController: AbortController | null = null;
+  private activeReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
   private cancelRequested = false;
   private lastError: string | null = null;
   private messageHistory: GLMHistoryMessage[] = [];
   private activeRunId = 0;
+  private activeMemoryContext = '';
 
   constructor(options?: GLMClientOptions) {
     // 初始化时设置状态
@@ -126,7 +128,12 @@ export class GLMClient {
   /**
    * 发送消息并处理响应
    */
-  async send(messageHistory: GLMHistoryMessage[], continuedRunId?: number, requestId?: string): Promise<GLMSendResult> {
+  async send(
+    messageHistory: GLMHistoryMessage[],
+    continuedRunId?: number,
+    requestId?: string,
+    memoryContext?: string
+  ): Promise<GLMSendResult> {
     if (!messageHistory || messageHistory.length === 0) {
       return { success: false, error: '消息为空' };
     }
@@ -136,6 +143,7 @@ export class GLMClient {
       this.activeRunId += 1;
       this.cancelRequested = false;
       this.lastError = null;
+      this.activeMemoryContext = memoryContext?.trim() || '';
     }
     const runId = isContinuation ? continuedRunId : this.activeRunId;
 
@@ -213,7 +221,7 @@ export class GLMClient {
 - 检索资料中心、读取资料分块、生成需求任务清单。
 - 提取当前网页字段、表格和列表并生成结构化数据。
 - 读取当前页面控制台报错并辅助诊断。
-- 生成业务流程草稿。`,
+- 生成业务流程草稿。${this.activeMemoryContext ? `\n\n长期记忆参考：\n${this.activeMemoryContext}` : ''}`,
       };
       
       // 检查是否已有系统消息，如果没有则添加
@@ -278,6 +286,10 @@ export class GLMClient {
       if (this.abortController === controller) {
         this.abortController = null;
       }
+      if (this.cancelRequested || runId !== this.activeRunId) {
+        this.setStatus('connected');
+        return { success: false, cancelled: true, error: '已停止生成' };
+      }
       if (error.name === 'AbortError') {
         const cancelled = this.cancelRequested || runId !== this.activeRunId;
         this.setStatus('connected');
@@ -316,13 +328,20 @@ export class GLMClient {
     }> = [];
     let finishReason: string | null = null;
 
+    this.activeReader = reader;
+
+    const ensureRunActive = () => {
+      if (this.cancelRequested || runId !== this.activeRunId) {
+        throw new DOMException('已停止生成', 'AbortError');
+      }
+    };
+
     try {
       while (true) {
-        if (this.cancelRequested || runId !== this.activeRunId) {
-          return;
-        }
+        ensureRunActive();
 
         const { done, value } = await reader.read();
+        ensureRunActive();
         
         if (done) {
           break;
@@ -343,14 +362,15 @@ export class GLMClient {
           const dataStr = trimmedLine.slice(6).trim();
           
             if (dataStr === '[DONE]') {
+              ensureRunActive();
               // 流结束，处理工具调用或最终消息
               if (accumulatedToolCalls.length > 0) {
                 await this.handleToolCalls(accumulatedToolCalls, messageId, runId, requestId);
                 return; // 工具调用后需要等待执行结果
               } else if (accumulatedContent) {
-              await this.handleFinalMessage(accumulatedContent, messageId, requestId);
-            }
-            continue;
+                await this.handleFinalMessage(accumulatedContent, messageId, runId, requestId);
+              }
+              continue;
           }
 
           try {
@@ -370,6 +390,7 @@ export class GLMClient {
 
             // 处理内容增量
             if (delta?.content) {
+              ensureRunActive();
               accumulatedContent += delta.content;
               // 实时发送增量更新
               this.notifyMessage({
@@ -416,11 +437,15 @@ export class GLMClient {
 
             // 如果 finish_reason 是 tool_calls，立即处理
             if (finishReason === 'tool_calls' && accumulatedToolCalls.length > 0) {
+              ensureRunActive();
               await this.handleToolCalls(accumulatedToolCalls, messageId, runId, requestId);
               return; // 工具调用后需要等待执行结果，停止流处理
             }
 
           } catch (parseError) {
+            if ((parseError as any)?.name === 'AbortError') {
+              throw parseError;
+            }
             // 忽略解析错误，继续处理下一行
             console.warn('[GLMClient] 解析响应数据失败:', parseError, dataStr);
           }
@@ -428,13 +453,21 @@ export class GLMClient {
       }
 
       // 流结束后处理工具调用或最终消息
+      ensureRunActive();
       if (accumulatedToolCalls.length > 0) {
         await this.handleToolCalls(accumulatedToolCalls, messageId, runId, requestId);
       } else if (accumulatedContent) {
-        await this.handleFinalMessage(accumulatedContent, messageId, requestId);
+        await this.handleFinalMessage(accumulatedContent, messageId, runId, requestId);
       }
     } finally {
-      reader.releaseLock();
+      if (this.activeReader === reader) {
+        this.activeReader = null;
+      }
+      try {
+        reader.releaseLock();
+      } catch {
+        // Reader may already be cancelled/released after an abort.
+      }
     }
   }
 
@@ -444,8 +477,13 @@ export class GLMClient {
   private async handleFinalMessage(
     content: string,
     messageId: string,
+    runId: number,
     requestId?: string
   ): Promise<void> {
+    if (this.cancelRequested || runId !== this.activeRunId) {
+      return;
+    }
+
     // 发送最终消息
     this.notifyMessage({
       id: messageId,
@@ -486,6 +524,9 @@ export class GLMClient {
     });
 
     // 发送工具调用消息到 UI
+    if (this.cancelRequested || runId !== this.activeRunId) {
+      return;
+    }
     this.notifyMessage({
       id: messageId,
       content: `正在执行工具调用: ${cleanedToolCalls.map(tc => tc.name).join(', ')}`,
@@ -567,6 +608,15 @@ export class GLMClient {
     this.cancelRequested = true;
     this.activeRunId += 1;
 
+    if (this.activeReader) {
+      try {
+        this.activeReader.cancel('已停止生成').catch(() => {});
+      } catch {
+        // Ignore cancellation races.
+      }
+      this.activeReader = null;
+    }
+
     if (this.abortController) {
       this.abortController.abort();
       this.abortController = null;
@@ -577,6 +627,18 @@ export class GLMClient {
   }
 
   disconnect(): void {
+    this.cancelRequested = true;
+    this.activeRunId += 1;
+
+    if (this.activeReader) {
+      try {
+        this.activeReader.cancel('已断开连接').catch(() => {});
+      } catch {
+        // Ignore cancellation races.
+      }
+      this.activeReader = null;
+    }
+
     if (this.abortController) {
       this.abortController.abort();
       this.abortController = null;

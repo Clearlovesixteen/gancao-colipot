@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
 import { List, Card, Button, Typography, Space } from 'antd';
-import { ArrowLeftOutlined, FileExcelOutlined, FolderOpenOutlined, RightOutlined, ThunderboltOutlined } from '@ant-design/icons';
+import { ArrowLeftOutlined, DatabaseOutlined, FileExcelOutlined, FolderOpenOutlined, RightOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import ExcelMerge from './ExcelMerge';
 import DocumentCenter from './DocumentCenter';
+import MemoryCenter from './MemoryCenter';
 
 const { Title, Text } = Typography;
 
@@ -38,6 +39,10 @@ const Tools: React.FC = () => {
     return <DocumentCenter onBack={() => setCurrentTool(null)} />;
   }
 
+  if (currentTool === 'memory') {
+    return <MemoryCenter onBack={() => setCurrentTool(null)} />;
+  }
+
   const tools = [
     {
       key: 'excel-merge',
@@ -56,6 +61,12 @@ const Tools: React.FC = () => {
       title: '资料中心',
       description: '管理上传文件、OCR、网页结构化数据和任务清单',
       icon: <FolderOpenOutlined style={{ fontSize: 24, color: '#1677ff' }} />
+    },
+    {
+      key: 'memory',
+      title: '记忆中心',
+      description: '管理聊天历史和长期记忆，控制 AI 可召回的偏好与业务上下文',
+      icon: <DatabaseOutlined style={{ fontSize: 24, color: '#13c2c2' }} />
     }
   ];
 

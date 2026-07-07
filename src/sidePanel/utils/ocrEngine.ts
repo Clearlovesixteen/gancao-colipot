@@ -3,6 +3,11 @@ import pdfWorkerSrc from 'pdfjs-dist/legacy/build/pdf.worker.mjs?url';
 
 GlobalWorkerOptions.workerSrc = pdfWorkerSrc;
 
+const PADDLE_DET_MODEL = 'PP-OCRv5_mobile_det';
+const PADDLE_REC_MODEL = 'PP-OCRv5_mobile_rec';
+const PADDLE_DET_MODEL_FILE = `${PADDLE_DET_MODEL}.tar`;
+const PADDLE_REC_MODEL_FILE = `${PADDLE_REC_MODEL}.tar`;
+
 export interface OcrProgress {
   status: string;
   progress: number;
@@ -37,6 +42,34 @@ export interface OcrOptions {
   onProgress?: (progress: OcrProgress) => void;
 }
 
+interface PaddleOcrLine {
+  text?: string;
+  score?: number;
+  poly?: Array<{ x?: number; y?: number } | [number, number]>;
+}
+
+interface PaddleOcrResultLike {
+  items?: PaddleOcrLine[];
+}
+
+interface PaddleOcrSandboxBridge {
+  predict: (imageData: ImageData) => Promise<PaddleOcrResultLike>;
+}
+
+interface PaddleOcrSandboxResponse {
+  source?: string;
+  id?: string;
+  ok?: boolean;
+  result?: PaddleOcrResultLike;
+  error?: string;
+}
+
+const SANDBOX_REQUEST_SOURCE = 'gancao-paddleocr';
+const SANDBOX_RESPONSE_SOURCE = 'gancao-paddleocr-sandbox';
+const PADDLE_SANDBOX_TIMEOUT_MS = 120000;
+
+let paddleSandboxBridgePromise: Promise<PaddleOcrSandboxBridge> | null = null;
+
 function runtimeUrl(path: string): string {
   if (typeof chrome !== 'undefined' && chrome.runtime?.getURL) {
     return chrome.runtime.getURL(path);
@@ -44,46 +77,156 @@ function runtimeUrl(path: string): string {
   return `/${path}`;
 }
 
-export function getOcrWorkerOptions(onProgress?: (progress: OcrProgress) => void): Record<string, any> {
+export function getPaddleOcrRuntimeOptions(): Record<string, any> {
   return {
-    workerPath: runtimeUrl('tesseract/worker.min.js'),
-    corePath: runtimeUrl('tesseract/core'),
-    langPath: runtimeUrl('tesseract/lang-data'),
-    workerBlobURL: false,
-    logger: (message: any) => {
-      if (!onProgress) return;
-      onProgress({
-        status: String(message.status || 'ocr'),
-        progress: Number(message.progress || 0),
-      });
+    worker: false,
+    sandboxUrl: runtimeUrl('paddleocrSandbox.html'),
+    textDetectionModelName: PADDLE_DET_MODEL,
+    textDetectionModelAsset: {
+      url: runtimeUrl(`paddleocr/models/${PADDLE_DET_MODEL_FILE}`),
+    },
+    textRecognitionModelName: PADDLE_REC_MODEL,
+    textRecognitionModelAsset: {
+      url: runtimeUrl(`paddleocr/models/${PADDLE_REC_MODEL_FILE}`),
+    },
+    ortOptions: {
+      backend: 'wasm',
+      wasmPaths: runtimeUrl('paddleocr/ort/'),
+      numThreads: 1,
+      simd: true,
+      proxy: false,
     },
   };
 }
 
 export function getOcrErrorMessage(error: unknown): string {
-  if (error instanceof Error && error.message) return error.message;
-  if (typeof error === 'string' && error.trim()) return error;
+  if (error instanceof Error && error.message) return normalizePaddleErrorMessage(error.message);
+  if (typeof error === 'string' && error.trim()) return normalizePaddleErrorMessage(error);
   if (error && typeof error === 'object') {
     const record = error as Record<string, any>;
     const message = record.message || record.error || record.reason || record.type;
-    if (message) return String(message);
+    if (message) return normalizePaddleErrorMessage(String(message));
   }
-  return 'OCR 初始化或识别失败，请重新加载插件后再试。';
+  return 'PaddleOCR 初始化或识别失败，请重新加载插件后再试。';
 }
 
-async function getWorker(onProgress?: (progress: OcrProgress) => void): Promise<any> {
-  const tesseract = await import('tesseract.js');
-  const createWorker = (tesseract as any).createWorker;
-  const worker = await createWorker('chi_sim+eng', 1, getOcrWorkerOptions(onProgress));
-  await worker.setParameters?.({
-    tessedit_pageseg_mode: '6',
-    preserve_interword_spaces: '1',
-  });
-  return worker;
+function normalizePaddleErrorMessage(message: string): string {
+  if (/unsafe-eval|content security policy|CSP|script-src/i.test(message)) {
+    return `PaddleOCR 运行时需要在扩展 sandbox 页面中初始化，请检查 manifest sandbox 配置、paddleocrSandbox.html 和 paddleocrSandbox.js 是否已打包。原始错误：${message}`;
+  }
+  if (/PP-OCRv5_mobile_(det|rec)\.tar|model asset|404|not found|failed to fetch|fetch/i.test(message)) {
+    return `PaddleOCR 模型资产缺失或无法加载，请检查 public/paddleocr/models/${PADDLE_DET_MODEL_FILE} 和 ${PADDLE_REC_MODEL_FILE} 是否已打包。原始错误：${message}`;
+  }
+  if (/wasm|onnx|ort|InferenceSession|WebAssembly/i.test(message)) {
+    return `PaddleOCR WebAssembly/ONNX Runtime 初始化失败，请检查 dist/paddleocr/ort 资源是否存在。原始错误：${message}`;
+  }
+  return message;
 }
 
-function canvasToDataUrl(canvas: HTMLCanvasElement): string {
-  return canvas.toDataURL('image/png');
+async function getPaddleSandboxBridge(onProgress?: (progress: OcrProgress) => void): Promise<PaddleOcrSandboxBridge> {
+  if (!paddleSandboxBridgePromise) {
+    paddleSandboxBridgePromise = (async () => {
+      onProgress?.({ status: 'initializing', progress: 0.02 });
+      await assertPaddleModelAssets();
+      if (typeof document === 'undefined') {
+        throw new Error('PaddleOCR sandbox 只能在浏览器页面中初始化');
+      }
+
+      const iframe = document.createElement('iframe');
+      iframe.src = getPaddleOcrRuntimeOptions().sandboxUrl;
+      iframe.title = 'PaddleOCR Sandbox';
+      iframe.style.display = 'none';
+      iframe.setAttribute('aria-hidden', 'true');
+
+      const pending = new Map<string, {
+        resolve: (value: PaddleOcrResultLike) => void;
+        reject: (reason?: unknown) => void;
+        timer: number;
+      }>();
+
+      const cleanupPending = (id: string) => {
+        const request = pending.get(id);
+        if (!request) return;
+        window.clearTimeout(request.timer);
+        pending.delete(id);
+      };
+
+      window.addEventListener('message', (event: MessageEvent<PaddleOcrSandboxResponse>) => {
+        if (event.source !== iframe.contentWindow) return;
+        const response = event.data;
+        if (!response || response.source !== SANDBOX_RESPONSE_SOURCE || !response.id || response.id === 'ready') return;
+        const request = pending.get(response.id);
+        if (!request) return;
+        cleanupPending(response.id);
+        if (response.ok) {
+          request.resolve(response.result || {});
+        } else {
+          request.reject(new Error(response.error || 'PaddleOCR sandbox 识别失败'));
+        }
+      });
+
+      await new Promise<void>((resolve, reject) => {
+        const timer = window.setTimeout(() => {
+          reject(new Error('PaddleOCR sandbox 页面加载超时'));
+        }, 30000);
+        iframe.onload = () => {
+          window.clearTimeout(timer);
+          resolve();
+        };
+        iframe.onerror = () => {
+          window.clearTimeout(timer);
+          reject(new Error('PaddleOCR sandbox 页面加载失败'));
+        };
+        (document.body || document.documentElement).appendChild(iframe);
+      });
+
+      onProgress?.({ status: 'initializing', progress: 1 });
+
+      return {
+        predict(imageData: ImageData): Promise<PaddleOcrResultLike> {
+          return new Promise((resolve, reject) => {
+            const targetWindow = iframe.contentWindow;
+            if (!targetWindow) {
+              reject(new Error('PaddleOCR sandbox 页面不可用'));
+              return;
+            }
+
+            const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+            const timer = window.setTimeout(() => {
+              cleanupPending(id);
+              reject(new Error('PaddleOCR sandbox 响应超时'));
+            }, PADDLE_SANDBOX_TIMEOUT_MS);
+            pending.set(id, { resolve, reject, timer });
+            targetWindow.postMessage({
+              source: SANDBOX_REQUEST_SOURCE,
+              id,
+              type: 'predict',
+              imageData,
+            }, '*');
+          });
+        },
+      };
+    })().catch((error) => {
+      paddleSandboxBridgePromise = null;
+      throw error;
+    });
+  }
+  return paddleSandboxBridgePromise;
+}
+
+async function assertPaddleModelAssets(): Promise<void> {
+  if (typeof fetch !== 'function') return;
+  const options = getPaddleOcrRuntimeOptions();
+  const urls = [
+    options.textDetectionModelAsset.url,
+    options.textRecognitionModelAsset.url,
+  ];
+  await Promise.all(urls.map(async (url) => {
+    const response = await fetch(url, { method: 'HEAD', cache: 'no-store' });
+    if (!response.ok) {
+      throw new Error(`PaddleOCR model asset missing: ${url}`);
+    }
+  }));
 }
 
 function readBlobAsDataUrl(file: Blob): Promise<string> {
@@ -109,7 +252,7 @@ function normalizeOcrText(text: string): string {
     .replace(/\r/g, '')
     .replace(/[\u200B-\u200D\uFEFF]/g, '')
     .replace(/[ \t]+/g, ' ')
-    .replace(/([\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])/g, '$1')
+    .replace(/([\u4e00-\u9fff])[ \t]+(?=[\u4e00-\u9fff])/g, '$1')
     .replace(/[ \t]+\n/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
@@ -158,7 +301,7 @@ function getOcrWarnings(quality: OcrQuality, hasText: boolean): string[] {
     warnings.push('未识别到文字');
   }
   if (quality.lowConfidence || quality.likelyGarbled) {
-    warnings.push('本地 OCR 置信度较低，识别结果可能存在乱码或漏字，建议使用模型文件解析兜底。');
+    warnings.push('PaddleOCR 置信度较低，识别结果可能存在乱码或漏字，建议核对原始文件。');
   }
   return warnings;
 }
@@ -227,48 +370,83 @@ function pickBetterOcrPage(current: OcrPageResult, candidate: OcrPageResult): Oc
   return scoreOcrPage(candidate) > scoreOcrPage(current) ? candidate : current;
 }
 
-async function recognizeDataUrl(
-  dataUrl: string,
+function getPolyPoint(point: { x?: number; y?: number } | [number, number] | undefined): { x: number; y: number } {
+  if (Array.isArray(point)) return { x: Number(point[0]) || 0, y: Number(point[1]) || 0 };
+  return { x: Number(point?.x) || 0, y: Number(point?.y) || 0 };
+}
+
+function getLinePosition(line: PaddleOcrLine): { x: number; y: number } {
+  const points = (line.poly || []).map(getPolyPoint);
+  if (!points.length) return { x: 0, y: 0 };
+  return {
+    x: Math.min(...points.map((point) => point.x)),
+    y: Math.min(...points.map((point) => point.y)),
+  };
+}
+
+function normalizePaddleScore(score: number | undefined): number | undefined {
+  if (typeof score !== 'number' || Number.isNaN(score)) return undefined;
+  if (score <= 1) return Math.max(0, Math.min(100, score * 100));
+  return Math.max(0, Math.min(100, score));
+}
+
+export function paddleResultToPage(result: PaddleOcrResultLike | undefined, pageNumber: number): OcrPageResult {
+  const lines = [...(result?.items || [])]
+    .filter((line) => String(line.text || '').trim())
+    .sort((left, right) => {
+      const leftPosition = getLinePosition(left);
+      const rightPosition = getLinePosition(right);
+      const yDelta = leftPosition.y - rightPosition.y;
+      if (Math.abs(yDelta) > 12) return yDelta;
+      return leftPosition.x - rightPosition.x;
+    });
+  const text = normalizeOcrText(lines.map((line) => String(line.text || '').trim()).join('\n'));
+  const scores = lines
+    .map((line) => normalizePaddleScore(line.score))
+    .filter((score): score is number => typeof score === 'number');
+  const confidence = scores.length ? scores.reduce((sum, score) => sum + score, 0) / scores.length : undefined;
+  const quality = evaluateOcrQuality(text, confidence);
+  return { pageNumber, text, confidence, quality };
+}
+
+async function recognizeCanvas(
+  canvas: HTMLCanvasElement,
   pageNumber: number,
-  worker: any,
+  bridge: PaddleOcrSandboxBridge,
   pageCount: number,
   onProgress?: (progress: OcrProgress) => void
 ): Promise<OcrPageResult> {
   onProgress?.({ status: 'recognizing', progress: 0, pageNumber, pageCount });
-  const result = await worker.recognize(dataUrl);
-  const text = normalizeOcrText(String(result?.data?.text || ''));
-  const confidence = typeof result?.data?.confidence === 'number' ? result.data.confidence : undefined;
-  const quality = evaluateOcrQuality(text, confidence);
+  const context = canvas.getContext('2d', { willReadFrequently: true });
+  if (!context) throw new Error('无法读取 OCR 画布像素');
+  const result = await bridge.predict(context.getImageData(0, 0, canvas.width, canvas.height));
+  const page = paddleResultToPage(result, pageNumber);
   onProgress?.({ status: 'done', progress: 1, pageNumber, pageCount });
-  return { pageNumber, text, confidence, quality };
+  return page;
 }
 
 export async function ocrImage(file: Blob, options: OcrOptions = {}): Promise<OcrResult> {
-  const worker = await getWorker(options.onProgress);
-  try {
-    const dataUrl = await readBlobAsDataUrl(file);
-    const image = await loadImage(dataUrl);
-    const enhanced = preprocessCanvas(image, { binarize: false });
-    let page = await recognizeDataUrl(canvasToDataUrl(enhanced), 1, worker, 1, options.onProgress);
-    if (shouldRetryOcr(page)) {
-      const binarized = preprocessCanvas(image, { binarize: true });
-      const retryPage = await recognizeDataUrl(canvasToDataUrl(binarized), 1, worker, 1, options.onProgress);
-      page = pickBetterOcrPage(page, retryPage);
-    }
-    const quality = mergeOcrQuality([page]);
-    const hasText = Boolean(page.text.trim());
-    return {
-      text: page.text,
-      pages: [page],
-      quality,
-      warnings: getOcrWarnings(quality, hasText),
-    };
-  } finally {
-    await worker.terminate?.();
+  const bridge = await getPaddleSandboxBridge(options.onProgress);
+  const dataUrl = await readBlobAsDataUrl(file);
+  const image = await loadImage(dataUrl);
+  const enhanced = preprocessCanvas(image, { binarize: false });
+  let page = await recognizeCanvas(enhanced, 1, bridge, 1, options.onProgress);
+  if (shouldRetryOcr(page)) {
+    const binarized = preprocessCanvas(image, { binarize: true });
+    const retryPage = await recognizeCanvas(binarized, 1, bridge, 1, options.onProgress);
+    page = pickBetterOcrPage(page, retryPage);
   }
+  const quality = mergeOcrQuality([page]);
+  const hasText = Boolean(page.text.trim());
+  return {
+    text: page.text,
+    pages: [page],
+    quality,
+    warnings: getOcrWarnings(quality, hasText),
+  };
 }
 
-export async function renderPdfPageToDataUrls(pdf: any, pageNumber: number): Promise<{ enhanced: string; binarized: string }> {
+export async function renderPdfPageToCanvases(pdf: any, pageNumber: number): Promise<{ enhanced: HTMLCanvasElement; binarized: HTMLCanvasElement }> {
   const page = await pdf.getPage(pageNumber);
   const viewport = page.getViewport({ scale: 3 });
   const canvas = document.createElement('canvas');
@@ -279,8 +457,8 @@ export async function renderPdfPageToDataUrls(pdf: any, pageNumber: number): Pro
   canvas.height = Math.ceil(viewport.height);
   await page.render({ canvasContext: context, viewport }).promise;
   return {
-    enhanced: canvasToDataUrl(preprocessCanvas(canvas, { binarize: false })),
-    binarized: canvasToDataUrl(preprocessCanvas(canvas, { binarize: true })),
+    enhanced: preprocessCanvas(canvas, { binarize: false }),
+    binarized: preprocessCanvas(canvas, { binarize: true }),
   };
 }
 
@@ -294,16 +472,16 @@ export async function ocrPdf(file: Blob, options: OcrOptions = {}): Promise<OcrR
   });
   const pdf = await loadingTask.promise;
   const pageCount = Math.min(pdf.numPages, maxPages);
-  const worker = await getWorker(options.onProgress);
+  const bridge = await getPaddleSandboxBridge(options.onProgress);
   const pages: OcrPageResult[] = [];
 
   try {
     for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
-      options.onProgress?.({ status: 'rendering', progress: (pageNumber - 1) / pageCount, pageNumber, pageCount });
-      const dataUrls = await renderPdfPageToDataUrls(pdf, pageNumber);
-      let page = await recognizeDataUrl(dataUrls.enhanced, pageNumber, worker, pageCount, options.onProgress);
+      options.onProgress?.({ status: 'rendering_pdf', progress: (pageNumber - 1) / pageCount, pageNumber, pageCount });
+      const canvases = await renderPdfPageToCanvases(pdf, pageNumber);
+      let page = await recognizeCanvas(canvases.enhanced, pageNumber, bridge, pageCount, options.onProgress);
       if (shouldRetryOcr(page)) {
-        const retryPage = await recognizeDataUrl(dataUrls.binarized, pageNumber, worker, pageCount, options.onProgress);
+        const retryPage = await recognizeCanvas(canvases.binarized, pageNumber, bridge, pageCount, options.onProgress);
         page = pickBetterOcrPage(page, retryPage);
       }
       pages.push(page);
@@ -319,7 +497,6 @@ export async function ocrPdf(file: Blob, options: OcrOptions = {}): Promise<OcrR
       warnings: getOcrWarnings(quality, hasText),
     };
   } finally {
-    await worker.terminate?.();
     try {
       await pdf.cleanup?.();
       await loadingTask.destroy?.();

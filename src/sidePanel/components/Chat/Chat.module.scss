@@ -893,6 +893,16 @@ $radius-full: 9999px;
   font-weight: 400;
 }
 
+.messageActions {
+  margin-top: 4px;
+
+  :global(.ant-btn-link) {
+    padding: 0;
+    height: 20px;
+    font-size: 12px;
+  }
+}
+
 // 打字指示器
 .typingIndicator {
   display: flex;
