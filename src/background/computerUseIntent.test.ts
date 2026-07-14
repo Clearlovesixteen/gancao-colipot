@@ -196,6 +196,28 @@ describe('computerUseIntent', () => {
     }));
   });
 
+  it('compiles an in-page form workflow without requiring an explicit URL', () => {
+    const goal = '子系统选择智慧药房WMS仓储，再输入用户花名：秋枫，再点击查询，下载第一条数据';
+    const intent = inferComputerUseIntentByRule(goal);
+
+    expect(intent.taskPlan?.phases.map((phase) => phase.type)).toEqual([
+      'fill_form',
+      'fill_form',
+      'click_action',
+      'download_file',
+    ]);
+    expect(intent.taskPlan?.phases[0]).toEqual(expect.objectContaining({
+      formValues: [expect.objectContaining({ label: '子系统', value: '智慧药房WMS仓储', control: 'select' })],
+    }));
+    expect(intent.taskPlan?.phases[1]).toEqual(expect.objectContaining({
+      formValues: [expect.objectContaining({ label: '用户花名', value: '秋枫', control: 'input' })],
+    }));
+    expect(intent.taskPlan?.phases.at(-1)).toEqual(expect.objectContaining({
+      ordinal: 1,
+      collectionType: 'table_row_group',
+    }));
+  });
+
   it('adds fallback navigation before download when LLM omits the target page phase', async () => {
     const goal = '打开饮片管理中库存预警的列表，点击导出，然后打开文件中心，等待5S,然后点击刚刚下载的文件';
     const taskIntent = parseComputerUseTask(goal);

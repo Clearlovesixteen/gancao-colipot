@@ -5,7 +5,10 @@
   "scripts": {
     "build": "vite build",
     "test": "vitest run --config vitest.config.ts",
-    "watch": "vite build --watch"
+    "watch": "vite build --watch",
+    "test:e2e": "vite build && playwright test",
+    "test:e2e:headed": "vite build && PW_HEADLESS=0 playwright test",
+    "verify": "tsc --noEmit --pretty false && vitest run --config vitest.config.ts && vite build && playwright test"
   },
   "dependencies": {
     "@ant-design/icons": "^6.1.0",
@@ -30,6 +33,7 @@
     "zod": "^4.3.5"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "@types/chrome": "^0.0.260",
     "@types/react": "^18.2.0",
     "@types/react-dom": "^18.2.0",

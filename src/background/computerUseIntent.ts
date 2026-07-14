@@ -195,19 +195,19 @@ function extractFormValues(goal: string): NonNullable<ComputerUsePhase['formValu
   };
 
   for (const segment of segments) {
-    const selectAfterVerb = segment.match(/(?:选择|选中|选为)\s*([^：:为是]+?)\s*(?:为|是|:|：)\s*(.+)$/);
+    const selectAfterVerb = segment.match(/^(?:然后|再|并且|并|以及)?\s*(?:选择|选中|选为)\s*([^：:为是]+?)\s*(?:为|是|:|：)\s*(.+)$/);
     if (selectAfterVerb?.[1] && selectAfterVerb?.[2]) {
       push(selectAfterVerb[1], selectAfterVerb[2], 'select');
       continue;
     }
 
-    const selectBeforeVerb = segment.match(/(.+?)\s*(?:选择|选中|选为)\s*(.+)$/);
+    const selectBeforeVerb = segment.match(/^(?:然后|再|并且|并|以及)?\s*(.+?)\s*(?:选择|选中|选为)\s*(.+)$/);
     if (selectBeforeVerb?.[1] && selectBeforeVerb?.[2]) {
       push(selectBeforeVerb[1], selectBeforeVerb[2], 'select');
       continue;
     }
 
-    const inputMatch = segment.match(/(?:输入|填写|键入)\s*([^：:为是]+?)\s*(?:为|是|:|：)\s*(.+)$/);
+    const inputMatch = segment.match(/^(?:然后|再|并且|并|以及)?\s*(?:输入|填写|键入)\s*([^：:为是]+?)\s*(?:为|是|:|：)\s*(.+)$/);
     if (inputMatch?.[1] && inputMatch?.[2]) {
       push(inputMatch[1], inputMatch[2], 'input');
     }
@@ -350,6 +350,10 @@ function buildTaskPlan(goal: string, intent: Omit<ComputerUseIntent, 'taskPlan'>
   const standaloneOpenTarget = extractStandaloneOpenPageTarget(goal);
   const hasLatestDownloadTarget = /(刚刚下载|刚下载|最近下载|最新下载|下载的文件|刚才下载)/.test(goal);
   const waitMs = extractWaitMs(goal);
+  const rowDownloadOrdinal = /(?:下载|导出).{0,8}(?:第[一二三四五六七八九十\d]+条|第[一二三四五六七八九十\d]+行|首条|首行)/.test(goal)
+    ? extractOrdinal(goal)
+    : undefined;
+  const hasStandaloneDownloadAction = /(?:点击|点|按下)\s*(?:真实)?(?:导出|下载)(?:按钮)?(?:\s|，|。|；|;|,|然后|再|$)/.test(goal);
 
   if (!hasDownload && !hasFileCenter && !standaloneOpenTarget && !hasLatestDownloadTarget && !waitMs) return undefined;
 
@@ -363,7 +367,7 @@ function buildTaskPlan(goal: string, intent: Omit<ComputerUseIntent, 'taskPlan'>
     });
   }
 
-  if (hasDownload) {
+  if (hasDownload && (hasStandaloneDownloadAction || (!formValues.length && !rowDownloadOrdinal))) {
     phases.push({
       id: 'download_file',
       type: 'download_file',
@@ -380,6 +384,37 @@ function buildTaskPlan(goal: string, intent: Omit<ComputerUseIntent, 'taskPlan'>
       type: 'open_page_or_center',
       goal: `打开${target}`,
       targets: [target],
+    });
+  }
+
+
+  for (const [index, formValue] of formValues.entries()) {
+    phases.push({
+      id: `fill_form_${index + 1}`,
+      type: 'fill_form',
+      goal: `${formValue.control === 'select' ? '选择' : '输入'}${formValue.label}：${formValue.value}`,
+      targets: [formValue.label],
+      formValues: [formValue],
+    });
+  }
+
+  if (clickActionTargets.some((target) => /(搜索|查询|筛选)/.test(target))) {
+    phases.push({
+      id: 'click_search_action',
+      type: 'click_action',
+      goal: '点击搜索/查询按钮',
+      targets: ['搜索', '查询'],
+    });
+  }
+
+  if (rowDownloadOrdinal) {
+    phases.push({
+      id: 'download_table_row',
+      type: 'download_file',
+      goal: `下载第${rowDownloadOrdinal}条数据`,
+      targets: ['下载', '导出'],
+      ordinal: rowDownloadOrdinal,
+      collectionType: 'table_row_group',
     });
   }
 

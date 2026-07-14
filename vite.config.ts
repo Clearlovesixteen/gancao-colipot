@@ -108,6 +108,7 @@ export default defineConfig({
         background: resolve(__dirname, 'src/background/index.ts'),
         content: resolve(__dirname, 'src/content/index.ts'),
         paddleocrSandbox: resolve(__dirname, 'src/sidePanel/utils/paddleocrSandbox.ts'),
+        ocrHost: resolve(__dirname, 'src/offscreen/ocrHost.ts'),
       },
       output: {
         entryFileNames: '[name].js',

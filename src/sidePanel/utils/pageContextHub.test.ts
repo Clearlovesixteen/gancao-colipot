@@ -28,6 +28,18 @@ describe('collectPageContextHub', () => {
                 title: '文件列表',
                 items: [{ index: 1, text: '报表.xlsx', confidence: 0.8 }],
               },
+              {
+                id: 'forms',
+                type: 'form_group',
+                title: '筛选表单',
+                items: [{ index: 1, text: '用户花名', purpose: 'user_alias', confidence: 0.9, metadata: { controlType: 'input', required: true } }],
+              },
+              {
+                id: 'actions',
+                type: 'action_group',
+                title: '页面动作',
+                items: [{ index: 1, text: '查询', purpose: 'search_button', riskLevel: 'low', confidence: 0.9, metadata: { actionKind: 'search' } }],
+              },
             ],
             pageState: { kind: 'empty_page', hasModal: false, hasCaptcha: false, hasLoginSignal: false, hasEmptyState: true },
             capturedAt: Date.now(),
@@ -52,6 +64,10 @@ describe('collectPageContextHub', () => {
     expect(context.title).toBe('文件中心');
     expect(context.collections[0]).toMatchObject({ type: 'file_list', count: 1 });
     expect(context.signals.map((signal) => signal.type)).toEqual(['empty', 'console_error']);
+    expect(context.pageSignals).toEqual(context.signals);
+    expect(context.formSummary?.fields[0]).toMatchObject({ label: '用户花名', required: true });
+    expect(context.actionSummary?.actions[0]).toMatchObject({ text: '查询', actionKind: 'search' });
+    expect(context.tableSummary).toMatchObject({ tableCount: 1 });
     expect(context.tableCount).toBe(1);
   });
 });

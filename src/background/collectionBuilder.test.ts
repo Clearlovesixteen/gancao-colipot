@@ -19,6 +19,9 @@ function element(overrides: Partial<ObservedElement>): ObservedElement {
     parentText: overrides.parentText,
     placeholder: overrides.placeholder,
     name: overrides.name,
+    ariaLabel: overrides.ariaLabel,
+    title: overrides.title,
+    required: overrides.required,
     value: overrides.value,
     clickable: overrides.clickable ?? true,
     active: overrides.active,
@@ -39,6 +42,46 @@ function observation(elements: ObservedElement[]): BrowserObservation {
 }
 
 describe('buildObservedCollections', () => {
+  it('excludes non-clickable navigation wrappers from menu collections', () => {
+    const collections = buildObservedCollections({
+      observation: observation([
+        element({ elementId: 'wrapper', role: 'section', tag: 'section', text: '颗粒剂管理 库存预警', purpose: 'menu_item', clickable: false }),
+        element({ elementId: 'parent', role: 'button', tag: 'button', text: '饮片管理', purpose: 'menu_item', clickable: true }),
+      ]),
+    });
+
+    const menuItems = collections.filter((collection) => collection.type === 'menu_group').flatMap((collection) => collection.items);
+    expect(menuItems.map((item) => item.elementId)).toEqual(['parent']);
+  });
+
+  it('prefers the field label over a conflicting placeholder and exposes control metadata', () => {
+    const collections = buildObservedCollections({
+      observation: observation([
+        element({
+          elementId: 'field_alias',
+          role: 'textbox',
+          tag: 'input',
+          parentText: '用户花名',
+          placeholder: '请输入文件名',
+          region: 'form_area',
+          bbox: { x: 180, y: 80, width: 220, height: 32 },
+          required: true,
+        }),
+      ]),
+    });
+
+    const field = collections.find((collection) => collection.type === 'form_group')?.items[0];
+    expect(field?.text).toBe('用户花名');
+    expect(field?.purpose).toBe('user_alias');
+    expect(field?.metadata).toMatchObject({
+      label: '用户花名',
+      placeholder: '请输入文件名',
+      controlType: 'input',
+      required: true,
+      selectLike: false,
+    });
+  });
+
   it('builds form_group from labeled controls', () => {
     const collections = buildObservedCollections({
       observation: observation([
@@ -89,6 +132,32 @@ describe('buildObservedCollections', () => {
     expect(byId.get('delete')?.riskLevel).toBe('high');
   });
 
+  it('recognizes an icon-only download action from aria/title context', () => {
+    const collections = buildObservedCollections({
+      observation: observation([
+        element({
+          elementId: 'icon_download',
+          role: 'button',
+          tag: 'button',
+          text: '',
+          ariaLabel: '下载文件',
+          title: '下载',
+          context: '操作列',
+          bbox: { x: 900, y: 120, width: 32, height: 32 },
+        }),
+      ]),
+    });
+
+    const action = collections.find((collection) => collection.type === 'action_group')?.items[0];
+    expect(action?.purpose).toBe('download_button');
+    expect(action?.metadata).toMatchObject({
+      actionKind: 'download',
+      iconLabel: '下载文件',
+      parentRegion: 'main',
+      riskLevel: 'medium',
+    });
+  });
+
   it('builds table_row_group with row actions', () => {
     const collections = buildObservedCollections({
       observation: observation([
@@ -105,6 +174,10 @@ describe('buildObservedCollections', () => {
       text: '下载',
       purpose: 'download_button',
       riskLevel: 'medium',
+    });
+    expect(tableRows?.items[0]?.metadata).toMatchObject({
+      rowIndex: 1,
+      stableRowKey: expect.any(String),
     });
   });
 });

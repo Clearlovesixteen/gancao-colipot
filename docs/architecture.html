@@ -459,7 +459,7 @@ flowchart TB
   Upload["用户上传 / 粘贴文件"]
   LocalParse["本地解析<br/>shared/fileParser.ts<br/>Excel / Word / PDF / 文本 / 表格"]
   RawFile["原始文件保存<br/>rawFiles"]
-  OCR["OCR 识别<br/>sidePanel/utils/ocrEngine.ts<br/>Tesseract + pdfjs"]
+  OCR["OCR 识别<br/>sidePanel/utils/ocrEngine.ts<br/>PaddleOCR sandbox + ONNX Runtime Web + pdfjs"]
   OCRStruct["OCR 结构化<br/>shared/ocrStructurer.ts<br/>字段 / 表格 / 正文区块 / 摘要"]
   WebCapture["网页结构化采集<br/>extract_page_structured_data"]
   Download["浏览器导出下载<br/>downloadManager.ts<br/>chrome.downloads 监听"]

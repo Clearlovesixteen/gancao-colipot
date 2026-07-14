@@ -54,6 +54,58 @@ describe('verifyComputerUseStep', () => {
     expect(verifyComputerUseStep({ step, result: {}, before: context(), after }).success).toBe(true);
   });
 
+  it('verifies selected values from form_group metadata', () => {
+    const step: PlannedStep = {
+      id: 'select_system',
+      action: 'select_option',
+      target: { elementId: 'system_select', collectionType: 'form_group', text: '子系统' },
+      value: '智慧药房WMS仓储',
+      rationale: '选择子系统',
+      verify: { type: 'value_equals', value: '智慧药房WMS仓储' },
+    };
+    const after = context({
+      collections: [{
+        id: 'forms',
+        type: 'form_group',
+        items: [{
+          index: 1,
+          text: '子系统',
+          elementId: 'system_select',
+          confidence: 0.9,
+          metadata: { label: '子系统', controlType: 'select', currentValue: '智慧药房WMS仓储' },
+        }],
+      }],
+    });
+
+    expect(verifyComputerUseStep({ step, result: { success: true }, before: context(), after }).success).toBe(true);
+  });
+
+  it('rejects a select action when the selected value is not observable', () => {
+    const step: PlannedStep = {
+      id: 'select_system',
+      action: 'select_option',
+      target: { elementId: 'system_select', collectionType: 'form_group', text: '子系统' },
+      value: '智慧药房WMS仓储',
+      rationale: '选择子系统',
+      verify: { type: 'value_equals', value: '智慧药房WMS仓储' },
+    };
+    const after = context({
+      collections: [{
+        id: 'forms',
+        type: 'form_group',
+        items: [{
+          index: 1,
+          text: '子系统',
+          elementId: 'system_select',
+          confidence: 0.9,
+          metadata: { label: '子系统', controlType: 'select', currentValue: '其他系统' },
+        }],
+      }],
+    });
+
+    expect(verifyComputerUseStep({ step, result: { success: true }, before: context(), after })).toEqual(expect.objectContaining({ success: false }));
+  });
+
   it('fails when extract_table returns no table', () => {
     const step: PlannedStep = { id: 'extract', action: 'extract_table', rationale: '提取表格' };
 

@@ -452,6 +452,15 @@ function isEnabledElement(element: Element): boolean {
 function getElementValue(element: Element): string | undefined {
   const el = element as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
   if (typeof el.value === 'string') return el.value;
+  const role = element.getAttribute('role');
+  const className = String((element as HTMLElement).className || '');
+  if (role === 'combobox' || /(ant-select|el-select|select)/i.test(className)) {
+    const selected = element.querySelector(
+      '.ant-select-selection-item,.el-select__selected-item,[aria-selected="true"],[role="option"][aria-selected="true"]',
+    );
+    const text = getCleanText(selected || element);
+    return text || undefined;
+  }
   return undefined;
 }
 
@@ -583,11 +592,25 @@ function collectPageRegions(): BrowserPageRegion[] {
   return regions.slice(0, 30);
 }
 
+function hasNearbySearchSubmit(element: Element): boolean {
+  let container: Element | null = element.parentElement;
+  for (let depth = 0; container && depth < 5; depth += 1, container = container.parentElement) {
+    const candidates = container.querySelectorAll('button,input[type="submit"],input[type="button"],[role="button"]');
+    if (Array.from(candidates).some((candidate) => (
+      /(百度一下|搜索|查询|search|submit|go|🔍)/i.test(getElementDescriptor(candidate))
+    ))) return true;
+  }
+  return false;
+}
+
 function inferElementPurpose(element: Element, role: string): { purpose: ElementPurpose; score: number } {
   const tag = element.tagName.toLowerCase();
   const descriptor = getElementDescriptor(element);
   const compactDescriptor = descriptor.replace(/\s+/g, '');
   const input = element as HTMLInputElement;
+  const isTextEntry = role === 'textbox'
+    || tag === 'textarea'
+    || (tag === 'input' && !['button', 'submit', 'reset', 'checkbox', 'radio', 'file', 'hidden'].includes((input.type || 'text').toLowerCase()));
   const downloadPattern = /(下载|导出|导出excel|导出csv|下载报表|download|export|download-outlined|export-outlined|file-excel|excel|csv)/i;
 
   if (tag === 'table' || role === 'table' || role === 'grid') {
@@ -599,7 +622,10 @@ function inferElementPurpose(element: Element, role: string): { purpose: Element
     return { purpose: role === 'tab' ? 'navigation_item' : 'menu_item', score };
   }
 
-  if ((role === 'textbox' || tag === 'input' || tag === 'textarea') && /(搜索|search|查询|关键字|关键词|keyword|query|\bwd\b|\bq\b)/i.test(descriptor)) {
+  if (isTextEntry && (
+    /(搜索|search|查询|关键字|关键词|keyword|query|\bwd\b|\bq\b)/i.test(descriptor)
+    || hasNearbySearchSubmit(element)
+  )) {
     let score = 0.76;
     if (input.id === 'kw' || input.name === 'wd' || input.name === 'q' || input.type === 'search') score = 0.98;
     if (/请输入|搜索|search/.test(input.placeholder || '')) score = Math.max(score, 0.9);
@@ -696,8 +722,8 @@ function inferPageState(elements: ObservedElement[]): BrowserPageState {
 
   let kind: BrowserPageState['kind'] = 'unknown';
   if (hasPermissionDenied) kind = 'permission_page';
-  else if (hasLoginSignal && !searchInput) kind = 'login_page';
-  else if (/baidu\.com\/s\?|bing\.com\/search|google\.[^/]+\/search/i.test(url)) kind = 'result_page';
+  else if (/baidu\.com\/s\?|bing\.com\/search|google\.[^/]+\/search|youtube\.com\/results/i.test(url)) kind = 'result_page';
+  else if (hasLoginSignal && !mainInput) kind = 'login_page';
   else if (searchInput) kind = 'search_page';
   else if (hasTable) kind = 'table_page';
   else if (hasEmptyState) kind = 'empty_page';
@@ -857,6 +883,9 @@ export async function observePage(args: any = {}): Promise<BrowserObservation> {
       href: (element as HTMLAnchorElement).href || undefined,
       placeholder: (element as HTMLInputElement).placeholder || undefined,
       name: (element as HTMLInputElement).name || undefined,
+      ariaLabel: element.getAttribute('aria-label') || undefined,
+      title: element.getAttribute('title') || undefined,
+      required: (element as HTMLInputElement).required || element.getAttribute('aria-required') === 'true' || undefined,
       purpose: purpose.purpose,
       score: purpose.score,
       region: inferElementRegion(element),
@@ -1286,13 +1315,23 @@ async function getPageInfo(args: any): Promise<any> {
 
 function isVisibleElement(element: Element): boolean {
   const el = element as HTMLElement;
-  if (el.hidden || el.getAttribute('aria-hidden') === 'true') return false;
-  const style = window.getComputedStyle(el);
-  if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+  let current: Element | null = el;
+  while (current) {
+    const currentElement = current as HTMLElement;
+    if (currentElement.hidden || currentElement.getAttribute('aria-hidden') === 'true') return false;
+    const currentStyle = window.getComputedStyle(currentElement);
+    if (currentStyle.display === 'none' || currentStyle.visibility === 'hidden' || currentStyle.opacity === '0') return false;
+    current = current.parentElement;
+  }
   const rect = el.getBoundingClientRect();
-  if (rect.width > 0 || rect.height > 0 || el.getClientRects().length > 0) return true;
-  if (['input', 'textarea', 'select', 'button', 'a'].includes(element.tagName.toLowerCase())) return true;
-  return Boolean(getCleanText(element) || element.children.length > 0);
+  if ((rect.width > 0 && rect.height > 0) || el.getClientRects().length > 0) return true;
+  // jsdom has no layout engine. Keep DOM-focused unit tests useful without
+  // weakening visibility semantics in the real browser.
+  if (/jsdom/i.test(window.navigator.userAgent)) {
+    if (['input', 'textarea', 'select', 'button', 'a'].includes(element.tagName.toLowerCase())) return true;
+    return Boolean(getCleanText(element) || element.children.length > 0);
+  }
+  return false;
 }
 
 function getCleanText(element: Element | null | undefined): string {

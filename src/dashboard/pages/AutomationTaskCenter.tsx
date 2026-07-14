@@ -37,6 +37,7 @@ import type {
   AutomationRunKind,
   AutomationRunStatus,
   PageMonitorExtractMode,
+  PageMonitorCheckRecord,
 } from '../../shared/automationTypes';
 import {
   AUTOMATION_TASK_TEMPLATES,
@@ -49,6 +50,10 @@ import {
 } from '../../shared/automationRunStore';
 import { createWorkflowDraftFromComputerUseRun } from '../../shared/automationWorkflowDraft';
 import { upsertAutomationWorkflow } from '../../sidePanel/utils/automationStorage';
+import { listAutomationWorkflows, type StoredAutomationWorkflow } from '../../sidePanel/utils/automationStorage';
+import { listDocumentAssets } from '../../shared/documentRepository';
+import type { DocumentAsset } from '../../shared/documentTypes';
+import { listPageMonitorChecks } from '../../shared/pageMonitorHistory';
 
 const { Text, Title, Paragraph } = Typography;
 const { Search } = Input;
@@ -65,16 +70,117 @@ const statusColor: Record<AutomationRunStatus, string> = {
   stopped: 'default',
 };
 
+const TaskOutputCard: React.FC<{ run: AutomationRun }> = ({ run }) => {
+  const output = run.metadata?.taskOutput as any;
+  if (output === undefined || output === null) return null;
+
+  if (run.kind === 'document_qa') {
+    return (
+      <Card size="small" title="资料回答">
+        <Paragraph style={{ whiteSpace: 'pre-wrap' }}>{String(output.answer || output.summary || '已完成资料问答')}</Paragraph>
+        {Array.isArray(output.sources) && output.sources.length > 0 && (
+          <List
+            size="small"
+            header={<Text strong>引用来源</Text>}
+            dataSource={output.sources}
+            renderItem={(source: any) => (
+              <List.Item>
+                <Space direction="vertical" size={0}>
+                  <Text>{source.documentTitle || source.fileName || source.documentId || '资料来源'}</Text>
+                  <Text type="secondary">
+                    {[source.pageNumber ? `第 ${source.pageNumber} 页` : '', source.sectionTitle, source.chunkId].filter(Boolean).join(' · ') || '未标注页码/章节'}
+                  </Text>
+                </Space>
+              </List.Item>
+            )}
+          />
+        )}
+      </Card>
+    );
+  }
+
+  if (run.kind === 'ocr') {
+    return (
+      <Card size="small" title="OCR 结果">
+        <Descriptions column={1} size="small">
+          <Descriptions.Item label="资料">{output.assetTitle || output.fileName || output.assetId || '-'}</Descriptions.Item>
+          <Descriptions.Item label="页数">{output.pageCount ?? output.pages?.length ?? '-'}</Descriptions.Item>
+          <Descriptions.Item label="状态">{output.status || run.status}</Descriptions.Item>
+          <Descriptions.Item label="识别文本">{String(output.text || output.preview || '').slice(0, 600) || '-'}</Descriptions.Item>
+        </Descriptions>
+      </Card>
+    );
+  }
+
+  if (run.kind === 'page_diagnosis') {
+    return (
+      <Card size="small" title="页面诊断">
+        <Descriptions column={1} size="small">
+          <Descriptions.Item label="摘要">{output.summary || output.answer || run.resultSummary || '-'}</Descriptions.Item>
+          <Descriptions.Item label="风险等级">{output.riskLevel || output.risk || '-'}</Descriptions.Item>
+          <Descriptions.Item label="当前页面">{output.url || run.traceSummary?.lastPageUrl || '-'}</Descriptions.Item>
+        </Descriptions>
+      </Card>
+    );
+  }
+
+  if (run.kind === 'extract') {
+    const tableCount = Array.isArray(output.tables) ? output.tables.length : 0;
+    const fieldCount = Array.isArray(output.fields) ? output.fields.length : 0;
+    const listCount = Array.isArray(output.lists) ? output.lists.length : 0;
+    return (
+      <Card size="small" title="提取结果">
+        <Space wrap>
+          <Tag>表格 {tableCount}</Tag>
+          <Tag>字段 {fieldCount}</Tag>
+          <Tag>列表 {listCount}</Tag>
+        </Space>
+      </Card>
+    );
+  }
+
+  if (run.kind === 'computer_use') {
+    const download = output.downloadResult || output.result?.downloadResult;
+    if (download) {
+      return (
+        <Card size="small" title="业务交付结果">
+          <Descriptions column={1} size="small">
+            <Descriptions.Item label="文件名">{download.filename || download.assetTitle || '-'}</Descriptions.Item>
+            <Descriptions.Item label="下载状态">{download.status || (download.success ? 'completed' : 'failed')}</Descriptions.Item>
+            <Descriptions.Item label="资料 ID">{download.assetId || '-'}</Descriptions.Item>
+            <Descriptions.Item label="资料入库">{download.savedToDocumentCenter ? '已入库' : '未自动入库'}</Descriptions.Item>
+          </Descriptions>
+        </Card>
+      );
+    }
+  }
+
+  return (
+    <Collapse>
+      <Collapse.Panel header="结构化任务结果" key="task-output">
+        <pre style={{ maxHeight: 280, overflow: 'auto', background: '#f7f8fa', padding: 12, borderRadius: 6 }}>
+          {JSON.stringify(output, null, 2)}
+        </pre>
+      </Collapse.Panel>
+    </Collapse>
+  );
+};
+
 const AutomationTaskCenter: React.FC = () => {
   const [runs, setRuns] = useState<AutomationRun[]>([]);
   const [loading, setLoading] = useState(false);
   const [keyword, setKeyword] = useState('');
-  const [runningTask, setRunningTask] = useState<{ taskId: string; computerUseRunId: string } | null>(null);
+  const [runningTask, setRunningTask] = useState<{ taskId: string } | null>(null);
   const [detailRun, setDetailRun] = useState<AutomationRun | null>(null);
   const [statusFilter, setStatusFilter] = useState<AutomationRunStatus | 'all'>('all');
   const [kindFilter, setKindFilter] = useState<AutomationRunKind | 'all'>('all');
   const [monitorTemplateId, setMonitorTemplateId] = useState<string | null>(null);
   const [monitorForm] = Form.useForm();
+  const [configTemplateId, setConfigTemplateId] = useState<string | null>(null);
+  const [taskForm] = Form.useForm();
+  const [documents, setDocuments] = useState<DocumentAsset[]>([]);
+  const [workflows, setWorkflows] = useState<StoredAutomationWorkflow[]>([]);
+  const [monitorChecks, setMonitorChecks] = useState<PageMonitorCheckRecord[]>([]);
 
   const refresh = async () => {
     setLoading(true);
@@ -87,17 +193,27 @@ const AutomationTaskCenter: React.FC = () => {
 
   useEffect(() => {
     refresh();
+    listDocumentAssets().then(setDocuments).catch(() => setDocuments([]));
+    listAutomationWorkflows().then(setWorkflows).catch(() => setWorkflows([]));
   }, []);
+
+  useEffect(() => {
+    if (detailRun?.kind !== 'page_monitor') {
+      setMonitorChecks([]);
+      return;
+    }
+    listPageMonitorChecks(detailRun.id).then(setMonitorChecks).catch(() => setMonitorChecks([]));
+  }, [detailRun]);
 
   useEffect(() => {
     const listener = async (msg: any) => {
       if (!runningTask) return;
-      if (msg.type === 'COMPUTER_USE_FINISHED' && msg.runId === runningTask.computerUseRunId) {
+      if (msg.type === 'AUTOMATION_TASK_FINISHED' && msg.taskId === runningTask.taskId) {
         setRunningTask(null);
         message.success('任务已完成');
         setTimeout(refresh, 300);
       }
-      if (msg.type === 'COMPUTER_USE_ERROR' && msg.runId === runningTask.computerUseRunId) {
+      if (msg.type === 'AUTOMATION_TASK_ERROR' && msg.taskId === runningTask.taskId) {
         setRunningTask(null);
         message.error('任务失败，已记录日志摘要');
         setTimeout(refresh, 300);
@@ -129,13 +245,23 @@ const AutomationTaskCenter: React.FC = () => {
         url: '',
         intervalMinutes: 15,
         extractMode: 'page_text',
+        ruleType: 'changed',
+        maxConsecutiveFailures: 3,
       });
       return;
     }
-    const run = await upsertAutomationRun(makeAutomationRunFromTemplate(template));
-    message.success('已加入任务中心');
-    await refresh();
-    return run;
+    setConfigTemplateId(template.id);
+    taskForm.setFieldsValue({
+      title: template.title,
+      goal: template.defaultGoal,
+      startUrl: '',
+      maxSteps: 12,
+      documentIds: [],
+      maxPages: 20,
+      extractMode: 'structured',
+      workflowVariablesJson: '{}',
+      variablesJson: '{}',
+    });
   };
 
   const handleRun = async (run: AutomationRun) => {
@@ -143,11 +269,7 @@ const AutomationTaskCenter: React.FC = () => {
       message.warning('已有任务运行中，请先停止或等待完成');
       return;
     }
-    if (run.kind !== 'computer_use' && run.kind !== 'page_monitor') {
-      message.info('该任务已记录为模板任务，调度执行将在后续批次接入');
-      return;
-    }
-    if (!run.goal?.trim()) {
+    if (run.kind !== 'ocr' && run.kind !== 'workflow' && !run.goal?.trim()) {
       message.error('任务缺少目标描述');
       return;
     }
@@ -163,7 +285,7 @@ const AutomationTaskCenter: React.FC = () => {
           refresh();
           return;
         }
-        if (run.kind === 'computer_use') setRunningTask({ taskId: run.id, computerUseRunId: resp.runId });
+        setRunningTask({ taskId: run.id });
         message.success('任务已启动');
         refresh();
       },
@@ -171,16 +293,62 @@ const AutomationTaskCenter: React.FC = () => {
   };
 
   const handleStop = async (run: AutomationRun) => {
-    const computerUseRunId = String(
-      run.metadata?.computerUseRunId || (runningTask?.taskId === run.id ? runningTask.computerUseRunId : '') || '',
-    );
-    if (computerUseRunId) {
-      chrome.runtime.sendMessage({ type: 'STOP_AUTOMATION_TASK', taskId: run.id });
-    }
-    await patchAutomationRun(run.id, { status: 'stopped', endedAt: Date.now() });
+    chrome.runtime.sendMessage({ type: 'STOP_AUTOMATION_TASK', taskId: run.id });
     if (runningTask?.taskId === run.id) setRunningTask(null);
     message.info('已请求停止');
     refresh();
+  };
+
+  const handleSubmitTask = async () => {
+    const values = await taskForm.validateFields();
+    const template = AUTOMATION_TASK_TEMPLATES.find((item) => item.id === configTemplateId);
+    if (!template) return;
+    const base = makeAutomationRunFromTemplate(template);
+    const documentIds = Array.isArray(values.documentIds) ? values.documentIds : [];
+    const parseJsonObject = (value: string | undefined, label: string) => {
+      if (!value?.trim()) return {};
+      try {
+        const parsed = JSON.parse(value);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error();
+        return parsed as Record<string, unknown>;
+      } catch {
+        throw new Error(`${label}必须是 JSON 对象`);
+      }
+    };
+    let workflowVariables: Record<string, unknown>;
+    let variables: Record<string, unknown>;
+    try {
+      workflowVariables = parseJsonObject(values.workflowVariablesJson, '工作流参数');
+      variables = parseJsonObject(values.variablesJson, '运行参数');
+    } catch (error: any) {
+      message.error(error?.message || '参数格式不正确');
+      return;
+    }
+    const run = await upsertAutomationRun({
+      ...base,
+      title: values.title || template.title,
+      goal: values.goal || template.defaultGoal,
+      workflowId: values.workflowId,
+      metadata: {
+        ...(base.metadata || {}),
+        startUrl: values.startUrl,
+        maxSteps: values.maxSteps,
+        question: values.goal,
+        documentIds,
+        assetId: values.assetId,
+        maxPages: values.maxPages,
+        extractMode: values.extractMode,
+        workflowId: values.workflowId,
+        useDebugger: values.useDebugger === true,
+        workflowVariables,
+        variables,
+      },
+    });
+    message.success('任务已加入任务中心');
+    setConfigTemplateId(null);
+    taskForm.resetFields();
+    await refresh();
+    return run;
   };
 
   const handleDisableMonitor = async (run: AutomationRun) => {
@@ -269,6 +437,14 @@ const AutomationTaskCenter: React.FC = () => {
           url: values.url,
           intervalMinutes: Number(values.intervalMinutes || 15),
           extractMode: values.extractMode as PageMonitorExtractMode,
+          rule: {
+            type: values.ruleType || 'changed',
+            value: values.ruleValue,
+            from: values.ruleFrom,
+            to: values.ruleTo,
+            operator: values.ruleOperator,
+          },
+          maxConsecutiveFailures: Number(values.maxConsecutiveFailures || 3),
         },
       },
       createdAt: now,
@@ -340,7 +516,7 @@ const AutomationTaskCenter: React.FC = () => {
               </Button>
             </>
           ) : (
-            <Tooltip title={run.kind === 'computer_use' ? '在当前活动标签页运行' : run.kind === 'page_monitor' ? '立即检查一次' : '后续接入调度执行'}>
+            <Tooltip title={run.kind === 'page_monitor' ? '立即检查一次' : '运行任务'}>
               <Button size="small" icon={<PlayCircleOutlined />} onClick={() => handleRun(run)}>
                 {run.kind === 'page_monitor' ? '检查' : '运行'}
               </Button>
@@ -367,13 +543,13 @@ const AutomationTaskCenter: React.FC = () => {
         <div>
           <Title level={4} style={{ margin: 0 }}>自动化任务中心</Title>
           <Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0 }}>
-            统一管理 Computer Use、页面监控、页面诊断和资料任务的模板与运行记录。当前已支持 Computer Use 手动运行、trace 详情、保存工作流草稿和页面监控 MVP。
+            统一运行与追踪 Computer Use、页面监控、页面诊断、资料问答、OCR、数据提取和固定工作流。
           </Paragraph>
         </div>
 
         <Card title="任务模板" extra={<Text type="secondary">HARPA-style 常用命令模板</Text>}>
           <List
-            grid={{ gutter: 16, column: 5 }}
+            grid={{ gutter: 16, column: 4 }}
             dataSource={AUTOMATION_TASK_TEMPLATES}
             renderItem={(template) => (
               <List.Item>
@@ -407,6 +583,9 @@ const AutomationTaskCenter: React.FC = () => {
                 <Option value="page_monitor">页面监控</Option>
                 <Option value="page_diagnosis">页面诊断</Option>
                 <Option value="document_qa">资料问答</Option>
+                <Option value="ocr">OCR</Option>
+                <Option value="extract">数据提取</Option>
+                <Option value="workflow">工作流</Option>
               </Select>
               <Select value={statusFilter} onChange={setStatusFilter} style={{ width: 130 }}>
                 <Option value="all">全部状态</Option>
@@ -465,6 +644,8 @@ const AutomationTaskCenter: React.FC = () => {
               <Descriptions.Item label="错误">{detailRun.error || '-'}</Descriptions.Item>
             </Descriptions>
 
+            <TaskOutputCard run={detailRun} />
+
             {detailRun.traceSummary && (
               <Card size="small" title="Trace 摘要">
                 <Descriptions column={1} size="small">
@@ -486,10 +667,38 @@ const AutomationTaskCenter: React.FC = () => {
                   <Descriptions.Item label="URL">{(detailRun.metadata as any).monitor.url}</Descriptions.Item>
                   <Descriptions.Item label="间隔">{(detailRun.metadata as any).monitor.intervalMinutes} 分钟</Descriptions.Item>
                   <Descriptions.Item label="采集模式">{(detailRun.metadata as any).monitor.extractMode}</Descriptions.Item>
+                  <Descriptions.Item label="触发规则">{(detailRun.metadata as any).monitor.rule?.type || 'changed'}</Descriptions.Item>
+                  <Descriptions.Item label="连续失败">
+                    {(detailRun.metadata as any).monitor.consecutiveFailures || 0} / {(detailRun.metadata as any).monitor.maxConsecutiveFailures || 3}
+                  </Descriptions.Item>
+                  <Descriptions.Item label="暂停原因">{(detailRun.metadata as any).monitor.pausedReason || '-'}</Descriptions.Item>
                   <Descriptions.Item label="最后检查">
                     {(detailRun.metadata as any).monitor.lastCheckedAt ? moment((detailRun.metadata as any).monitor.lastCheckedAt).format('YYYY-MM-DD HH:mm:ss') : '-'}
                   </Descriptions.Item>
                 </Descriptions>
+              </Card>
+            )}
+
+            {detailRun.kind === 'page_monitor' && (
+              <Card size="small" title="检查历史">
+                <List
+                  size="small"
+                  dataSource={monitorChecks}
+                  locale={{ emptyText: '暂无检查记录' }}
+                  renderItem={(record) => (
+                    <List.Item>
+                      <Space direction="vertical" size={2} style={{ width: '100%' }}>
+                        <Space>
+                          <Tag color={record.status === 'changed' ? 'green' : record.status === 'failed' ? 'red' : 'default'}>{record.status}</Tag>
+                          <Text type="secondary">{moment(record.checkedAt).format('YYYY-MM-DD HH:mm:ss')}</Text>
+                        </Space>
+                        <Text>{record.summary}</Text>
+                        {record.diffPreview && <Text code ellipsis>{record.diffPreview}</Text>}
+                        {record.error && <Text type="danger">{record.error}</Text>}
+                      </Space>
+                    </List.Item>
+                  )}
+                />
               </Card>
             )}
 
@@ -529,7 +738,88 @@ const AutomationTaskCenter: React.FC = () => {
               <Option value="context_summary">页面上下文摘要</Option>
             </Select>
           </Form.Item>
+          <Form.Item name="ruleType" label="触发规则" rules={[{ required: true }]}>
+            <Select options={[
+              { value: 'changed', label: '内容发生变化' },
+              { value: 'contains', label: '包含指定内容' },
+              { value: 'number_threshold', label: '数值达到阈值' },
+              { value: 'new_records', label: '出现新增记录' },
+              { value: 'status_transition', label: '状态发生转换' },
+            ]} />
+          </Form.Item>
+          <Form.Item noStyle shouldUpdate={(prev, next) => prev.ruleType !== next.ruleType}>
+            {({ getFieldValue }) => {
+              const type = getFieldValue('ruleType');
+              if (type === 'contains') return <Form.Item name="ruleValue" label="目标内容" rules={[{ required: true }]}><Input /></Form.Item>;
+              if (type === 'number_threshold') return <Space align="start" style={{ width: '100%' }}>
+                <Form.Item name="ruleOperator" label="比较" initialValue="gt"><Select style={{ width: 120 }} options={['gt', 'gte', 'lt', 'lte', 'eq'].map((value) => ({ value, label: value }))} /></Form.Item>
+                <Form.Item name="ruleValue" label="阈值" rules={[{ required: true }]}><InputNumber /></Form.Item>
+              </Space>;
+              if (type === 'status_transition') return <Space align="start" style={{ width: '100%' }}>
+                <Form.Item name="ruleFrom" label="原状态" rules={[{ required: true }]}><Input /></Form.Item>
+                <Form.Item name="ruleTo" label="目标状态" rules={[{ required: true }]}><Input /></Form.Item>
+              </Space>;
+              return null;
+            }}
+          </Form.Item>
+          <Form.Item name="maxConsecutiveFailures" label="连续失败后自动暂停"><InputNumber min={1} max={10} style={{ width: '100%' }} /></Form.Item>
         </Form>
+      </Modal>
+
+      <Modal
+        title={`配置${AUTOMATION_TASK_TEMPLATES.find((item) => item.id === configTemplateId)?.title || '任务'}`}
+        open={Boolean(configTemplateId)}
+        onCancel={() => setConfigTemplateId(null)}
+        onOk={handleSubmitTask}
+        okText="加入任务中心"
+        cancelText="取消"
+      >
+        {(() => {
+          const template = AUTOMATION_TASK_TEMPLATES.find((item) => item.id === configTemplateId);
+          if (!template) return null;
+          return (
+            <Form form={taskForm} layout="vertical">
+              <Form.Item name="title" label="任务名称" rules={[{ required: true }]}><Input /></Form.Item>
+              {template.kind !== 'ocr' && template.kind !== 'workflow' && (
+                <Form.Item name="goal" label={template.kind === 'document_qa' ? '资料问题' : '任务目标'} rules={[{ required: true }]}>
+                  <Input.TextArea rows={3} />
+                </Form.Item>
+              )}
+              {template.kind === 'computer_use' && <>
+                <Form.Item name="startUrl" label="起始 URL（可选）"><Input /></Form.Item>
+                <Form.Item name="maxSteps" label="最大步骤"><InputNumber min={1} max={30} style={{ width: '100%' }} /></Form.Item>
+                <Form.Item name="workflowVariablesJson" label="保存为工作流时的参数默认值">
+                  <Input.TextArea rows={3} placeholder={'例如：{\n  "warehouse": "杭州仓",\n  "operator": "秋枫"\n}'} />
+                </Form.Item>
+              </>}
+              {template.kind === 'page_diagnosis' && (
+                <Form.Item name="useDebugger" label="增强网络采集"><Select options={[{ value: false, label: '默认采集' }, { value: true, label: '使用 Debugger（需要授权）' }]} /></Form.Item>
+              )}
+              {template.kind === 'document_qa' && (
+                <Form.Item name="documentIds" label="资料范围"><Select mode="multiple" allowClear options={documents.map((item) => ({ value: item.id, label: item.title }))} /></Form.Item>
+              )}
+              {template.kind === 'ocr' && <>
+                <Form.Item name="assetId" label="选择资料" rules={[{ required: true, message: '请选择资料' }]}>
+                  <Select showSearch optionFilterProp="label" options={documents.map((item) => ({ value: item.id, label: item.title }))} />
+                </Form.Item>
+                <Form.Item name="maxPages" label="最大页数"><InputNumber min={1} max={100} style={{ width: '100%' }} /></Form.Item>
+              </>}
+              {template.kind === 'extract' && (
+                <Form.Item name="extractMode" label="提取模式"><Select options={[{ value: 'structured', label: '字段、列表与表格' }, { value: 'tables', label: '仅表格' }]} /></Form.Item>
+              )}
+              {template.kind === 'workflow' && (
+                <>
+                  <Form.Item name="workflowId" label="选择工作流" rules={[{ required: true, message: '请选择工作流' }]}>
+                    <Select options={workflows.map((item) => ({ value: item.id, label: item.name }))} />
+                  </Form.Item>
+                  <Form.Item name="variablesJson" label="本次运行参数">
+                    <Input.TextArea rows={4} placeholder={'例如：{ "warehouse": "杭州仓" }'} />
+                  </Form.Item>
+                </>
+              )}
+            </Form>
+          );
+        })()}
       </Modal>
     </div>
   );

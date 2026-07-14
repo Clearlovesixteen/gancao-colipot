@@ -53,7 +53,49 @@ describe('pageMonitor', () => {
     });
 
     expect(snapshot.tableCount).toBe(1);
+    expect(snapshot.rowCount).toBe(1);
     expect(snapshot.text).toContain('name|count');
     expect(snapshot.text).toContain('a|1');
+  });
+
+  it('supports contains and numeric threshold rules', () => {
+    const snapshot = createPageMonitorSnapshot({
+      mode: 'page_text',
+      title: '库存',
+      url: 'https://example.com/inventory',
+      text: '库存状态：异常，剩余数量 12',
+      capturedAt: 1,
+    });
+
+    expect(comparePageMonitorSnapshots(undefined, snapshot, { type: 'contains', value: '异常' }).matched).toBe(true);
+    expect(comparePageMonitorSnapshots(undefined, snapshot, { type: 'number_threshold', value: '10', operator: 'gte' }).matched).toBe(true);
+  });
+
+  it('detects new rows and status transitions', () => {
+    const previous = createPageMonitorSnapshot({
+      mode: 'table_summary',
+      title: '任务',
+      url: 'https://example.com/tasks',
+      text: '状态：处理中',
+      tables: [{ rows: [['a']] }],
+      capturedAt: 1,
+    });
+    const next = createPageMonitorSnapshot({
+      mode: 'table_summary',
+      title: '任务',
+      url: 'https://example.com/tasks',
+      text: '状态：已完成',
+      tables: [{ rows: [['a'], ['b']] }],
+      capturedAt: 2,
+    });
+
+    expect(comparePageMonitorSnapshots(previous, next, { type: 'new_records' }).matched).toBe(true);
+    const transitionPrevious = { ...previous, text: '状态：处理中' };
+    const transitionNext = { ...next, text: '状态：已完成' };
+    expect(comparePageMonitorSnapshots(transitionPrevious, transitionNext, {
+      type: 'status_transition',
+      from: '处理中',
+      to: '已完成',
+    }).matched).toBe(true);
   });
 });

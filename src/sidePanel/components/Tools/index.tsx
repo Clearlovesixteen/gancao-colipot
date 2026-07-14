@@ -1,9 +1,11 @@
 import React, { useState } from 'react';
 import { List, Card, Button, Typography, Space } from 'antd';
-import { ArrowLeftOutlined, DatabaseOutlined, FileExcelOutlined, FolderOpenOutlined, RightOutlined, ThunderboltOutlined } from '@ant-design/icons';
+import { ArrowLeftOutlined, ApiOutlined, AppstoreAddOutlined, DashboardOutlined, DatabaseOutlined, FileExcelOutlined, FolderOpenOutlined, HeartOutlined, RightOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import ExcelMerge from './ExcelMerge';
 import DocumentCenter from './DocumentCenter';
 import MemoryCenter from './MemoryCenter';
+import HealthCheck from './HealthCheck';
+import CustomCommandCenter from './CustomCommandCenter';
 
 const { Title, Text } = Typography;
 
@@ -43,6 +45,19 @@ const Tools: React.FC = () => {
     return <MemoryCenter onBack={() => setCurrentTool(null)} />;
   }
 
+  if (currentTool === 'health') {
+    return <HealthCheck onBack={() => setCurrentTool(null)} />;
+  }
+
+  if (currentTool === 'commands') {
+    return <CustomCommandCenter onBack={() => setCurrentTool(null)} />;
+  }
+
+  const openDashboard = (path: string = '/tasks') => {
+    const url = chrome.runtime.getURL(`dashboard.html#${path}`);
+    chrome.tabs.create({ url });
+  };
+
   const tools = [
     {
       key: 'excel-merge',
@@ -57,6 +72,12 @@ const Tools: React.FC = () => {
       icon: <ThunderboltOutlined style={{ fontSize: 24, color: '#722ed1' }} />
     },
     {
+      key: 'task-center',
+      title: '自动化任务中心',
+      description: '查看任务记录、页面监控、运行日志和失败详情',
+      icon: <DashboardOutlined style={{ fontSize: 24, color: '#1677ff' }} />
+    },
+    {
       key: 'documents',
       title: '资料中心',
       description: '管理上传文件、OCR、网页结构化数据和任务清单',
@@ -67,6 +88,24 @@ const Tools: React.FC = () => {
       title: '记忆中心',
       description: '管理聊天历史和长期记忆，控制 AI 可召回的偏好与业务上下文',
       icon: <DatabaseOutlined style={{ fontSize: 24, color: '#13c2c2' }} />
+    },
+    {
+      key: 'commands',
+      title: '自定义命令',
+      description: '创建、版本化、导入导出可复用的提示词和自动化任务命令',
+      icon: <AppstoreAddOutlined style={{ fontSize: 24, color: '#2f54eb' }} />
+    },
+    {
+      key: 'health',
+      title: '插件健康检查',
+      description: '检查 LLM、登录态、页面注入、下载、PaddleOCR 和资料库',
+      icon: <HeartOutlined style={{ fontSize: 24, color: '#eb2f96' }} />
+    },
+    {
+      key: 'model-settings',
+      title: '模型设置',
+      description: '配置 DeepSeek、业务模型或 OpenAI-compatible API',
+      icon: <ApiOutlined style={{ fontSize: 24, color: '#fa8c16' }} />
     }
   ];
 
@@ -79,7 +118,13 @@ const Tools: React.FC = () => {
           <List.Item>
             <Card 
               hoverable 
-              onClick={() => setCurrentTool(item.key)}
+              onClick={() => {
+                if (item.key === 'task-center' || item.key === 'model-settings') {
+                  openDashboard(item.key === 'model-settings' ? '/settings' : '/tasks');
+                  return;
+                }
+                setCurrentTool(item.key);
+              }}
               bodyStyle={{ padding: '16px' }}
             >
               <div style={{ display: 'flex', alignItems: 'center' }}>

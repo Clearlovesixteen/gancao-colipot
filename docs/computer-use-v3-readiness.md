@@ -102,3 +102,25 @@ Avoid in the first V3 slice:
 - Local visual model integration.
 - New backend service.
 - System-level computer use outside the current browser tab.
+
+## V3.1 Automated Acceptance Matrix
+
+V3.1 adds a real Chromium extension gate in addition to the existing unit tests. The test environment loads the unpacked `dist` extension and operates a local business fixture, so it does not depend on a production WMS account.
+
+| Capability | Unit gate | Chromium extension gate | Completion evidence |
+| --- | --- | --- | --- |
+| Duplicate nested menus | `collectionBuilder` + `targetResolver` | Select the requested parent and leaf | Active leaf and matching business route |
+| Form fields | `collectionBuilder` + `verifyComputerUseStep` | Select subsystem and type user alias | Observed values equal requested values |
+| Table row actions | `targetResolver` | Download the first result row | Resolved `table_row_group` ordinal and download event |
+| Real export | `verifyComputerUseStep` + runner tests | Click delayed export button | Completed or partial Chrome download |
+| Page context | `pageContextHub` + agent tests | Diagnosis smoke test | Shared page signals and collection summaries |
+
+Commands:
+
+```bash
+pnpm test:e2e
+pnpm test:e2e:headed
+pnpm verify
+```
+
+The deterministic Computer Use mode is a test-only storage flag used by the extension E2E harness to bypass external LLM availability. It does not change the normal user path.

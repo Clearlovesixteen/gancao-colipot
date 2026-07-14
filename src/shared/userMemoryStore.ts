@@ -6,6 +6,7 @@ export type ChatSession = {
   summary?: string;
   messageCount: number;
   tags?: string[];
+  archived?: boolean;
 };
 
 export type StoredChatMessage = {
@@ -192,9 +193,17 @@ export async function createChatSession(input: Partial<Pick<ChatSession, 'title'
   return session;
 }
 
-export async function listChatSessions(): Promise<ChatSession[]> {
+export async function listChatSessions(options: { includeArchived?: boolean; query?: string } = {}): Promise<ChatSession[]> {
   const sessions = await getAllFromStore<ChatSession>(SESSIONS_STORE);
-  return sessions.sort((a, b) => b.updatedAt - a.updatedAt);
+  const query = normalizeText(options.query || '').toLowerCase();
+  return sessions
+    .filter((session) => options.includeArchived || !session.archived)
+    .filter((session) => !query || `${session.title} ${session.summary || ''} ${(session.tags || []).join(' ')}`.toLowerCase().includes(query))
+    .sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+export async function archiveChatSession(id: string, archived = true): Promise<ChatSession | null> {
+  return updateChatSession(id, { archived });
 }
 
 export async function getChatSession(id: string): Promise<ChatSession | null> {

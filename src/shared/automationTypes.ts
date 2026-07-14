@@ -25,6 +25,9 @@ export interface ObservedElement {
   href?: string;
   placeholder?: string;
   name?: string;
+  ariaLabel?: string;
+  title?: string;
+  required?: boolean;
   purpose?: ElementPurpose;
   score?: number;
   region?: BrowserPageRegionType;
@@ -69,6 +72,54 @@ export type ObservedCollectionType =
 
 export type ActionRiskLevel = 'low' | 'medium' | 'high';
 
+export type ObservedFormControlType = 'input' | 'select' | 'checkbox' | 'radio' | 'date' | 'textarea';
+export type ObservedActionKind = 'search' | 'download' | 'save' | 'delete' | 'submit' | 'reset' | 'more' | 'generic';
+
+export interface ObservedRowActionMetadata {
+  text: string;
+  purpose?: string;
+  actionKind?: ObservedActionKind;
+  riskLevel?: ActionRiskLevel;
+  elementId?: string;
+  selector?: string;
+  bbox?: ElementBox;
+  context?: string;
+  iconLabel?: string;
+}
+
+export interface ObservedCollectionItemMetadata {
+  purpose?: string;
+  role?: string;
+  active?: boolean;
+  expanded?: boolean;
+  level?: number;
+  region?: BrowserPageRegionType;
+  label?: string;
+  fieldPurpose?: string;
+  controlType?: ObservedFormControlType;
+  placeholder?: string;
+  currentValue?: string;
+  value?: string;
+  required?: boolean;
+  selectLike?: boolean;
+  isSelectLike?: boolean;
+  originalText?: string;
+  name?: string;
+  checked?: boolean;
+  rowIndex?: number;
+  rowText?: string;
+  stableRowKey?: string;
+  cells?: Array<{ index: number; text: string; elementId?: string; selector?: string }>;
+  columnText?: string[];
+  actions?: ObservedRowActionMetadata[];
+  actionKind?: ObservedActionKind;
+  riskLevel?: ActionRiskLevel;
+  parentRegion?: BrowserPageRegionType;
+  iconLabel?: string;
+  filename?: string;
+  [key: string]: unknown;
+}
+
 export interface ObservedCollectionItem {
   index: number;
   text: string;
@@ -85,7 +136,7 @@ export interface ObservedCollectionItem {
   clickable?: boolean;
   sourceElementIds?: string[];
   riskLevel?: ActionRiskLevel;
-  metadata?: Record<string, unknown>;
+  metadata?: ObservedCollectionItemMetadata;
   confidence: number;
 }
 
@@ -255,6 +306,22 @@ export interface ComputerUseVerificationResult {
   reason?: string;
   blocking?: boolean;
   warning?: string;
+}
+
+export interface ComputerUseTargetResolutionTrace {
+  matchedBy?: string;
+  score?: number;
+  verificationHint?: string;
+  blocked?: boolean;
+  reason?: string;
+  target?: PlannedStep['target'];
+  rejectedCandidates?: Array<{
+    text: string;
+    purpose?: string;
+    collectionType?: ObservedCollectionType;
+    score?: number;
+    reason: string;
+  }>;
 }
 
 export interface ComputerUseDownloadResult {
@@ -563,6 +630,34 @@ export interface PageMonitorSnapshot {
   text: string;
   capturedAt: number;
   tableCount?: number;
+  rowCount?: number;
+}
+
+export type PageMonitorRuleType =
+  | 'changed'
+  | 'contains'
+  | 'number_threshold'
+  | 'new_records'
+  | 'status_transition';
+
+export interface PageMonitorRule {
+  type: PageMonitorRuleType;
+  value?: string;
+  from?: string;
+  to?: string;
+  operator?: 'gt' | 'gte' | 'lt' | 'lte' | 'eq';
+}
+
+export interface PageMonitorCheckRecord {
+  id: string;
+  monitorRunId: string;
+  checkedAt: number;
+  status: 'changed' | 'unchanged' | 'failed';
+  summary: string;
+  snapshotHash?: string;
+  previousHash?: string;
+  diffPreview?: string;
+  error?: string;
 }
 
 export interface PageMonitorMetadata {
@@ -573,6 +668,11 @@ export interface PageMonitorMetadata {
   lastChangedAt?: number;
   lastCheckedAt?: number;
   lastRunError?: string;
+  rule?: PageMonitorRule;
+  lastNotifiedHash?: string;
+  consecutiveFailures?: number;
+  maxConsecutiveFailures?: number;
+  pausedReason?: string;
 }
 
 export interface AutomationTaskTemplate {
@@ -651,6 +751,7 @@ export interface ComputerUseProgressMessage {
   beforeObservation?: BrowserObservation;
   afterObservation?: BrowserObservation;
   verification?: ComputerUseVerificationResult;
+  targetResolution?: ComputerUseTargetResolutionTrace;
   rejectedPlanReason?: string;
   fallbackUsed?: string;
   phaseIndex?: number;
@@ -686,6 +787,7 @@ export interface ComputerUseErrorMessage {
   steps?: Array<{ action?: ComputerUseAction; result?: unknown; verification?: unknown; plan?: ComputerUsePlan }>;
   lastObservation?: BrowserObservation;
   verification?: ComputerUseVerificationResult;
+  targetResolution?: ComputerUseTargetResolutionTrace;
   intent?: ComputerUseIntent;
   plan?: ComputerUsePlan;
   chosenElement?: ObservedElement;
@@ -719,6 +821,7 @@ export interface ComputerUseTraceEntry {
   beforeObservation?: BrowserObservation;
   afterObservation?: BrowserObservation;
   verification?: ComputerUseVerificationResult;
+  targetResolution?: ComputerUseTargetResolutionTrace;
   rejectedPlanReason?: string;
   fallbackUsed?: string;
   phaseIndex?: number;

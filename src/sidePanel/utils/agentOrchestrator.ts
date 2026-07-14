@@ -1,4 +1,5 @@
 import type { DocumentAsset } from '../../shared/documentTypes';
+import { collectPageContextHub } from './pageContextHub';
 
 export type AgentType = 'page_diagnosis' | 'document_qa';
 
@@ -116,57 +117,37 @@ function buildPageDiagnosisSignals(input: {
 }
 
 export async function runPageDiagnosisAgent(options: PageDiagnosisOptions): Promise<AgentRunResult> {
-  const warnings: string[] = [];
   const sources: AgentSource[] = [];
-  let pageInfo: any = null;
-  let consoleResult: any = null;
-  let structuredData: any = null;
-  let observation: any = null;
-
-  try {
-    pageInfo = await options.executeTool('get_current_page_info', { include_html: false });
-  } catch (error: any) {
-    warnings.push(`读取页面信息失败：${error?.message || '未知错误'}`);
-  }
-
-  try {
-    consoleResult = await options.collectConsoleErrors();
-  } catch (error: any) {
-    warnings.push(`采集控制台报错失败：${error?.message || '未知错误'}`);
-  }
-
-  try {
-    structuredData = await options.executeTool('extract_page_structured_data');
-  } catch (error: any) {
-    warnings.push(`提取网页结构化数据失败：${error?.message || '未知错误'}`);
-  }
-
-  try {
-    observation = await options.executeTool('observe_page', { limit: 120 });
-  } catch (error: any) {
-    warnings.push(`观察页面交互元素失败：${error?.message || '未知错误'}`);
-  }
-
-  const errors = getConsoleErrors(consoleResult);
-  const title = getPageTitle(pageInfo, structuredData);
-  const url = getPageUrl(pageInfo, structuredData);
-  const structuredPayload = structuredData?.data || structuredData?.result?.data || structuredData;
-  const diagnosisSignals = buildPageDiagnosisSignals({
-    errors,
-    pageInfo,
-    structuredPayload,
-    observation,
-    warnings,
+  const hub = await collectPageContextHub({
+    executeTool: options.executeTool,
+    collectConsoleErrors: options.collectConsoleErrors,
+    includeStructuredData: true,
+    includeTables: true,
+    observeLimit: 180,
   });
+  const { title, url, consoleErrors: errors, warnings } = hub;
+  const signalTypes = new Set(hub.pageSignals.map((signal) => signal.type));
+  const diagnosisSignals = {
+    hasConsoleErrors: errors.length > 0,
+    errorCount: errors.length,
+    hasLoginSignal: signalTypes.has('login'),
+    hasCaptchaSignal: signalTypes.has('captcha'),
+    hasPermissionSignal: signalTypes.has('permission'),
+    hasEmptyDataSignal: signalTypes.has('empty'),
+    fieldCount: hub.formSummary?.fieldCount || hub.structuredData?.fields.length || 0,
+    tableCount: hub.tableSummary?.tableCount || hub.tableCount,
+    actionCount: hub.actionSummary?.actionCount || 0,
+    warnings,
+  };
 
   if (url || title) {
     sources.push({ type: 'page', title, url });
   }
-  if (structuredData?.asset?.id) {
+  if (hub.structuredAsset?.id) {
     sources.push({
       type: 'structured_data',
-      id: structuredData.asset.id,
-      title: structuredData.asset.title || title,
+      id: hub.structuredAsset.id,
+      title: hub.structuredAsset.title || title,
       url,
     });
   }
@@ -179,33 +160,26 @@ export async function runPageDiagnosisAgent(options: PageDiagnosisOptions): Prom
     `页面标题：${title}`,
     url ? `页面 URL：${url}` : '',
     '',
-    '## 页面信息',
-    stringifyForPrompt(pageInfo),
+    '## 页面正文摘要',
+    hub.textPreview || '页面没有可用正文摘要。',
     '',
     '## 控制台与资源/网络错误',
-    errors.length ? stringifyForPrompt(consoleResult) : '未捕获到控制台错误、资源加载失败或网络失败。',
+    errors.length ? stringifyForPrompt(errors) : '未捕获到控制台错误、资源加载失败或网络失败。',
     '',
     '## 诊断信号',
     stringifyForPrompt(diagnosisSignals),
     '',
     '## 页面结构化数据',
-    stringifyForPrompt(structuredPayload),
+    stringifyForPrompt(hub.structuredData),
     '',
-    '## 页面区域与可交互元素',
+    '## 页面语义集合与操作摘要',
     stringifyForPrompt({
-      pageState: observation?.pageState || observation?.result?.pageState,
-      regions: observation?.regions || observation?.result?.regions || [],
-      elements: (observation?.elements || observation?.result?.elements || []).slice(0, 80).map((element: any) => ({
-        role: element.role,
-        tag: element.tag,
-        text: element.text,
-        purpose: element.purpose,
-        region: element.region,
-        context: element.context,
-        href: element.href,
-        visible: element.visible,
-        enabled: element.enabled,
-      })),
+      pageState: hub.pageState,
+      pageSignals: hub.pageSignals,
+      collections: hub.collections,
+      formSummary: hub.formSummary,
+      tableSummary: hub.tableSummary,
+      actionSummary: hub.actionSummary,
     }),
     warnings.length ? `\n## 采集警告\n${warnings.map((item) => `- ${item}`).join('\n')}` : '',
   ].filter(Boolean).join('\n'), MAX_AGENT_CONTEXT_LENGTH);
@@ -233,7 +207,7 @@ export async function runPageDiagnosisAgent(options: PageDiagnosisOptions): Prom
     prompt,
     sources,
     warnings,
-    raw: { pageInfo, consoleResult, structuredData, observation },
+    raw: { contextHub: hub },
   };
 }
 

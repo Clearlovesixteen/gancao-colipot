@@ -1,4 +1,13 @@
-import { GLMClient, Message } from '../sidePanel/utils/glm-client';
+import type { Message } from '../sidePanel/utils/glm-client';
+import { ModelGateway, ModelGatewayError } from './modelGateway';
+import {
+  deleteModelProfile,
+  listModelProfiles,
+  setActiveModelProfile,
+  toPublicModelProfile,
+  upsertModelProfile,
+  type ModelProfile,
+} from '../shared/modelProfiles';
 import { AutomationRunner } from './automation';
 import { ComputerUseRunner } from './computerUseRunner';
 import { understandComputerUseIntent as understandComputerUseIntentCore } from './computerUseIntent';
@@ -14,6 +23,7 @@ import {
   upsertPageMonitorAlarm,
 } from './pageMonitorRunner';
 import type {
+  AutomationRun,
   AutomationRunTraceSummary,
   AutomationWorkflow,
   BrowserObservation,
@@ -27,7 +37,12 @@ import type {
   ComputerUseRunState,
   ComputerUseTaskIntent,
 } from '../shared/automationTypes';
-import { getAutomationRun, patchAutomationRun } from '../shared/automationRunStore';
+import { getAutomationRun, listAutomationRuns, patchAutomationRun } from '../shared/automationRunStore';
+import { handleAutomationTaskMessage } from './handlers/automationTaskHandlers';
+import { handleModelProfileMessage } from './handlers/modelProfileHandlers';
+import { TaskExecutorRegistry, type TaskResult } from './taskExecutorRegistry';
+import { getAutomationWorkflow } from '../sidePanel/utils/automationStorage';
+import { runOcrTask, stopOcrTask } from './ocrJobService';
 import { BUSINESS_TOOL_NAMES } from '../shared/businessTools';
 import type { PageAuthSnapshot } from '../shared/authBridge';
 import type { DocumentAsset, DocumentContent, PageStructuredData, RequirementTaskResult } from '../shared/documentTypes';
@@ -51,8 +66,10 @@ import {
   upsertDocumentAsset,
   upsertDocumentResult,
 } from './documentDb';
+import { sanitizeForPersistence, toAppErrorPayload } from '../shared/appErrors';
 
-let glmClient: GLMClient | null = null;
+const modelGateway = new ModelGateway();
+let modelGatewayEventsInitialized = false;
 
 // 存储 sidePanel 的打开状态
 const sidePanelOpenState = new Map<number, boolean>();
@@ -60,6 +77,8 @@ const sidePanelOpenState = new Map<number, boolean>();
 const automationRunners = new Map<string, AutomationRunner>();
 const computerUseRunners = new Map<string, AbortController>();
 const computerUseConfirmations = new Map<string, (allowed: boolean) => void>();
+const taskExecutionControllers = new Map<string, AbortController>();
+let taskExecutorRegistry: TaskExecutorRegistry | null = null;
 
 const dingTalkAuthTabs = new Set<number>();
 
@@ -70,9 +89,6 @@ const TRUSTED_AUTH_HOST_SUFFIXES = [
   '127.0.0.1',
 ];
 
-const LLM_API_KEY = 'sk-9e78d63ce4ca08291b35c19caf1379892a8b9a40d3e856cc85def65d049c5b1f';
-const LLM_BASE_URL = 'https://api.86gamestore.com/v1';
-const LLM_MODEL_NAME = 'gpt-5.5';
 const COMPUTER_USE_LLM_TIMEOUT_MS = 8000;
 
 function slimObservationForPrompt(observation: BrowserObservation): any {
@@ -101,99 +117,34 @@ function slimObservationForPrompt(observation: BrowserObservation): any {
   };
 }
 
+async function callComputerUseJson(system: string, user: unknown): Promise<unknown> {
+  return modelGateway.callJson({ system, user, timeoutMs: COMPUTER_USE_LLM_TIMEOUT_MS });
+}
+
 async function planComputerUseAction(input: {
   goal: string;
   stepIndex: number;
   observation: BrowserObservation;
   history: Array<{ action?: ComputerUseAction; result?: unknown }>;
 }): Promise<ComputerUseAction> {
-  const response = await fetch(`${LLM_BASE_URL}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${LLM_API_KEY}`,
+  const parsed = await callComputerUseJson(
+    [
+      '你是浏览器 Computer Use 执行器，每次只输出一个 JSON 动作。',
+      '可选 action: click,double_click,right_click,click_by_coordinate,type,clear_input,focus,keyboard_shortcut,press_key,select_option,check,hover,drag,scroll,wait,wait_for_element,upload_file,download_file,extract_table,finish。',
+      '优先使用 observation.elements 中的 elementId；没有可靠目标时返回 finish，并在 summary 中说明阻塞原因，禁止猜测点击。',
+      '高风险动作必须设置 highRisk:true。',
+    ].join('\n'),
+    {
+      goal: input.goal,
+      stepIndex: input.stepIndex,
+      observation: slimObservationForPrompt(input.observation),
+      history: input.history.slice(-6),
     },
-    body: JSON.stringify({
-      model: LLM_MODEL_NAME,
-      temperature: 0,
-      stream: false,
-      messages: [
-        {
-          role: 'system',
-          content: [
-            '你是浏览器 Computer Use 执行器，每次只输出一个 JSON 动作，不要输出 Markdown。',
-            '可选 action: click,double_click,right_click,click_by_coordinate,type,clear_input,focus,keyboard_shortcut,press_key,select_option,check,hover,drag,scroll,wait,wait_for_element,upload_file,download_file,extract_table,finish。',
-            '优先使用 observation.elements 中的 elementId；没有合适元素时才用 selector/text/x/y。',
-            '如果用户目标明确要求导出/下载文件：先根据 menu_item/navigation_item 判断是否在目标页面；到达目标页面后优先点击 purpose=download_button 的真实导出/下载按钮，并使用 download_file 等待下载。',
-            '如果用户目标只是读取列表/表格数据且未要求导出文件，到达目标页面后优先使用 extract_table 获取表格。',
-            '如果页面信息不足、找不到目标菜单、疑似权限不足或表格无法提取，输出 finish 并在 summary 里说明缺少什么上下文。',
-            '高风险动作如提交、删除、购买、支付、发送、保存、修改必须设置 highRisk:true 并说明 reason；用户明确要求导出/下载时，纯导出按钮不需要额外 highRisk。',
-            '如果目标已经完成，输出 {"action":"finish","summary":"..."}。',
-          ].join('\n'),
-        },
-        {
-          role: 'user',
-          content: JSON.stringify({
-            goal: input.goal,
-            stepIndex: input.stepIndex,
-            observation: slimObservationForPrompt(input.observation),
-            history: input.history.slice(-6),
-          }, null, 2),
-        },
-      ],
-    }),
-  });
-
-  if (!response.ok) {
-    throw new Error(`Computer Use 规划失败: HTTP ${response.status}`);
+  );
+  if (!parsed || typeof parsed !== 'object' || !(parsed as ComputerUseAction).action) {
+    throw new ModelGatewayError('MODEL_INVALID_RESPONSE', 'Computer Use 规划结果缺少 action。');
   }
-
-  const data = await response.json();
-  const content = data?.choices?.[0]?.message?.content || '';
-  const parsed = extractJsonObject(content);
-  if (!parsed || typeof parsed !== 'object') {
-    throw new Error('Computer Use 规划结果不是 JSON');
-  }
-
-  const action = parsed as ComputerUseAction;
-  if (!action.action) {
-    throw new Error('Computer Use 规划结果缺少 action');
-  }
-  return action;
-}
-
-async function callComputerUseJson(system: string, user: unknown): Promise<unknown> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), COMPUTER_USE_LLM_TIMEOUT_MS);
-  const response = await fetch(`${LLM_BASE_URL}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${LLM_API_KEY}`,
-    },
-    signal: controller.signal,
-    body: JSON.stringify({
-      model: LLM_MODEL_NAME,
-      temperature: 0,
-      stream: false,
-      messages: [
-        { role: 'system', content: system },
-        { role: 'user', content: JSON.stringify(user, null, 2) },
-      ],
-    }),
-  }).finally(() => clearTimeout(timeoutId));
-
-  if (!response.ok) {
-    throw new Error(`Computer Use LLM 请求失败: HTTP ${response.status}`);
-  }
-
-  const data = await response.json();
-  const content = data?.choices?.[0]?.message?.content || '';
-  const parsed = extractJsonObject(content);
-  if (!parsed || typeof parsed !== 'object') {
-    throw new Error('Computer Use LLM 返回结果不是 JSON');
-  }
-  return parsed;
+  return parsed as ComputerUseAction;
 }
 
 async function understandComputerUseIntentWithLLM(goal: string, taskIntent?: ComputerUseTaskIntent): Promise<ComputerUseIntent> {
@@ -806,6 +757,7 @@ async function runComputerUseOnTab(options: {
   const controller = new AbortController();
   const abortFromExternal = () => controller.abort();
   options.externalSignal?.addEventListener('abort', abortFromExternal, { once: true });
+  const deterministicMode = (await chrome.storage.local.get('computerUseDeterministicMode')).computerUseDeterministicMode === true;
 
   return await new Promise((resolve, reject) => {
     const emit = (msg: any) => {
@@ -848,8 +800,12 @@ async function runComputerUseOnTab(options: {
           action,
           click: () => executeContentTool(options.tabId, 'click_element', action),
         }),
-        understandIntent: ({ goal }) => understandComputerUseIntentWithLLM(goal, intent),
-        createPlan: createComputerUsePlanWithLLM,
+        understandIntent: ({ goal }) => deterministicMode
+          ? understandComputerUseIntentCore({ goal, taskIntent: intent })
+          : understandComputerUseIntentWithLLM(goal, intent),
+        createPlan: deterministicMode
+          ? (input) => createComputerUsePlanCore(input)
+          : createComputerUsePlanWithLLM,
         planNextAction: planComputerUseAction,
         confirmAction: waitForComputerUseConfirmation,
         emit,
@@ -884,54 +840,32 @@ function summarizeComputerUseTrace(runId: string): { traceSummary: AutomationRun
   };
 }
 
-async function runAutomationTaskRecord(taskId: string): Promise<{ success: boolean; runId?: string; error?: string }> {
-  const run = await getAutomationRun(taskId);
-  if (!run) return { success: false, error: '未找到自动化任务' };
-
-  if (run.kind === 'page_monitor') {
-    const result = await runPageMonitorNow(taskId, { executeBrowserTool });
-    return result.success ? { success: true, runId: taskId } : { success: false, error: result.error };
-  }
-
-  if (run.kind !== 'computer_use') {
-    return { success: false, error: '当前任务类型暂不支持直接运行' };
-  }
-
+async function executeComputerUseTask(run: AutomationRun, signal: AbortSignal): Promise<TaskResult> {
   const goal = String(run.goal || '').trim();
-  if (!goal) return { success: false, error: '任务缺少目标描述' };
+  if (!goal) return { status: 'failed', summary: '任务缺少目标描述', error: '任务缺少目标描述' };
 
   const authError = await requireBusinessAuth();
-  if (authError) return { success: false, error: authError.error || '未登录' };
+  if (authError) return { status: 'failed', summary: authError.error || '未登录', error: authError.error || '未登录' };
 
   const explicitStartUrl = typeof run.metadata?.startUrl === 'string' ? String(run.metadata.startUrl).trim() : '';
   const intent = parseComputerUseTask(goal, explicitStartUrl);
   const startUrl = intent.startUrl || '';
   if (startUrl) {
     const startUrlAccessError = getTabContentAccessError({ url: startUrl } as chrome.tabs.Tab);
-    if (startUrlAccessError) return { success: false, error: `起始页面不可自动操作：${startUrlAccessError}` };
+    if (startUrlAccessError) return { status: 'failed', summary: `起始页面不可自动操作：${startUrlAccessError}`, error: `起始页面不可自动操作：${startUrlAccessError}` };
   }
 
   const tabId = await getCurrentActiveTab();
-  if (!tabId) return { success: false, error: '无法获取活动标签页' };
+  if (!tabId) return { status: 'failed', summary: '无法获取活动标签页', error: '无法获取活动标签页' };
   if (!startUrl) {
     const tabCheck = await getCurrentAutomatableTab();
-    if ('error' in tabCheck) return { success: false, error: tabCheck.error };
+    if ('error' in tabCheck) return { status: 'failed', summary: tabCheck.error, error: tabCheck.error };
   }
 
   const computerUseRunId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  await patchAutomationRun(taskId, {
-    status: 'running',
-    startedAt: Date.now(),
-    endedAt: undefined,
-    error: undefined,
-    resultSummary: undefined,
-    metadata: {
-      ...(run.metadata || {}),
-      computerUseRunId,
-    },
-  });
-
-  runComputerUseOnTab({
+  await patchAutomationRun(run.id, { metadata: { ...(run.metadata || {}), computerUseRunId } });
+  try {
+    const result: any = await runComputerUseOnTab({
     tabId,
     runId: computerUseRunId,
     goal,
@@ -939,35 +873,219 @@ async function runAutomationTaskRecord(taskId: string): Promise<{ success: boole
     maxSteps: Number(run.metadata?.maxSteps || 12),
     startUrl: startUrl || undefined,
     allowHighRisk: run.metadata?.allowHighRisk === true,
-  }).then(async (result: any) => {
+    externalSignal: signal,
+    });
     const { traceSummary, traceSnapshot } = summarizeComputerUseTrace(computerUseRunId);
-    await patchAutomationRun(taskId, {
+    return {
       status: result?.result?.partial ? 'partial' : 'success',
-      endedAt: Date.now(),
-      resultSummary: result?.summary || '自动操作完成',
-      traceSummary,
-      metadata: {
-        ...(run.metadata || {}),
-        computerUseRunId,
-        traceSnapshot,
-      },
-    });
-  }).catch(async (error: any) => {
+      summary: result?.summary || '自动操作完成',
+      output: result,
+      trace: { traceSummary, traceSnapshot, computerUseRunId },
+    };
+  } catch (error: any) {
     const { traceSummary, traceSnapshot } = summarizeComputerUseTrace(computerUseRunId);
-    await patchAutomationRun(taskId, {
-      status: error?.message === '已停止' ? 'stopped' : 'failed',
-      endedAt: Date.now(),
+    return {
+      status: signal.aborted || error?.message === '已停止' ? 'stopped' : 'failed',
+      summary: error?.message || '自动操作失败',
       error: error?.message || '自动操作失败',
-      traceSummary,
-      metadata: {
-        ...(run.metadata || {}),
-        computerUseRunId,
-        traceSnapshot,
+      trace: { traceSummary, traceSnapshot, computerUseRunId },
+    };
+  }
+}
+
+async function executePageDiagnosisTask(run: AutomationRun): Promise<TaskResult> {
+  const [pageInfo, errors, observation, structured] = await Promise.all([
+    handleBusinessTool('get_current_page_info', { include_html: false }),
+    handleBusinessTool('get_console_errors', { limit: 50, useDebugger: run.metadata?.useDebugger === true }),
+    handleBusinessTool('observe_page', { limit: 160 }),
+    handleBusinessTool('extract_page_structured_data', {}),
+  ]);
+  const context = { pageInfo, errors, observation, structured };
+  const answer = await modelGateway.completeText({
+    system: '你是页面诊断助手。请按“问题摘要、风险等级、可能原因、定位步骤、修复建议、需要补充的信息”输出，禁止编造未采集到的错误。',
+    user: { goal: run.goal || '诊断当前页面', context },
+  });
+  return { status: 'success', summary: '页面诊断完成', output: { answer, context } };
+}
+
+async function executeDocumentQaTask(run: AutomationRun): Promise<TaskResult> {
+  const question = String(run.goal || run.metadata?.question || '').trim();
+  if (!question) return { status: 'failed', summary: '请输入资料问题', error: '请输入资料问题' };
+  const documentIds = Array.isArray(run.metadata?.documentIds) ? run.metadata?.documentIds.map(String) : undefined;
+  const matches = await searchDocuments(question, documentIds, 8);
+  const fallbackIds = documentIds?.length ? documentIds : (await listDocumentAssets()).slice(0, 3).map((asset) => asset.id);
+  const sources = matches.length
+    ? matches.map((match) => ({
+      documentId: match.asset.id,
+      documentTitle: match.asset.title,
+      chunkId: match.chunk.id,
+      pageNumber: match.chunk.pageNumber,
+      sectionTitle: match.chunk.sectionTitle,
+      text: match.chunk.text.slice(0, 2400),
+    }))
+    : (await Promise.all(fallbackIds.map(async (id) => {
+      const [asset, content] = await Promise.all([getDocumentAsset(id), getDocumentContent(id)]);
+      return asset ? { documentId: id, documentTitle: asset.title, text: (content?.text || '').slice(0, 6000) } : null;
+    }))).filter(Boolean);
+  if (!sources.length) return { status: 'failed', summary: '资料中心没有可读取内容', error: '资料中心没有可读取内容' };
+  const answer = await modelGateway.completeText({
+    system: '你是资料问答助手。先给结论，再标注引用来源（文件名、页码、章节或 chunk），明确不确定和缺失信息。只依据给定资料回答。',
+    user: { question, sources },
+  });
+  return { status: matches.length ? 'success' : 'partial', summary: '资料问答完成', output: { answer, sources } };
+}
+
+async function executeExtractTask(run: AutomationRun): Promise<TaskResult> {
+  const mode = String(run.metadata?.extractMode || 'structured');
+  const toolName = mode === 'tables' ? 'extract_page_tables' : 'extract_page_structured_data';
+  const tabId = await getCurrentActiveTab();
+  if (!tabId) return { status: 'failed', summary: '无法获取活动标签页', error: '无法获取活动标签页' };
+  const output = await executeBrowserTool(tabId, toolName, {});
+  const result = output?.result || output;
+  const count = mode === 'tables'
+    ? Number(result?.tables?.length || 0)
+    : Number(result?.tables?.length || 0) + Number(result?.fields?.length || 0) + Number(result?.lists?.length || 0);
+  if (!count) return { status: 'partial', summary: '页面中未提取到结构化数据', output: result };
+  return { status: 'success', summary: `已提取 ${count} 组结构化数据`, output: result };
+}
+
+async function executeWorkflowTask(run: AutomationRun, signal: AbortSignal): Promise<TaskResult> {
+  const workflowId = String(run.workflowId || run.metadata?.workflowId || '');
+  const stored = workflowId ? await getAutomationWorkflow(workflowId) : null;
+  const sourceWorkflow = stored?.workflow || run.metadata?.workflow as AutomationWorkflow | undefined;
+  const runtimeVariables = run.metadata?.variables && typeof run.metadata.variables === 'object'
+    ? run.metadata.variables as Record<string, unknown>
+    : {};
+  const workflow = sourceWorkflow ? {
+    ...sourceWorkflow,
+    variables: { ...(sourceWorkflow.variables || {}), ...runtimeVariables },
+  } : undefined;
+  if (!workflow?.steps?.length) return { status: 'failed', summary: '工作流不存在或步骤为空', error: '工作流不存在或步骤为空' };
+  const tab = await chrome.tabs.create({ url: 'about:blank', active: true });
+  if (!tab.id) return { status: 'failed', summary: '无法创建工作流标签页', error: '无法创建工作流标签页' };
+  const workflowRunId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return await new Promise<TaskResult>((resolve) => {
+    const runner = new AutomationRunner({
+      tabId: tab.id!, runId: workflowRunId, workflow, navigate: navigateTab, executeBrowserTool, captureVisibleTab,
+      runComputerUse: (goal, options) => runComputerUseOnTab({ ...options, goal, externalSignal: signal }),
+      emit: (event: any) => {
+        chrome.runtime.sendMessage(event).catch(() => {});
+        if (event.type === 'AUTOMATION_FINISHED') resolve({ status: 'success', summary: '工作流执行完成', output: event.result, trace: event.result?.steps });
+        if (event.type === 'AUTOMATION_ERROR') resolve({ status: signal.aborted ? 'stopped' : 'failed', summary: event.error, error: event.error });
       },
     });
+    automationRunners.set(workflowRunId, runner);
+    signal.addEventListener('abort', () => runner.stop(), { once: true });
+    runner.run().finally(() => automationRunners.delete(workflowRunId));
   });
+}
 
-  return { success: true, runId: computerUseRunId };
+function getTaskExecutorRegistry(): TaskExecutorRegistry {
+  if (taskExecutorRegistry) return taskExecutorRegistry;
+  taskExecutorRegistry = new TaskExecutorRegistry()
+    .register({
+      kind: 'computer_use',
+      async validate(run) {
+        if (!String(run.goal || '').trim()) throw new Error('任务缺少目标描述');
+      },
+      run: (run, context) => executeComputerUseTask(run, context.signal),
+    })
+    .register({
+      kind: 'page_monitor',
+      async validate(run) {
+        if (!(run.metadata as any)?.monitor?.url) throw new Error('监控配置缺少 URL');
+      },
+      async run(run) {
+        const result = await runPageMonitorNow(run.id, { executeBrowserTool });
+        const latest = await getAutomationRun(run.id);
+        return {
+          status: result.success ? (latest?.status === 'success' ? 'success' : 'partial') : 'failed',
+          summary: latest?.resultSummary || result.error || '页面监控完成',
+          output: result,
+          error: result.error,
+          trace: latest?.traceSummary,
+        };
+      },
+    })
+    .register({ kind: 'page_diagnosis', validate: async () => undefined, run: (run) => executePageDiagnosisTask(run) })
+    .register({
+      kind: 'document_qa',
+      async validate(run) { if (!String(run.goal || run.metadata?.question || '').trim()) throw new Error('请输入资料问题'); },
+      run: (run) => executeDocumentQaTask(run),
+    })
+    .register({ kind: 'extract', validate: async () => undefined, run: (run) => executeExtractTask(run) })
+    .register({
+      kind: 'ocr',
+      async validate(run) { if (!run.metadata?.assetId) throw new Error('OCR 任务缺少资料 ID'); },
+      run: (run) => runOcrTask(run),
+      stop: (runId) => stopOcrTask(runId),
+    })
+    .register({
+      kind: 'workflow',
+      async validate(run) { if (!run.workflowId && !run.metadata?.workflowId && !run.metadata?.workflow) throw new Error('请选择工作流'); },
+      run: (run, context) => executeWorkflowTask(run, context.signal),
+    });
+  return taskExecutorRegistry;
+}
+
+async function finalizeAutomationTask(run: AutomationRun, result: TaskResult): Promise<void> {
+  const secrets = (await listModelProfiles()).map((profile) => profile.apiKey).filter(Boolean);
+  const safeResult = sanitizeForPersistence(result, secrets);
+  const trace: any = safeResult.trace;
+  const latest = await getAutomationRun(run.id);
+  await patchAutomationRun(run.id, {
+    status: safeResult.status,
+    endedAt: Date.now(),
+    resultSummary: safeResult.summary,
+    error: safeResult.error,
+    traceSummary: trace?.traceSummary || run.traceSummary,
+    metadata: {
+      ...(latest?.metadata || run.metadata || {}),
+      ...(trace?.computerUseRunId ? { computerUseRunId: trace.computerUseRunId } : {}),
+      ...(trace?.traceSnapshot ? { traceSnapshot: trace.traceSnapshot } : {}),
+      taskOutput: safeResult.output,
+    },
+  });
+  const eventType = safeResult.status === 'success' || safeResult.status === 'partial'
+    ? 'AUTOMATION_TASK_FINISHED'
+    : 'AUTOMATION_TASK_ERROR';
+  chrome.runtime.sendMessage({ type: eventType, taskId: run.id, kind: run.kind, result: safeResult }).catch(() => {});
+}
+
+async function runAutomationTaskRecord(taskId: string): Promise<{ success: boolean; runId?: string; error?: string }> {
+  const run = await getAutomationRun(taskId);
+  if (!run) return toAppErrorPayload(new Error('未找到自动化任务'), '未找到自动化任务');
+  const authError = await requireBusinessAuth();
+  if (authError) return toAppErrorPayload(Object.assign(new Error(authError.error || '未登录'), { code: 'UNAUTHENTICATED' }));
+  let executor;
+  try {
+    executor = getTaskExecutorRegistry().get(run.kind);
+    await executor.validate(run);
+  } catch (error: any) {
+    return toAppErrorPayload(Object.assign(error instanceof Error ? error : new Error(String(error)), {
+      code: error?.code || 'VALIDATION_ERROR',
+    }), '任务校验失败');
+  }
+
+  const controller = new AbortController();
+  taskExecutionControllers.get(taskId)?.abort();
+  taskExecutionControllers.set(taskId, controller);
+  await patchAutomationRun(taskId, { status: 'running', startedAt: Date.now(), endedAt: undefined, error: undefined, resultSummary: undefined });
+
+  const progress = (stage: string, summary: string, data?: unknown) => {
+    chrome.runtime.sendMessage({ type: 'AUTOMATION_TASK_PROGRESS', taskId, kind: run.kind, stage, summary, data }).catch(() => {});
+  };
+  progress('started', '任务已开始');
+  executor.run(run, { signal: controller.signal, progress })
+    .then((result) => finalizeAutomationTask(run, result))
+    .catch((error: any) => finalizeAutomationTask(run, {
+      status: controller.signal.aborted ? 'stopped' : 'failed',
+      summary: error?.message || '任务执行失败',
+      error: error?.message || '任务执行失败',
+    }))
+    .finally(() => taskExecutionControllers.delete(taskId));
+
+  return { success: true, runId: taskId };
 }
 
 async function getUploadedFiles(): Promise<any[]> {
@@ -1014,40 +1132,14 @@ async function generateRequirementTasksWithLLM(
 
   if (chunkContext.length === 0) return fallback;
 
-  const response = await fetch(`${LLM_BASE_URL}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${LLM_API_KEY}`,
+  const parsed = await modelGateway.callJson({
+    system: '你是研发需求拆解助手。只返回 JSON，不要 markdown。字段必须符合 RequirementTaskResult，tasks 必须包含 title/module/type/priority/description/acceptanceCriteria/dependencies/risks/openQuestions/sourceRefs。',
+    user: {
+      documents: assets.map((asset) => ({ id: asset.id, title: asset.title })),
+      chunks: chunkContext,
+      fallbackHint: fallback.summary,
     },
-    body: JSON.stringify({
-      model: LLM_MODEL_NAME,
-      stream: false,
-      temperature: 0,
-      messages: [
-        {
-          role: 'system',
-          content: '你是研发需求拆解助手。只返回 JSON，不要 markdown。字段必须符合 RequirementTaskResult，tasks 必须包含 title/module/type/priority/description/acceptanceCriteria/dependencies/risks/openQuestions/sourceRefs。',
-        },
-        {
-          role: 'user',
-          content: JSON.stringify({
-            documents: assets.map((asset) => ({ id: asset.id, title: asset.title })),
-            chunks: chunkContext,
-            fallbackHint: fallback.summary,
-          }),
-        },
-      ],
-    }),
   });
-
-  if (!response.ok) {
-    throw new Error(`任务清单模型生成失败: HTTP ${response.status}`);
-  }
-
-  const data = await response.json();
-  const content = data?.choices?.[0]?.message?.content || data?.data?.choices?.[0]?.message?.content || '';
-  const parsed = extractJsonObject(String(content));
   return normalizeRequirementTaskResult(parsed, fallback, documentIds);
 }
 
@@ -1608,12 +1700,10 @@ async function navigateTab(
   });
 }
 
-// 初始化 GLM 客户端
-async function initGLMClient() {
-  if (!glmClient) {
-    glmClient = new GLMClient();
-
-    glmClient.onMessage((msg: Message) => {
+async function initModelGatewayEvents() {
+  if (!modelGatewayEventsInitialized) {
+    modelGatewayEventsInitialized = true;
+    modelGateway.onMessage((msg: Message) => {
       chrome.runtime.sendMessage({
         type: 'SSE_MESSAGE',
         message: msg,
@@ -1622,7 +1712,7 @@ async function initGLMClient() {
       });
     });
 
-    glmClient.onStatusChange((status) => {
+    modelGateway.onStatusChange((status) => {
       chrome.runtime.sendMessage({
         type: 'SSE_STATUS_CHANGE',
         status,
@@ -1631,7 +1721,6 @@ async function initGLMClient() {
       });
     });
 
-    glmClient.connect();
   }
 }
 
@@ -1669,18 +1758,74 @@ chrome.runtime.onInstalled.addListener(() => {
   syncPageMonitorAlarms().catch((error) => console.warn('同步页面监控 alarm 失败:', error));
 });
 
+async function recoverInterruptedAutomationTasks(): Promise<void> {
+  const runs = await listAutomationRuns();
+  await Promise.all(runs
+    .filter((run) => run.status === 'running')
+    .map(async (run) => {
+      await patchAutomationRun(run.id, {
+        status: 'stopped',
+        endedAt: Date.now(),
+        resultSummary: '扩展后台已重启，任务已安全停止',
+        error: '扩展后台已重启',
+        metadata: {
+          ...(run.metadata || {}),
+          interruption: {
+            code: 'TASK_RUNTIME_RESTARTED',
+            at: Date.now(),
+            recovery: '请从任务中心重新执行该任务。',
+          },
+        },
+      });
+      chrome.runtime.sendMessage({
+        type: 'AUTOMATION_TASK_ERROR',
+        taskId: run.id,
+        kind: run.kind,
+        result: {
+          status: 'stopped',
+          summary: '扩展后台已重启，任务已安全停止',
+          ...toAppErrorPayload(Object.assign(new Error('扩展后台已重启'), { code: 'TASK_RUNTIME_RESTARTED' })),
+        },
+      }).catch(() => {});
+    }));
+}
+
+recoverInterruptedAutomationTasks().catch((error) => console.warn('收口遗留任务失败:', error));
+
 chrome.runtime.onStartup?.addListener(() => {
   syncPageMonitorAlarms().catch((error) => console.warn('启动时同步页面监控 alarm 失败:', error));
 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
-  handlePageMonitorAlarm(alarm.name, { executeBrowserTool }).catch((error) => {
+  handlePageMonitorAlarm(alarm.name, { executeBrowserTool, runTask: runAutomationTaskRecord }).catch((error) => {
     console.warn('页面监控执行失败:', error);
   });
 });
 
 // 监听 sidePanel , content script 的消息
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (handleModelProfileMessage(message, sendResponse, modelGateway)) return true;
+
+  const automationTaskHandled = handleAutomationTaskMessage(message, sendResponse, {
+    runAutomationTaskRecord,
+    getAutomationRun,
+    patchAutomationRun: (taskId, patch) => patchAutomationRun(taskId, patch),
+    stopAutomationTask: async (taskId, run) => {
+      taskExecutionControllers.get(taskId)?.abort();
+      taskExecutionControllers.delete(taskId);
+      const computerUseRunId = String(run.metadata?.computerUseRunId || '');
+      if (computerUseRunId) {
+        computerUseRunners.get(computerUseRunId)?.abort();
+        computerUseRunners.delete(computerUseRunId);
+      }
+      await getTaskExecutorRegistry().get(run.kind).stop?.(taskId);
+    },
+    runPageMonitorNow: (runId) => runPageMonitorNow(runId, { executeBrowserTool }),
+    upsertPageMonitorAlarm,
+    clearPageMonitorAlarm,
+  });
+  if (automationTaskHandled) return true;
+
   // 截图功能
   if (message.type === 'CAPTURE_VISIBLE_TAB') {
     (async () => {
@@ -1773,39 +1918,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           return;
         }
 
-        // 确保客户端已初始化
-        await initGLMClient();
-        
-        if (!glmClient) {
-          sendResponse({ success: false, error: 'GLM 客户端初始化失败' });
-          return;
-        }
-
-        // 直接发送消息
+        await initModelGatewayEvents();
         const messageHistory = message.messageHistory || [];
-        const result = await glmClient.send(messageHistory, undefined, message.requestId, message.memoryContext);
+        const result = await modelGateway.send(messageHistory, message.requestId, message.memoryContext);
         sendResponse({
           ...result,
-          error: result.success ? undefined : result.error || glmClient.getLastError() || 'AI 请求失败',
+          error: result.success ? undefined : result.error || 'AI 请求失败',
         });
       } catch (error: any) {
-        sendResponse({ success: false, error: error?.message || 'AI 请求失败' });
+        sendResponse({ success: false, code: error?.code, error: error?.message || 'AI 请求失败' });
       }
     })();
     return true; 
   } else if (message.type === 'STOP_AI_MESSAGE') {
-    initGLMClient();
-    if (!glmClient) {
-      sendResponse({ success: false, error: 'GLM 客户端未初始化' });
-      return true;
-    }
-    sendResponse(glmClient.cancelCurrentRequest());
+    sendResponse(modelGateway.cancel());
     return true;
   } else if (message.type === 'GET_STATUS') {
-    initGLMClient();
-    sendResponse({ 
-      status: glmClient ? glmClient.getStatus() : 'disconnected' 
-    });
+    sendResponse({ status: modelGateway.getStatus() });
   } else if (message.type === 'COLLECT_CONSOLE_ERRORS') {
     (async () => {
       try {
@@ -1908,67 +2037,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
     }
     sendResponse({ success: false, error: '未找到正在运行的自动操作' });
-    return true;
-  } else if (message.type === 'RUN_AUTOMATION_TASK') {
-    (async () => {
-      try {
-        const taskId = String(message.taskId || '');
-        if (!taskId) {
-          sendResponse({ success: false, error: '缺少任务 ID' });
-          return;
-        }
-        sendResponse(await runAutomationTaskRecord(taskId));
-      } catch (error: any) {
-        sendResponse({ success: false, error: error?.message || '启动任务失败' });
-      }
-    })();
-    return true;
-  } else if (message.type === 'STOP_AUTOMATION_TASK') {
-    (async () => {
-      const taskId = String(message.taskId || '');
-      const run = taskId ? await getAutomationRun(taskId) : null;
-      const computerUseRunId = String(run?.metadata?.computerUseRunId || '');
-      if (computerUseRunId) {
-        const controller = computerUseRunners.get(computerUseRunId);
-        if (controller) {
-          controller.abort();
-          computerUseRunners.delete(computerUseRunId);
-        }
-      }
-      if (run) await patchAutomationRun(taskId, { status: 'stopped', endedAt: Date.now() });
-      sendResponse({ success: Boolean(run) });
-    })();
-    return true;
-  } else if (message.type === 'RUN_PAGE_MONITOR_NOW') {
-    (async () => {
-      try {
-        const runId = String(message.runId || '');
-        if (!runId) {
-          sendResponse({ success: false, error: '缺少监控任务 ID' });
-          return;
-        }
-        sendResponse(await runPageMonitorNow(runId, { executeBrowserTool }));
-      } catch (error: any) {
-        sendResponse({ success: false, error: error?.message || '页面监控失败' });
-      }
-    })();
-    return true;
-  } else if (message.type === 'UPSERT_PAGE_MONITOR_ALARM') {
-    (async () => {
-      try {
-        const runId = String(message.runId || '');
-        const run = runId ? await getAutomationRun(runId) : null;
-        if (!run) {
-          sendResponse({ success: false, error: '未找到监控任务' });
-          return;
-        }
-        if (run.schedule?.enabled) await upsertPageMonitorAlarm(run);
-        else await clearPageMonitorAlarm(run.id);
-        sendResponse({ success: true });
-      } catch (error: any) {
-        sendResponse({ success: false, error: error?.message || '更新监控计划失败' });
-      }
-    })();
     return true;
   } else if (message.type === 'CONFIRM_COMPUTER_USE_ACTION') {
     const key = `${String(message.runId || '')}:${Number(message.stepIndex || 0)}`;
@@ -2167,12 +2235,12 @@ async function configureSidePanelOpenBehavior() {
 chrome.runtime.onInstalled.addListener(async () => {
   console.log('初始化');
   await configureSidePanelOpenBehavior();
-  await initGLMClient();
+  await initModelGatewayEvents();
 });
 
 chrome.runtime.onStartup.addListener(async () => {
   await configureSidePanelOpenBehavior();
-  await initGLMClient();
+  await initModelGatewayEvents();
 });
 
 // 点击扩展图标时打开侧边栏

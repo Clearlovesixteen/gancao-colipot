@@ -6,6 +6,7 @@ import type {
   ObservedCollectionItem,
   ObservedCollectionType,
   ObservedElement,
+  ObservedActionKind,
 } from '../shared/automationTypes';
 
 function compact(text?: string): string {
@@ -88,7 +89,14 @@ function isAggregateMenuElement(element: ObservedElement): boolean {
   const containerSelector = /(sidebar-item|sidebar-submenu|nav-level|submenu-wrapper|submenu-inner)/.test(selector);
   const looksLikeContainerText = text.length > 24 && !/^(sidebar-handle|sidebar-text|nav-item-text|nav-item\.leaf)/.test(selector);
   const zeroHeight = Number(element.bbox?.height || 0) <= 4;
-  return containerSelector && (looksLikeContainerText || zeroHeight);
+  const multiRowContainer = Number(element.bbox?.height || 0) > 64;
+  return containerSelector && (looksLikeContainerText || zeroHeight || multiRowContainer);
+}
+
+function isActionableMenuElement(element: ObservedElement): boolean {
+  if (['aside', 'nav', 'section'].includes(element.tag) || element.role === 'navigation') return false;
+  if (element.clickable || ['button', 'link', 'menuitem', 'tab'].includes(element.role)) return true;
+  return /(sidebar-handle|sidebar-text|nav-item\.leaf|nav-item-text)/.test(String(element.selector || ''));
 }
 
 function inferSidebarParentText(element: ObservedElement, elements: ObservedElement[]): string | undefined {
@@ -114,6 +122,7 @@ function inferSidebarParentText(element: ObservedElement, elements: ObservedElem
 function buildMenuGroups(elements: ObservedElement[]): ObservedCollection[] {
   const menuElements = elements
     .filter((element) => element.visible)
+    .filter(isActionableMenuElement)
     .filter((element) => element.purpose === 'menu_item' || element.purpose === 'navigation_item')
     .filter((element) => !isAggregateMenuElement(element));
   const groups = new Map<string, Array<{ element: ObservedElement; parentText?: string }>>();
@@ -186,7 +195,7 @@ function buildFileList(elements: ObservedElement[], phase?: ComputerUsePhase): O
 
 function inferActionPurpose(element: ObservedElement): string | undefined {
   if (element.purpose && element.purpose !== 'generic') return element.purpose;
-  const text = `${element.text} ${element.context || ''} ${element.name || ''} ${element.placeholder || ''}`;
+  const text = `${element.text} ${element.context || ''} ${element.name || ''} ${element.placeholder || ''} ${element.ariaLabel || ''} ${element.title || ''}`;
   if (/(导\s*出|下载|export|download|excel|csv)/i.test(text)) return 'download_button';
   if (/(查询|搜索|检索|筛选|search|filter)/i.test(text)) return 'search_button';
   if (/(保存|save)/i.test(text)) return 'save_button';
@@ -195,9 +204,47 @@ function inferActionPurpose(element: ObservedElement): string | undefined {
   return element.purpose;
 }
 
+function inferActionKind(element: ObservedElement): ObservedActionKind {
+  const purpose = inferActionPurpose(element);
+  const text = `${element.text} ${element.context || ''} ${element.ariaLabel || ''} ${element.title || ''}`;
+  if (purpose === 'download_button') return 'download';
+  if (purpose === 'search_button') return 'search';
+  if (purpose === 'save_button') return 'save';
+  if (purpose === 'delete_button' || purpose === 'danger_button') return 'delete';
+  if (purpose === 'submit_button') return 'submit';
+  if (/(重置|清空|reset|clear)/i.test(text)) return 'reset';
+  if (/(更多|操作|批量操作|more|actions?)/i.test(text)) return 'more';
+  return 'generic';
+}
+
+function actionIconLabel(element: ObservedElement): string | undefined {
+  if (compact(element.text)) return undefined;
+  return element.ariaLabel || element.title || element.name || element.placeholder || undefined;
+}
+
+function inferFieldPurpose(label: string, element: ObservedElement): string {
+  const text = compact([
+    label,
+    element.text,
+    element.context,
+    element.parentText,
+    element.placeholder,
+    element.name,
+    element.selector,
+  ].filter(Boolean).join(' '));
+  if (/(子系统|业务系统|所属系统|系统名称|系统)/.test(text)) return 'subsystem';
+  if (/(用户花名|花名|用户昵称|用户姓名|操作员|负责人|创建人|申请人)/.test(text)) return 'user_alias';
+  if (/(文件名|文件名称|附件名|报表名)/.test(text)) return 'file_name';
+  if (/(文件状态|状态|预警状态|审核状态)/.test(text)) return 'status';
+  if (/(日期|时间|开始|结束|区间|date|time)/i.test(text)) return 'date_range';
+  if (/(仓库|所属仓|仓储|库房)/.test(text)) return 'warehouse';
+  if (/(关键词|搜索|查询条件)/.test(text)) return 'keyword';
+  return 'field';
+}
+
 function inferActionRisk(element: ObservedElement): ActionRiskLevel {
   const purpose = inferActionPurpose(element);
-  const text = `${element.text} ${element.context || ''} ${element.name || ''}`;
+  const text = `${element.text} ${element.context || ''} ${element.name || ''} ${element.ariaLabel || ''} ${element.title || ''}`;
   if (purpose === 'delete_button' || /(删除|作废|支付|购买|下单|delete|pay|buy)/i.test(text)) return 'high';
   if (purpose === 'submit_button' || purpose === 'save_button' || /(提交|保存|发送|同步|禁用|启用|submit|save|send|sync)/i.test(text)) return 'high';
   if (purpose === 'download_button' || /(导\s*出|下载|上传|修改|export|download|upload|edit)/i.test(text)) return 'medium';
@@ -218,7 +265,7 @@ function isActionCandidate(element: ObservedElement): boolean {
     'close_modal',
   ].includes(inferredPurpose || '')) return true;
   if (!['button', 'link', 'menuitem', 'option'].includes(element.role)) return false;
-  return /(导\s*出|下载|查询|搜索|检索|重置|保存|提交|删除|作废|发送|export|download|excel|csv|search|save|submit|delete|更多|操作|批量操作|more|actions?)/i.test(`${element.text} ${element.context || ''} ${element.name || ''} ${element.placeholder || ''}`);
+  return /(导\s*出|下载|查询|搜索|检索|重置|保存|提交|删除|作废|发送|export|download|excel|csv|search|save|submit|delete|更多|操作|批量操作|more|actions?)/i.test(`${element.text} ${element.context || ''} ${element.name || ''} ${element.placeholder || ''} ${element.ariaLabel || ''} ${element.title || ''}`);
 }
 
 function actionConfidence(element: ObservedElement): number {
@@ -229,6 +276,16 @@ function actionConfidence(element: ObservedElement): number {
   if (purpose === 'search_button') return 0.72;
   if (/(更多|操作|批量操作|more|actions?)/i.test(`${element.text} ${element.context || ''}`)) return 0.64;
   return 0.58;
+}
+
+function tableRowIndexForElement(element: ObservedElement, elements: ObservedElement[]): number | undefined {
+  if (element.region !== 'table_area' && !/table|tbody|tr|td|ant-table/i.test(`${element.selector || ''} ${element.context || ''}`)) return undefined;
+  const rows = Array.from(new Set(elements
+    .filter((item) => item.visible && (item.region === 'table_area' || /table|tbody|tr|td|ant-table/i.test(`${item.selector || ''} ${item.context || ''}`)))
+    .map((item) => rowBucketKey(item))))
+    .sort((a, b) => Number(a) - Number(b));
+  const rowIndex = rows.indexOf(rowBucketKey(element));
+  return rowIndex >= 0 ? rowIndex + 1 : undefined;
 }
 
 function buildActionGroup(elements: ObservedElement[]): ObservedCollection | null {
@@ -251,6 +308,9 @@ function buildActionGroup(elements: ObservedElement[]): ObservedCollection | nul
     .map((element, index) => {
       const purpose = inferActionPurpose(element);
       const riskLevel = inferActionRisk(element);
+      const actionKind = inferActionKind(element);
+      const rowIndex = tableRowIndexForElement(element, elements);
+      const iconLabel = actionIconLabel(element);
       return {
         ...elementToCollectionItem({ ...element, purpose: purpose as any }, index + 1, actionConfidence(element)),
         purpose,
@@ -258,7 +318,11 @@ function buildActionGroup(elements: ObservedElement[]): ObservedCollection | nul
         metadata: {
           ...elementToCollectionItem(element, index + 1).metadata,
           purpose,
+          actionKind,
           riskLevel,
+          parentRegion: element.region || 'main',
+          rowIndex,
+          iconLabel,
         },
       };
     });
@@ -279,18 +343,20 @@ function buildActionGroup(elements: ObservedElement[]): ObservedCollection | nul
 function inferFormLabel(element: ObservedElement): string {
   const candidates = [
     element.parentText,
-    element.context,
-    element.placeholder,
     element.name,
+    element.ariaLabel,
+    element.title,
+    element.placeholder,
     element.text,
+    element.context,
   ].filter(Boolean).map((item) => String(item).trim());
   const label = candidates.find((item) => item && compact(item).length <= 48) || candidates[0] || '未命名字段';
   return label.replace(/\s+/g, ' ').slice(0, 80);
 }
 
-function controlType(element: ObservedElement): string {
+function controlType(element: ObservedElement): 'input' | 'select' | 'checkbox' | 'radio' | 'date' | 'textarea' {
   const descriptor = `${element.role} ${element.tag} ${element.selector || ''} ${element.context || ''}`.toLowerCase();
-  if (/select|combobox|dropdown/.test(descriptor)) return 'select';
+  if (/select|combobox|dropdown|ant-select|el-select/.test(descriptor)) return 'select';
   if (/checkbox/.test(descriptor)) return 'checkbox';
   if (/radio/.test(descriptor)) return 'radio';
   if (/date|picker|calendar/.test(descriptor)) return 'date';
@@ -319,19 +385,35 @@ function buildFormGroup(elements: ObservedElement[]): ObservedCollection | null 
     .sort((a, b) => Number(a.bbox?.y || 0) - Number(b.bbox?.y || 0) || Number(a.bbox?.x || 0) - Number(b.bbox?.x || 0))
     .map((element, index) => {
       const label = inferFormLabel(element);
+      const fieldPurpose = inferFieldPurpose(label, element);
+      const type = controlType(element);
+      const displayText = [
+        label,
+        element.placeholder ? `placeholder:${element.placeholder}` : '',
+        element.value ? `value:${element.value}` : '',
+      ].filter(Boolean).join(' ');
       const item = elementToCollectionItem({
         ...element,
-        text: label,
-        purpose: element.purpose || 'generic',
+        text: displayText,
+        purpose: fieldPurpose as any,
       }, index + 1, element.value ? 0.76 : 0.7);
       return {
         ...item,
+        text: label,
+        purpose: fieldPurpose,
         metadata: {
           ...(item.metadata || {}),
           label,
           value: element.value,
           placeholder: element.placeholder,
-          controlType: controlType(element),
+          controlType: type,
+          fieldPurpose,
+          currentValue: element.value,
+          required: element.required === true || /[*＊]\s*$/.test(label),
+          selectLike: type === 'select',
+          isSelectLike: type === 'select',
+          originalText: element.text,
+          name: element.name,
           checked: element.checked,
         },
       };
@@ -372,10 +454,33 @@ function rowBucketKey(element: ObservedElement): string {
   return String(Math.round(y / 12) * 12);
 }
 
+function tableActionLabel(element: ObservedElement): string {
+  return element.text
+    || element.ariaLabel
+    || element.title
+    || element.name
+    || element.context
+    || element.placeholder
+    || inferActionPurpose(element)
+    || '行内动作';
+}
+
+function stableRowKey(text: string, elementIds: string[]): string {
+  const source = `${compact(text)}|${elementIds.join('|')}`;
+  let hash = 2166136261;
+  for (let index = 0; index < source.length; index += 1) {
+    hash ^= source.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `row_${(hash >>> 0).toString(36)}`;
+}
+
 function buildTableRowGroup(elements: ObservedElement[]): ObservedCollection | null {
   const tableElements = elements
     .filter((element) => element.visible)
     .filter((element) => element.region === 'table_area' || element.purpose === 'table' || /table|tbody|tr|td|ant-table/i.test(`${element.selector || ''} ${element.context || ''}`))
+    .filter((element) => !['table', 'thead', 'tbody', 'tfoot'].includes(String(element.tag || '').toLowerCase()))
+    .filter((element) => element.purpose !== 'table')
     .filter((element) => compact(`${element.text} ${element.context || ''}`).length > 0);
 
   const buckets = new Map<string, ObservedElement[]>();
@@ -391,31 +496,45 @@ function buildTableRowGroup(elements: ObservedElement[]): ObservedCollection | n
       const actions = sorted
         .filter(isActionCandidate)
         .map((element) => ({
-          text: element.text,
+          text: tableActionLabel(element),
           purpose: inferActionPurpose(element),
+          actionKind: inferActionKind(element),
           riskLevel: inferActionRisk(element),
           elementId: element.elementId,
           selector: element.selector,
+          bbox: element.bbox,
+          context: element.context,
+          iconLabel: actionIconLabel(element),
         }));
       return { key, sorted, text, actions };
     })
-    .filter((row) => compact(row.text).length > 1)
+    .filter((row) => compact(row.text).length > 1 || row.actions.length > 0)
     .sort((a, b) => Number(a.key) - Number(b.key))
     .slice(0, 120)
-    .map((row, index) => ({
+    .map((row, index) => {
+      const sourceElementIds = row.sorted.map((element) => element.elementId).filter(Boolean);
+      return {
       index: index + 1,
       text: row.text.slice(0, 240),
       elementId: row.sorted.find((element) => element.clickable || element.enabled)?.elementId,
       selector: row.sorted.find((element) => element.clickable || element.enabled)?.selector,
       bbox: row.sorted[0]?.bbox,
-      sourceElementIds: row.sorted.map((element) => element.elementId).filter(Boolean),
+      sourceElementIds,
       metadata: {
+        rowIndex: index + 1,
         rowText: row.text,
+        stableRowKey: stableRowKey(row.text, sourceElementIds),
+        cells: row.sorted.map((element, cellIndex) => ({
+          index: cellIndex + 1,
+          text: element.text || element.context || '',
+          elementId: element.elementId,
+          selector: element.selector,
+        })),
         actions: row.actions,
         columnText: row.sorted.map((element) => element.text).filter(Boolean).slice(0, 24),
       },
       confidence: row.actions.length ? 0.74 : 0.62,
-    }));
+    };});
 
   return rows.length ? {
     id: 'collection_table_rows',

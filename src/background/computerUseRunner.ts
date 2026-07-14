@@ -536,8 +536,26 @@ function isSearchResultObservation(observation: BrowserObservation, query?: stri
   const decodedUrl = safeDecodeUrl(observation.url);
   const normalizedQuery = String(query || '').trim();
   if (observation.pageState?.kind === 'result_page' && (!normalizedQuery || decodedUrl.includes(normalizedQuery))) return true;
-  if (/[?&](wd|q|search_query)=/i.test(decodedUrl) && (!normalizedQuery || decodedUrl.includes(normalizedQuery))) return true;
+  if (/[?&](wd|word|q|query|keyword|search_query)=/i.test(decodedUrl) && (!normalizedQuery || decodedUrl.includes(normalizedQuery))) return true;
   return Boolean(normalizedQuery && observation.title?.includes(normalizedQuery) && /(搜索|search|百度|bing|google|youtube)/i.test(observation.title));
+}
+
+function hasNaturalSearchResults(context: ComputerUsePageContext): boolean {
+  return Boolean((context.collections || []).some((collection) => (
+    collection.type === 'search_results' && collection.items.length > 0
+  )));
+}
+
+function isSearchResultContext(context: ComputerUsePageContext, query?: string): boolean {
+  return isSearchResultObservation(context.observation, query) || hasNaturalSearchResults(context);
+}
+
+function getSearchBlocker(context: ComputerUsePageContext): string | undefined {
+  const state = context.observation.pageState;
+  if (state?.hasCaptcha) return '搜索站点要求完成验证码或安全验证，扩展不能代替用户通过验证。';
+  if (state?.hasPermissionDenied || state?.kind === 'permission_page') return '搜索结果页返回了权限不足页面。';
+  if (state?.kind === 'login_page' && !state.searchInputId && !state.mainInputId) return '搜索站点要求先登录。';
+  return undefined;
 }
 
 function hasDownloadCandidate(context: ComputerUsePageContext): boolean {
@@ -628,6 +646,48 @@ export class ComputerUseRunner {
     return memory;
   }
 
+  private async waitForSearchResultContext(input: {
+    intent: ComputerUseIntent;
+    phase: ComputerUsePhase;
+    initial?: ComputerUsePageContext;
+    attempts?: number;
+  }): Promise<ComputerUsePageContext> {
+    let context = input.initial || await this.observePhase(input.intent, input.phase);
+    const attempts = Math.max(1, input.attempts ?? 7);
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const blocker = getSearchBlocker(context);
+      if (blocker) throw new Error(blocker);
+      if (isSearchResultContext(context, input.phase.query || input.intent.query)) return context;
+      if (attempt < attempts - 1) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        context = await this.observePhase(input.intent, input.phase);
+      }
+    }
+    return context;
+  }
+
+  private async waitForCollectionItemContext(input: {
+    intent: ComputerUseIntent;
+    phase: ComputerUsePhase;
+    collectionType: NonNullable<ComputerUsePhase['collectionType']>;
+    ordinal: number;
+    attempts?: number;
+  }): Promise<ComputerUsePageContext> {
+    const attempts = Math.max(1, input.attempts ?? 9);
+    let context = await this.observePhase(input.intent, input.phase);
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const blocker = getSearchBlocker(context);
+      if (blocker) throw new Error(blocker);
+      const collection = (context.collections || []).find((item) => item.type === input.collectionType);
+      if (collection && collection.items.some((item) => Number(item.index) === input.ordinal)) return context;
+      if (attempt < attempts - 1) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        context = await this.observePhase(input.intent, input.phase);
+      }
+    }
+    return context;
+  }
+
   private rememberFailedCandidate(memory: ComputerUsePhaseMemory, action: ComputerUseAction, reason?: string): void {
     const elementId = action.elementId || undefined;
     const selector = action.selector || undefined;
@@ -694,6 +754,7 @@ export class ComputerUseRunner {
     result?: unknown;
     beforeObservation?: BrowserObservation;
     afterObservation?: BrowserObservation;
+    targetResolution?: ComputerUseProgressMessage['targetResolution'];
   }): void {
     this.deps.emit({
       type: 'COMPUTER_USE_PROGRESS',
@@ -711,6 +772,7 @@ export class ComputerUseRunner {
       runState: input.runState,
       beforeObservation: input.beforeObservation,
       afterObservation: input.afterObservation,
+      targetResolution: input.targetResolution,
       result: input.result,
     });
   }
@@ -821,8 +883,8 @@ export class ComputerUseRunner {
         action: fallbackAction,
       });
       await this.deps.navigate(this.deps.tabId, fallbackUrl, 'complete', 30000, this.deps.signal);
-      const afterContext = await this.observePhase(input.intent, input.phase);
-      if (!isSearchResultObservation(afterContext.observation, query)) {
+      const afterContext = await this.waitForSearchResultContext({ intent: input.intent, phase: input.phase });
+      if (!isSearchResultContext(afterContext, query)) {
         throw new Error(`阶段「${input.phase.goal}」未能进入搜索结果页。`);
       }
       const result = { success: true, url: afterContext.observation.url, title: afterContext.observation.title };
@@ -936,9 +998,8 @@ export class ComputerUseRunner {
       button ? 'click_element' : 'press_key',
       button ? submitAction : { ...submitAction, key: 'Enter' }
     );
-    await new Promise((resolve) => setTimeout(resolve, 1500));
-    let afterSubmitContext = await this.observePhase(input.intent, input.phase);
-    if (!isSearchResultObservation(afterSubmitContext.observation, query)) {
+    let afterSubmitContext = await this.waitForSearchResultContext({ intent: input.intent, phase: input.phase });
+    if (!isSearchResultContext(afterSubmitContext, query)) {
       const fallbackUrl = buildSearchUrl({
         rawGoal: input.intent.rawGoal,
         startUrl: input.phase.startUrl || input.intent.startUrl,
@@ -949,9 +1010,9 @@ export class ComputerUseRunner {
       });
       if (!fallbackUrl) throw new Error(`阶段「${input.phase.goal}」提交搜索后未进入结果页。`);
       await this.deps.navigate(this.deps.tabId, fallbackUrl, 'complete', 30000, this.deps.signal);
-      afterSubmitContext = await this.observePhase(input.intent, input.phase);
+      afterSubmitContext = await this.waitForSearchResultContext({ intent: input.intent, phase: input.phase, attempts: 5 });
     }
-    if (!isSearchResultObservation(afterSubmitContext.observation, query)) {
+    if (!isSearchResultContext(afterSubmitContext, query)) {
       throw new Error(`阶段「${input.phase.goal}」未能进入搜索结果页。`);
     }
     const result = { success: true, url: afterSubmitContext.observation.url, title: afterSubmitContext.observation.title };
@@ -997,12 +1058,18 @@ export class ComputerUseRunner {
   }): Promise<number> {
     const ordinal = Math.max(1, Number(input.phase.ordinal || input.intent.targetResultIndex || 1));
     const query = input.phase.query || input.intent.query;
-    const beforeContext = await this.observePhase(input.intent, input.phase);
+    const collectionType = input.phase.collectionType || 'search_results';
+    const beforeContext = await this.waitForCollectionItemContext({
+      intent: input.intent,
+      phase: input.phase,
+      collectionType,
+      ordinal,
+    });
     const plannedStep: PlannedStep = {
       id: `click_collection_item_${ordinal}`,
       action: 'click',
       target: {
-        collectionType: input.phase.collectionType || 'search_results',
+        collectionType,
         ordinal,
         text: input.phase.targets?.[0] || '搜索结果',
       },
@@ -1032,7 +1099,8 @@ export class ComputerUseRunner {
       runState: input.runState,
       observation: beforeContext.observation,
       action,
-      result: { collectionType: input.phase.collectionType || 'search_results', ordinal, targetResolution },
+      result: { collectionType, ordinal, targetResolution },
+      targetResolution,
     });
     const clickResult = normalizeToolResult(await this.deps.executeBrowserTool(this.deps.tabId, 'click_element', {
       ...action,
@@ -1185,6 +1253,18 @@ export class ComputerUseRunner {
               summary: `正在执行阶段：${phase.goal}`,
               navigationCount: context.navigationCandidates.length,
               tableCount: context.tableCandidates.length,
+              collections: (context.collections || []).map((collection) => ({
+                id: collection.id,
+                type: collection.type,
+                count: collection.items.length,
+                items: collection.items.slice(0, 8).map((item) => ({
+                  index: item.index,
+                  text: item.text,
+                  purpose: item.purpose || item.metadata?.purpose,
+                  rowIndex: item.metadata?.rowIndex,
+                  actions: item.metadata?.actions,
+                })),
+              })),
               phaseMemory,
             },
           });
@@ -1217,6 +1297,7 @@ export class ComputerUseRunner {
               phase,
               runState,
               result: { targetResolution, phaseMemory },
+              targetResolution,
             });
             return;
           }
@@ -1392,6 +1473,7 @@ export class ComputerUseRunner {
             phase,
             runState,
             result: { planSummary: plan.summary, rationale: plannedStep.rationale, targetResolution },
+            targetResolution,
           });
 
           const tool = actionToTool(action);
@@ -1419,6 +1501,7 @@ export class ComputerUseRunner {
             phase,
             runState,
             result,
+            targetResolution,
           });
 
           const afterContext = await buildComputerUsePageContext({
@@ -1477,6 +1560,7 @@ export class ComputerUseRunner {
                 phase,
                 runState,
                 result: { phaseMemory },
+                targetResolution,
               });
               return;
             }
@@ -1500,6 +1584,7 @@ export class ComputerUseRunner {
               phase,
               runState,
               result: { verification, phaseMemory },
+              targetResolution,
             });
             stepIndex += 1;
             continue;
@@ -1553,6 +1638,7 @@ export class ComputerUseRunner {
             phase,
             runState,
             result: { result, verification },
+            targetResolution,
           });
 
           if (action.action === 'extract_table' && isDataCompletionIntent(intent) && !isDownloadCompletionIntent(intent)) {

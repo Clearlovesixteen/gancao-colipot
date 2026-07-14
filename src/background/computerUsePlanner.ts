@@ -435,6 +435,9 @@ function findBestDownloadAction(context: ComputerUsePageContext, phaseMemory?: C
     .filter((collection) => collection.type === 'action_group')
     .flatMap((collection) => collection.items)
     .filter((item) => (item.purpose || item.metadata?.purpose) === 'download_button')
+    // A plain export phase targets a page-level action. Row actions are only
+    // eligible when the phase explicitly carries an ordinal.
+    .filter((item) => !Number(item.metadata?.rowIndex || 0))
     .filter((item) => Boolean(item.elementId || item.selector))
     .filter((item) => !isFailedCandidate(phaseMemory, item))
     .sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
@@ -454,6 +457,7 @@ function findBestDownloadAction(context: ComputerUsePageContext, phaseMemory?: C
     ...context.observation.elements.filter((element) => element.purpose === 'download_button'),
   ]
     .filter((element) => element.visible && element.enabled && element.purpose === 'download_button')
+    .filter((element) => element.region !== 'table_area')
     .filter((element) => !isFailedCandidate(phaseMemory, element))
     .sort((a, b) => (b.score || 0) - (a.score || 0));
   return candidates[0] || null;

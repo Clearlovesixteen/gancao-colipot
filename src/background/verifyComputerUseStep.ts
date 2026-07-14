@@ -49,6 +49,25 @@ function hasExtractedTable(result: unknown): boolean {
   return resultTables.length > 0;
 }
 
+function observedTargetValue(context: ComputerUsePageContext, step: PlannedStep): string | undefined {
+  const targetId = step.target?.elementId;
+  const element = targetId
+    ? context.observation.elements.find((item) => item.elementId === targetId)
+    : undefined;
+  if (element?.value !== undefined) return String(element.value);
+
+  const formItems = (context.collections || [])
+    .filter((collection) => collection.type === 'form_group')
+    .flatMap((collection) => collection.items);
+  const item = formItems.find((candidate) => (
+    (targetId && candidate.elementId === targetId)
+    || (step.target?.selector && candidate.selector === step.target.selector)
+    || (step.target?.text && compact(candidate.text) === compact(step.target.text))
+  ));
+  const value = item?.metadata?.currentValue ?? item?.metadata?.value;
+  return value === undefined ? undefined : String(value);
+}
+
 function verifyDownloadResult(result: unknown): ComputerUseVerificationResult {
   const data = normalizeToolResult(result);
   if (data?.success === true && data.status === 'completed' && data.savedToDocumentCenter === true) {
@@ -105,11 +124,11 @@ export function verifyComputerUseStep(input: {
 
   if (step.action === 'type') {
     const targetId = step.target?.elementId;
-    const target = targetId ? after.observation.elements.find((element) => element.elementId === targetId) : undefined;
     if (!targetId || !step.value) return { success: true };
-    return target?.value === step.value
+    const value = observedTargetValue(after, step);
+    return value === step.value
       ? { success: true }
-      : { success: false, reason: `输入校验失败，当前值为：${target?.value || '空'}` };
+      : { success: false, reason: `输入校验失败，当前值为：${value || '空'}` };
   }
 
   if (step.verify?.type === 'url_contains') {
@@ -163,11 +182,10 @@ export function verifyComputerUseStep(input: {
   }
 
   if (step.verify?.type === 'value_equals') {
-    const targetId = step.target?.elementId;
-    const target = targetId ? after.observation.elements.find((element) => element.elementId === targetId) : undefined;
-    return target?.value === step.verify.value
+    const value = observedTargetValue(after, step);
+    return value === step.verify.value
       ? { success: true }
-      : { success: false, reason: `值不匹配：${target?.value || '空'}` };
+      : { success: false, reason: `值不匹配：${value || '空'}` };
   }
 
   if (['click', 'double_click', 'right_click', 'click_by_coordinate'].includes(step.action)) {

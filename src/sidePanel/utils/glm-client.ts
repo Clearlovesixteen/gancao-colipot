@@ -1,9 +1,6 @@
 
 import { BUSINESS_TOOLS } from '../../shared/businessTools';
-
-const LLM_API_KEY = 'sk-999a697580b446de8d741682508523bb';
-const LLM_BASE_URL = 'https://api.deepseek.com';
-const LLM_MODEL_NAME = 'deepseek-v4-pro';
+import type { ModelProfile } from '../../shared/modelProfiles';
 
 // 导出 Message 接口，与 SSE 客户端保持一致
 export interface Message {
@@ -46,6 +43,7 @@ export interface GLMMessage {
 
 export interface GLMClientOptions {
   tabId?: number;
+  profile: ModelProfile;
 }
 
 export interface GLMSendResult {
@@ -107,8 +105,10 @@ export class GLMClient {
   private messageHistory: GLMHistoryMessage[] = [];
   private activeRunId = 0;
   private activeMemoryContext = '';
+  private profile: ModelProfile;
 
-  constructor(options?: GLMClientOptions) {
+  constructor(options: GLMClientOptions) {
+    this.profile = options.profile;
     // 初始化时设置状态
     this.setStatus('disconnected');
   }
@@ -247,20 +247,23 @@ export class GLMClient {
       });
       
       // 调用 API
-      const response = await fetch(`${LLM_BASE_URL}/chat/completions`, {
+      const requestBody: Record<string, unknown> = {
+        model: this.profile.model,
+        messages: formattedMessages,
+        stream: this.profile.capabilities.streaming,
+        temperature: 0,
+      };
+      if (this.profile.capabilities.tools) {
+        requestBody.tools = BUSINESS_TOOLS;
+        requestBody.tool_choice = 'auto';
+      }
+      const response = await fetch(`${this.profile.baseUrl}/chat/completions`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${LLM_API_KEY}`,
+          'Authorization': `Bearer ${this.profile.apiKey}`,
         },
-        body: JSON.stringify({
-          model: LLM_MODEL_NAME,
-          messages: formattedMessages,
-          tools: BUSINESS_TOOLS,
-          tool_choice: 'auto',
-          stream: true,
-          temperature: 0,
-        }),
+        body: JSON.stringify(requestBody),
         signal: controller.signal,
       });
 
@@ -269,8 +272,28 @@ export class GLMClient {
         throw new Error(`HTTP error! status: ${response.status}, message: ${errorText}`);
       }
 
-      // 处理流式响应
-      await this.handleStreamResponse(response, requestMessageId, runId, requestId);
+      if (this.profile.capabilities.streaming) {
+        await this.handleStreamResponse(response, requestMessageId, runId, requestId);
+      } else {
+        const data = await response.json();
+        const responseMessage = data?.choices?.[0]?.message;
+        const toolCalls = Array.isArray(responseMessage?.tool_calls)
+          ? responseMessage.tool_calls.map((toolCall: any, index: number) => ({
+            id: toolCall.id || `tool_${Date.now()}_${index}`,
+            name: toolCall.function?.name || '',
+            arguments: (() => {
+              try { return JSON.parse(toolCall.function?.arguments || '{}'); } catch { return {}; }
+            })(),
+          }))
+          : [];
+        if (toolCalls.length) {
+          await this.handleToolCalls(toolCalls, requestMessageId, runId, requestId);
+        } else if (typeof responseMessage?.content === 'string') {
+          await this.handleFinalMessage(responseMessage.content, requestMessageId, runId, requestId);
+        } else {
+          throw new Error('模型未返回可用内容');
+        }
+      }
 
       if (this.cancelRequested || runId !== this.activeRunId) {
         this.setStatus('connected');

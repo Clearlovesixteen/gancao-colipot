@@ -118,6 +118,28 @@ describe('page extractor', () => {
     ]));
   });
 
+  it('recognizes a semantic search box beside a submit button without treating header login text as a login page', async () => {
+    document.body.innerHTML = `
+      <header><a>登录</a></header>
+      <div id="search-shell">
+        <textarea id="chat-textarea" placeholder="今日热点"></textarea>
+        <button id="chat-submit-button">百度一下</button>
+      </div>
+    `;
+
+    const result = await observePage({ limit: 10 });
+
+    expect(result.pageState).toEqual(expect.objectContaining({
+      kind: 'search_page',
+      searchInputId: expect.any(String),
+      searchButtonId: expect.any(String),
+    }));
+    expect(result.elements).toEqual(expect.arrayContaining([
+      expect.objectContaining({ selector: '#chat-textarea', purpose: 'search_input' }),
+      expect.objectContaining({ selector: '#chat-submit-button', purpose: 'search_button' }),
+    ]));
+  });
+
   it('observes sidebar menu items for business navigation', async () => {
     document.body.innerHTML = `
       <aside class="ant-layout-sider">

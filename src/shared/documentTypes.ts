@@ -29,6 +29,15 @@ export interface DocumentAsset {
   nativeFileId?: string;
   summary?: string;
   error?: string;
+  spaceId?: string;
+}
+
+export interface DocumentSpace {
+  id: string;
+  name: string;
+  color?: string;
+  createdAt: number;
+  updatedAt: number;
 }
 
 export interface DocumentContent {

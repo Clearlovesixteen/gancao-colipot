@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Input, Button, Space, Typography, Spin, Avatar, Badge, Image, Tag, Drawer, Tooltip, Dropdown, Menu, message, Modal, Tabs, Card, Table, Empty, Timeline, Collapse, List } from 'antd';
-import { SendOutlined, UserOutlined, RobotOutlined, ThunderboltOutlined, PaperClipOutlined, DeleteOutlined, ToolOutlined, AppstoreOutlined, MoreOutlined, StopOutlined, CopyOutlined, ReloadOutlined, HistoryOutlined, PlusOutlined } from '@ant-design/icons';
+import { SendOutlined, UserOutlined, RobotOutlined, ThunderboltOutlined, PaperClipOutlined, DeleteOutlined, ToolOutlined, AppstoreOutlined, MoreOutlined, StopOutlined, CopyOutlined, ReloadOutlined, HistoryOutlined, PlusOutlined, EditOutlined, InboxOutlined } from '@ant-design/icons';
 import { Message } from '../../utils/sse';
 import Tools from '../Tools';
 import moment from 'moment';
@@ -10,33 +10,34 @@ import type { NativeLLMFile } from '../../utils/llm-files';
 import type { NativeFileReference } from '../../utils/glm-client';
 import type { DocumentAsset, DocumentContent, NativeUploadStatus, OcrStatus, RequirementTaskResult, StructuredOcrResult } from '../../../shared/documentTypes';
 import {
-  runDocumentQaAgent,
-  runPageDiagnosisAgent,
   shouldRouteToDocumentQa,
-  type AgentRunResult,
 } from '../../utils/agentOrchestrator';
 import {
-  getDocumentAsset,
   getDocumentContent,
-  getRawFile,
   makeDocumentId,
   rebuildDocumentChunks,
   saveDocumentContent,
   saveRawFile,
   upsertDocumentAsset,
 } from '../../utils/documentStore';
-import { getOcrErrorMessage, runOcr } from '../../utils/ocrEngine';
-import { structureOcrText, structuredOcrToMarkdown } from '../../../shared/ocrStructurer';
+import { structuredOcrToMarkdown } from '../../../shared/ocrStructurer';
 import { formatComputerUseTablesMessage, getLatestExtractedTablesFromSteps } from '../../../shared/computerUseResults';
 import type { BrowserObservation, ComputerUseAction, ComputerUseTrace, ComputerUseTraceEntry } from '../../../shared/automationTypes';
-import { getQuickCommands, type CopilotCommandId } from '../../utils/copilotCommands';
+import { COPILOT_COMMANDS, getQuickCommands, type CopilotCommandId } from '../../utils/copilotCommands';
+import { useCommandRecommendations } from './useCommandRecommendations';
+import { createAndRunChatTask } from '../../utils/chatTaskClient';
+import { getAutomationRun } from '../../../shared/automationRunStore';
+import { listCustomCommands, type CustomCopilotCommand } from '../../../shared/customCommandStore';
 import {
   buildMemoryContext,
+  archiveChatSession,
   createChatSession,
+  deleteChatSession,
   getChatSessionMessages,
   inferMemoryType,
   listChatSessions,
   saveChatMessage,
+  updateChatSession,
   upsertUserMemory,
   type ChatSession,
   type StoredChatMessage,
@@ -138,6 +139,10 @@ const MAX_LLM_FILE_CONTEXT_LENGTH = 60000;
 
 function createAiRequestId(): string {
   return `ai_req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function documentsTitleFromTask(title: string): string {
+  return String(title || 'OCR 资料').replace(/^OCR[：:]\s*/, '') || 'OCR 资料';
 }
 
 function normalizeUserFacingError(error: unknown, fallback = '请稍后重试'): string {
@@ -831,6 +836,9 @@ const Chat: React.FC = () => {
   const [toolsVisible, setToolsVisible] = useState(false);
   const [sessionsVisible, setSessionsVisible] = useState(false);
   const [chatSessions, setChatSessions] = useState<ChatSession[]>([]);
+  const [sessionQuery, setSessionQuery] = useState('');
+  const [showArchivedSessions, setShowArchivedSessions] = useState(false);
+  const [customCommands, setCustomCommands] = useState<CustomCopilotCommand[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [ocrViewer, setOcrViewer] = useState<OcrViewerState | null>(null);
   const [computerUseRunId, setComputerUseRunId] = useState<string | null>(null);
@@ -843,14 +851,20 @@ const Chat: React.FC = () => {
   const computerUseRunIdRef = useRef<string | null>(null);
   const startComputerUseRef = useRef<((goal?: string) => void) | null>(null);
   const currentSessionIdRef = useRef<string | null>(null);
+  const chatTaskIdsRef = useRef<Set<string>>(new Set());
+  const ocrTaskAssetsRef = useRef<Map<string, string>>(new Map());
 
   useEffect(() => {
     currentSessionIdRef.current = currentSessionId;
   }, [currentSessionId]);
 
   const refreshChatSessions = useCallback(async () => {
-    setChatSessions(await listChatSessions());
-  }, []);
+    setChatSessions(await listChatSessions({ includeArchived: showArchivedSessions, query: sessionQuery }));
+  }, [sessionQuery, showArchivedSessions]);
+
+  useEffect(() => {
+    if (sessionsVisible) refreshChatSessions().catch(() => {});
+  }, [sessionsVisible, refreshChatSessions]);
 
   const toStoredChatMessage = useCallback((msg: ChatMessage, sessionId: string): StoredChatMessage => ({
     id: msg.id,
@@ -970,6 +984,11 @@ const Chat: React.FC = () => {
     }
     return normalized;
   }, [handleUnauthenticated]);
+
+  const { commandIds: recommendedCommandIds, refresh: refreshCommandContext } = useCommandRecommendations({
+    executeTool: executeBusinessTool,
+    hasAttachedFiles: attachedFiles.length > 0,
+  });
 
   const saveTextMessageToDocuments = useCallback(async (content: string) => {
     const trimmed = content.trim();
@@ -1391,6 +1410,14 @@ const Chat: React.FC = () => {
       } else if (message.type === 'COMPUTER_USE_PROGRESS') {
         if (computerUseRunIdRef.current && message.runId !== computerUseRunIdRef.current) return;
         mergeComputerUseEvent(message);
+      } else if (message.type === 'AUTOMATION_TASK_PROGRESS') {
+        const assetId = ocrTaskAssetsRef.current.get(message.taskId);
+        if (assetId && message.kind === 'ocr') {
+          const progress = Math.round(Number(message.data?.progress || 0) * 100);
+          setAttachedFiles((files) => files.map((file) => (
+            file.fileId === assetId ? { ...file, ocrStatus: 'running', ocrProgress: progress } : file
+          )));
+        }
       } else if (message.type === 'COMPUTER_USE_NEEDS_CONFIRMATION') {
         if (computerUseRunIdRef.current && message.runId !== computerUseRunIdRef.current) return;
         mergeComputerUseEvent(message);
@@ -1434,6 +1461,48 @@ const Chat: React.FC = () => {
         setComputerUseRunId(null);
         computerUseRunIdRef.current = null;
         fetchComputerUseTrace(message.runId);
+      } else if (message.type === 'AUTOMATION_TASK_FINISHED' || message.type === 'AUTOMATION_TASK_ERROR') {
+        if (!chatTaskIdsRef.current.has(message.taskId)) return;
+        chatTaskIdsRef.current.delete(message.taskId);
+        const ocrAssetId = ocrTaskAssetsRef.current.get(message.taskId);
+        ocrTaskAssetsRef.current.delete(message.taskId);
+        getAutomationRun(message.taskId).then((run) => {
+          if (!run) return;
+          const output = (run.metadata as any)?.taskOutput;
+          if (message.type === 'AUTOMATION_TASK_ERROR') {
+            if (ocrAssetId) setAttachedFiles((files) => files.map((file) => (
+              file.fileId === ocrAssetId ? { ...file, ocrStatus: 'error', ocrProgress: undefined, parseError: run.error } : file
+            )));
+            addAssistantMessage(`${run.title}失败：${run.error || message.result?.error || '未知错误'}`);
+            return;
+          }
+          if (run.kind === 'page_diagnosis' || run.kind === 'document_qa') {
+            addAssistantMessage(String(output?.answer || run.resultSummary || '任务已完成'));
+          } else if (run.kind === 'ocr') {
+            const structuredOcr = output?.structuredOcr || output?.result?.structuredOcr;
+            const result = output?.result?.result || output?.result;
+            addOcrResultMessage({
+              fileName: documentsTitleFromTask(run.title),
+              documentId: String(run.metadata?.assetId || ''),
+              status: run.status === 'success' ? 'success' : result?.text ? 'low_confidence' : 'empty',
+              pageCount: structuredOcr?.pageCount || result?.pages?.length || 0,
+              fieldCount: structuredOcr?.fields?.length || 0,
+              tableCount: structuredOcr?.tables?.length || 0,
+              sectionCount: structuredOcr?.sections?.length || 0,
+              previewFields: (structuredOcr?.fields || []).slice(0, 3).map((field: any) => ({ key: field.key, value: field.value })),
+              warnings: structuredOcr?.warnings || result?.warnings || [],
+              text: result?.text || '',
+              structuredOcr,
+            });
+            if (ocrAssetId) setAttachedFiles((files) => files.map((file) => (
+              file.fileId === ocrAssetId
+                ? { ...file, ocrStatus: run.status === 'success' ? 'done' : 'partial', ocrProgress: 100, parseError: undefined }
+                : file
+            )));
+          } else {
+            addAssistantMessage(run.resultSummary || '任务已完成');
+          }
+        }).catch(() => {});
       } else if (message.type === 'SELECTED_TEXT_RECEIVED') {
         console.log('SELECTED_TEXT_RECEIVED', message.text);
         if (message.text) {
@@ -1659,34 +1728,11 @@ const Chat: React.FC = () => {
     handleCompareFile(file);
   };
 
-  const collectConsoleErrorsForAgent = useCallback(async () => {
-    return await executeBusinessTool('get_console_errors', {
-      limit: 50,
-      useDebugger: false,
-      includeContentFallback: true,
-    });
-  }, [executeBusinessTool]);
-
-  const appendAgentPrelude = useCallback((result: AgentRunResult) => {
-    const sourceText = result.sources.length
-      ? `来源：${result.sources.slice(0, 5).map((source) => source.title || source.id || source.type).join('、')}`
-      : '';
-    const warningText = result.warnings.length ? `提示：${result.warnings.join('；')}` : '';
-    if (sourceText || warningText) {
-      addAssistantMessage([sourceText, warningText].filter(Boolean).join('\n'));
-    }
-  }, [addAssistantMessage]);
-
   const handleRunPageDiagnosisAgent = async () => {
     try {
-      message.loading({ content: '页面诊断 Agent 正在采集上下文...', key: 'page_diagnosis', duration: 0 });
-      const result = await runPageDiagnosisAgent({
-        executeTool: executeBusinessTool,
-        collectConsoleErrors: collectConsoleErrorsForAgent,
-      });
-      message.success({ content: '上下文已采集，正在交给 AI 诊断...', key: 'page_diagnosis' });
-      appendAgentPrelude(result);
-      sendPromptToAI('页面诊断', result.prompt);
+      const run = await createAndRunChatTask({ kind: 'page_diagnosis', title: '页面诊断', goal: '诊断当前页面的问题，并给出修复建议' });
+      chatTaskIdsRef.current.add(run.id);
+      message.success({ content: '页面诊断任务已启动', key: 'page_diagnosis' });
     } catch (error: any) {
       message.error({ content: normalizeUserFacingError(error, '页面诊断失败'), key: 'page_diagnosis' });
     }
@@ -1700,27 +1746,22 @@ const Chat: React.FC = () => {
     }
 
     try {
-      message.loading({ content: '资料问答 Agent 正在检索资料...', key: 'document_qa', duration: 0 });
-      const result = await runDocumentQaAgent({
-        query: question,
-        documentIds,
-        executeTool: executeBusinessTool,
+      const run = await createAndRunChatTask({
+        kind: 'document_qa', title: '资料问答', goal: question, metadata: { question, documentIds },
       });
-      message.success({ content: '资料上下文已准备，正在交给 AI 回答...', key: 'document_qa' });
-      appendAgentPrelude(result);
+      chatTaskIdsRef.current.add(run.id);
+      message.success({ content: '资料问答任务已启动', key: 'document_qa' });
       setInputValue('');
-      sendPromptToAI(question, result.prompt);
     } catch (error: any) {
       message.error({ content: normalizeUserFacingError(error, '资料问答失败'), key: 'document_qa' });
     }
-  }, [appendAgentPrelude, executeBusinessTool, inputValue, sendPromptToAI]);
+  }, [inputValue]);
 
   const handleExtractPageData = async () => {
     try {
-      message.loading({ content: '正在提取网页结构化数据...', key: 'page_extract' });
-      const response = await executeBusinessTool('extract_page_structured_data');
-      message.success({ content: '网页数据已保存到资料中心', key: 'page_extract' });
-      addAssistantMessage(summarizePageStructuredData(response.data));
+      const run = await createAndRunChatTask({ kind: 'extract', title: '页面数据提取', goal: '提取当前页面的结构化数据', metadata: { extractMode: 'structured' } });
+      chatTaskIdsRef.current.add(run.id);
+      message.success({ content: '页面提取任务已启动', key: 'page_extract' });
     } catch (error: any) {
       message.error({ content: error?.message || '网页提取失败', key: 'page_extract' });
     }
@@ -1753,18 +1794,60 @@ const Chat: React.FC = () => {
         setInputValue('请总结当前页面，输出核心内容、关键字段、风险点和待办。');
         break;
       case 'extract_table':
-        setInputValue('请提取当前页面的表格或列表数据。');
+        createAndRunChatTask({ kind: 'extract', title: '表格提取', goal: '提取当前页面的表格或列表数据', metadata: { extractMode: 'tables' } })
+          .then((run) => { chatTaskIdsRef.current.add(run.id); message.success('表格提取任务已启动'); })
+          .catch((error) => message.error(normalizeUserFacingError(error, '任务启动失败')));
         break;
       case 'task_list':
         setInputValue('请基于当前上下文生成任务清单，按优先级列出负责人、截止时间和风险。');
         break;
       case 'ocr':
-        message.info('请先添加图片或扫描文件，然后在附件菜单中执行 OCR。');
+        if (!attachedFiles.length) {
+          message.info('请先添加图片或扫描文件。');
+          break;
+        }
+        createAndRunChatTask({
+          kind: 'ocr', title: `OCR：${attachedFiles[0].name}`, goal: `识别 ${attachedFiles[0].name}`,
+          metadata: { assetId: attachedFiles[0].fileId, maxPages: 20 },
+        }).then((run) => {
+          chatTaskIdsRef.current.add(run.id);
+          ocrTaskAssetsRef.current.set(run.id, attachedFiles[0].fileId);
+          setAttachedFiles((files) => files.map((file, index) => index === 0 ? { ...file, ocrStatus: 'running', ocrProgress: 0 } : file));
+          message.success('OCR 任务已启动');
+        }).catch((error) => message.error(normalizeUserFacingError(error, 'OCR 任务启动失败')));
         break;
       default:
         break;
     }
-  }, [handleAskDocumentsAgent, startComputerUse]);
+  }, [attachedFiles, handleAskDocumentsAgent, startComputerUse]);
+
+  const handleCustomCommand = useCallback(async (commandId: string) => {
+    const command = customCommands.find((item) => item.id === commandId);
+    if (!command) return;
+    if (command.mode === 'prompt') {
+      setInputValue(command.promptTemplate);
+      return;
+    }
+    const runCommand = async () => {
+      try {
+        const run = await createAndRunChatTask({
+          kind: command.taskKind || 'computer_use',
+          title: command.title,
+          goal: command.promptTemplate,
+          metadata: command.metadata || {},
+        });
+        chatTaskIdsRef.current.add(run.id);
+        message.success(`任务「${command.title}」已启动`);
+      } catch (error: any) {
+        message.error(normalizeUserFacingError(error, '命令执行失败'));
+      }
+    };
+    if (command.riskLevel === 'high') {
+      Modal.confirm({ title: '确认执行高风险命令', content: command.promptTemplate, onOk: runCommand });
+      return;
+    }
+    await runCommand();
+  }, [customCommands]);
 
   const handleSummarizeFile = async (file: FileAttachment) => {
     try {
@@ -1847,128 +1930,24 @@ const Chat: React.FC = () => {
 
   const handleRunOcr = async (file: FileAttachment) => {
     if (file.ocrStatus === 'running') return;
-
     setAttachedFiles(prev => prev.map(item => (
       item.uid === file.uid ? { ...item, ocrStatus: 'running', ocrProgress: 0 } : item
     )));
-
     try {
-      const rawFile = await getRawFile(file.fileId);
-      if (!rawFile) throw new Error('未找到原始文件，无法 OCR。');
-      const asset = await getDocumentAsset(file.fileId);
-      if (!asset) throw new Error('未找到资料记录。');
-
-      await upsertDocumentAsset({ ...asset, ocrStatus: 'running', updatedAt: Date.now() });
-      const result = await runOcr(rawFile, file.type, {
-        maxPages: 20,
-        onProgress: (progress) => {
-          setAttachedFiles(prev => prev.map(item => (
-            item.uid === file.uid
-              ? { ...item, ocrStatus: 'running', ocrProgress: Math.round((progress.progress || 0) * 100) }
-              : item
-          )));
-        },
+      const run = await createAndRunChatTask({
+        kind: 'ocr', title: `OCR：${file.name}`, goal: `识别 ${file.name}`,
+        metadata: { assetId: file.fileId, maxPages: 20 },
       });
-
-      const existingContent = await getDocumentContent(file.fileId);
-      const structuredOcr = structureOcrText({
-        text: result.text,
-        pages: result.pages,
-        warnings: result.warnings,
-      });
-      const structuredOcrMarkdown = structuredOcrToMarkdown(structuredOcr);
-      const text = [existingContent?.localText, structuredOcrMarkdown].filter(Boolean).join('\n\n');
-      const hasOcrText = Boolean(result.text.trim());
-      const ocrIsReliable = hasOcrText && !result.quality.lowConfidence && !result.quality.likelyGarbled;
-      const ocrWarning = result.warnings.join(' ');
-      const tables = [
-        ...(existingContent?.tables || []).filter((table) => !table.title?.startsWith('OCR 表格')),
-        ...structuredOcr.tables,
-      ];
-      const nextContent: DocumentContent = {
-        assetId: file.fileId,
-        text,
-        localText: existingContent?.localText,
-        ocrText: result.text,
-        structuredOcr,
-        tables,
-        metadata: {
-          ...(existingContent?.metadata || {}),
-          ocrPages: result.pages,
-          ocrQuality: result.quality,
-          ocrWarnings: result.warnings,
-        },
-        updatedAt: Date.now(),
-      };
-      const nextAsset: DocumentAsset = {
-        ...asset,
-        ocrStatus: ocrIsReliable ? 'done' : 'partial',
-        localParseStatus: asset.localParseStatus,
-        updatedAt: Date.now(),
-        error: ocrIsReliable ? undefined : (ocrWarning || 'OCR 结果置信度较低'),
-      };
-      await saveDocumentContent(nextContent);
-      await upsertDocumentAsset(nextAsset);
-      await rebuildDocumentChunks(nextAsset, nextContent);
-      setAttachedFiles(prev => prev.map(item => (
-        item.uid === file.uid
-          ? {
-              ...item,
-              ocrStatus: nextAsset.ocrStatus,
-              ocrProgress: 100,
-              parseError: undefined,
-              parseWarning: ocrIsReliable
-                ? (item.parseWarning || 'OCR 文本已加入资料索引。')
-                : (ocrWarning || 'OCR 结果置信度较低，建议使用模型文件解析兜底。'),
-            }
-          : item
-      )));
-      if (hasOcrText) {
-        if (ocrIsReliable) {
-          message.success('OCR 完成');
-        } else {
-          message.warning('OCR 已完成，但置信度较低');
-        }
-        addOcrResultMessage({
-          fileName: file.name,
-          documentId: file.fileId,
-          status: ocrIsReliable ? 'success' : 'low_confidence',
-          pageCount: structuredOcr.pageCount,
-          fieldCount: structuredOcr.fields.length,
-          tableCount: structuredOcr.tables.length,
-          sectionCount: structuredOcr.sections.length,
-          previewFields: structuredOcr.fields.slice(0, 3).map((field) => ({ key: field.key, value: field.value })),
-          warnings: structuredOcr.warnings,
-          text: result.text,
-          structuredOcr,
-        });
-      } else {
-        message.warning('OCR 已完成，但未识别到文字');
-        addOcrResultMessage({
-          fileName: file.name,
-          documentId: file.fileId,
-          status: 'empty',
-          pageCount: structuredOcr.pageCount,
-          fieldCount: 0,
-          tableCount: 0,
-          sectionCount: 0,
-          previewFields: [],
-          warnings: ['可以检查文件是否为低清晰度图片、空白页，或尝试重新上传更清晰版本。'],
-          text: '',
-          structuredOcr,
-        });
-      }
+      chatTaskIdsRef.current.add(run.id);
+      ocrTaskAssetsRef.current.set(run.id, file.fileId);
+      message.success('OCR 任务已启动');
     } catch (error: any) {
-      const errorMessage = getOcrErrorMessage(error);
+      const errorMessage = normalizeUserFacingError(error, 'OCR 任务启动失败');
       setAttachedFiles(prev => prev.map(item => (
         item.uid === file.uid
           ? { ...item, ocrStatus: 'error', ocrProgress: undefined, parseError: errorMessage }
           : item
       )));
-      const asset = await getDocumentAsset(file.fileId);
-      if (asset) {
-        await upsertDocumentAsset({ ...asset, ocrStatus: 'error', error: errorMessage, updatedAt: Date.now() });
-      }
       message.error(errorMessage);
     }
   };
@@ -2630,6 +2609,61 @@ const Chat: React.FC = () => {
               </Button>
             </Tooltip>
           ))}
+          <Dropdown
+            onVisibleChange={(visible) => {
+              if (visible) {
+                refreshCommandContext();
+                listCustomCommands().then(setCustomCommands).catch(() => setCustomCommands([]));
+              }
+            }}
+            overlay={(
+              <Menu onClick={({ key }) => {
+                const value = String(key);
+                if (value.startsWith('custom:')) handleCustomCommand(value.slice('custom:'.length));
+                else handleCopilotCommand(value.replace(/^(recommended|all):/, '') as CopilotCommandId);
+              }}>
+                <Menu.ItemGroup title="推荐">
+                  {COPILOT_COMMANDS.filter((command) => recommendedCommandIds.has(command.id)).map((command) => (
+                    <Menu.Item key={`recommended:${command.id}`}>
+                      <Space direction="vertical" size={0}>
+                        <Text>{command.title}</Text>
+                        <Text type="secondary" style={{ fontSize: 12 }}>{command.description}</Text>
+                      </Space>
+                    </Menu.Item>
+                  ))}
+                </Menu.ItemGroup>
+                <Menu.Divider />
+                <Menu.ItemGroup title="全部命令">
+                {COPILOT_COMMANDS.map((command) => (
+                  <Menu.Item key={`all:${command.id}`}>
+                    <Space direction="vertical" size={0}>
+                      <Text>{command.title}</Text>
+                      <Text type="secondary" style={{ fontSize: 12 }}>{command.description}</Text>
+                    </Space>
+                  </Menu.Item>
+                ))}
+                </Menu.ItemGroup>
+                {customCommands.length > 0 && <>
+                  <Menu.Divider />
+                  <Menu.ItemGroup title="自定义命令">
+                    {customCommands.map((command) => (
+                      <Menu.Item key={`custom:${command.id}`}>
+                        <Space direction="vertical" size={0}>
+                          <Space><Text>{command.title}</Text>{command.riskLevel !== 'low' && <Tag color={command.riskLevel === 'high' ? 'red' : 'orange'}>{command.riskLevel}</Tag>}</Space>
+                          <Text type="secondary" style={{ fontSize: 12 }}>{command.description || command.promptTemplate}</Text>
+                        </Space>
+                      </Menu.Item>
+                    ))}
+                  </Menu.ItemGroup>
+                </>}
+              </Menu>
+            )}
+            trigger={['click']}
+          >
+            <Button size="small" icon={<AppstoreOutlined />}>
+              命令
+            </Button>
+          </Dropdown>
         </div>
         {attachedFiles.length > 0 && (
           <div className={styles.attachedFiles}>
@@ -2868,11 +2902,61 @@ const Chat: React.FC = () => {
           headerStyle={{ padding: '16px 20px' }}
           extra={<Button size="small" icon={<PlusOutlined />} onClick={createNewChatSession}>新对话</Button>}
         >
+          <Space direction="vertical" size={8} style={{ width: '100%', marginBottom: 12 }}>
+            <Input.Search
+              allowClear
+              placeholder="搜索会话..."
+              value={sessionQuery}
+              onChange={(event) => setSessionQuery(event.target.value)}
+            />
+            <Button size="small" type={showArchivedSessions ? 'primary' : 'default'} onClick={() => setShowArchivedSessions((value) => !value)}>
+              {showArchivedSessions ? '隐藏已归档' : '查看已归档'}
+            </Button>
+          </Space>
           <List
             dataSource={chatSessions}
             locale={{ emptyText: <Empty description="暂无会话" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
             renderItem={(session) => (
-              <List.Item>
+              <List.Item
+                actions={[
+                  <Tooltip key="rename" title="重命名">
+                    <Button size="small" icon={<EditOutlined />} onClick={(event) => {
+                      event.stopPropagation();
+                      let nextTitle = session.title;
+                      Modal.confirm({
+                        title: '重命名会话',
+                        content: <Input defaultValue={session.title} onChange={(e) => { nextTitle = e.target.value; }} />,
+                        onOk: async () => {
+                          await updateChatSession(session.id, { title: nextTitle.trim() || session.title });
+                          await refreshChatSessions();
+                        },
+                      });
+                    }} />
+                  </Tooltip>,
+                  <Tooltip key="archive" title={session.archived ? '取消归档' : '归档'}>
+                    <Button size="small" icon={<InboxOutlined />} onClick={async (event) => {
+                      event.stopPropagation();
+                      await archiveChatSession(session.id, !session.archived);
+                      await refreshChatSessions();
+                    }} />
+                  </Tooltip>,
+                  <Tooltip key="delete" title="删除">
+                    <Button size="small" danger icon={<DeleteOutlined />} onClick={(event) => {
+                      event.stopPropagation();
+                      Modal.confirm({
+                        title: '删除会话',
+                        content: `确认删除「${session.title}」及其中的聊天记录？长期记忆不会被删除。`,
+                        okButtonProps: { danger: true },
+                        onOk: async () => {
+                          await deleteChatSession(session.id);
+                          if (session.id === currentSessionId) await createNewChatSession();
+                          await refreshChatSessions();
+                        },
+                      });
+                    }} />
+                  </Tooltip>,
+                ]}
+              >
                 <Card
                   size="small"
                   hoverable
@@ -2887,6 +2971,7 @@ const Chat: React.FC = () => {
                     <Text type="secondary" style={{ fontSize: 12 }}>
                       {session.messageCount} 条消息 · {moment(session.updatedAt).fromNow()}
                     </Text>
+                    {session.archived && <Tag>已归档</Tag>}
                     {session.summary && <Text type="secondary" style={{ fontSize: 12 }} ellipsis>{session.summary}</Text>}
                   </Space>
                 </Card>

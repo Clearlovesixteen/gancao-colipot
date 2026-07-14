@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { Button, Card, Empty, List, Modal, Progress, Space, Table, Tabs, Tag, Tooltip, Typography, message } from 'antd';
+import { Button, Card, Empty, Input, List, Modal, Progress, Select, Space, Table, Tabs, Tag, Tooltip, Typography, message } from 'antd';
 import { CopyOutlined, DeleteOutlined, DownloadOutlined, EyeOutlined, FileSearchOutlined, ReloadOutlined, ScanOutlined } from '@ant-design/icons';
-import type { DocumentAsset, DocumentContent, DocumentResult, PageStructuredData, RequirementTaskResult, StructuredOcrResult } from '../../../shared/documentTypes';
+import type { DocumentAsset, DocumentContent, DocumentResult, DocumentSpace, PageStructuredData, RequirementTaskResult, StructuredOcrResult } from '../../../shared/documentTypes';
 import {
   deleteDocumentAsset,
   getDocumentContent,
@@ -25,6 +25,7 @@ import {
 import { parseUploadedFile, type ParsedUploadedFile } from '../../../shared/fileParser';
 import { getOcrErrorMessage, runOcr } from '../../utils/ocrEngine';
 import { structureOcrText, structuredOcrToMarkdown } from '../../../shared/ocrStructurer';
+import { listDocumentSpaces, upsertDocumentSpace } from '../../../shared/documentSpaces';
 
 const { Text, Title } = Typography;
 const { TabPane } = Tabs;
@@ -42,20 +43,49 @@ const DocumentCenter: React.FC<{ onBack: () => void }> = ({ onBack }) => {
   const [loading, setLoading] = useState(false);
   const [ocrProgress, setOcrProgress] = useState<Record<string, number>>({});
   const [detail, setDetail] = useState<{ asset: DocumentAsset; content: DocumentContent | null } | null>(null);
+  const [spaces, setSpaces] = useState<DocumentSpace[]>([]);
+  const [selectedSpaceId, setSelectedSpaceId] = useState<string>('all');
 
   const refresh = async () => {
     setLoading(true);
     try {
       await migrateLegacyUploadedFiles();
-      const [nextAssets, nextResults] = await Promise.all([
+      const [nextAssets, nextResults, nextSpaces] = await Promise.all([
         listDocumentAssets(),
         listDocumentResults(),
+        listDocumentSpaces(),
       ]);
       setAssets(nextAssets);
       setResults(nextResults);
+      setSpaces(nextSpaces);
     } finally {
       setLoading(false);
     }
+  };
+
+  const visibleAssets = selectedSpaceId === 'all'
+    ? assets
+    : selectedSpaceId === 'unassigned'
+      ? assets.filter((asset) => !asset.spaceId)
+      : assets.filter((asset) => asset.spaceId === selectedSpaceId);
+
+  const handleCreateSpace = () => {
+    let name = '';
+    Modal.confirm({
+      title: '新建资料空间',
+      content: <Input placeholder="例如：智慧药房项目" onChange={(event) => { name = event.target.value; }} />,
+      onOk: async () => {
+        if (!name.trim()) throw new Error('请输入空间名称');
+        await upsertDocumentSpace({ name });
+        await refresh();
+      },
+    });
+  };
+
+  const handleMoveAsset = async (asset: DocumentAsset, spaceId?: string) => {
+    await upsertDocumentAsset({ ...asset, spaceId: spaceId || undefined, updatedAt: Date.now() });
+    message.success('资料空间已更新');
+    await refresh();
   };
 
   useEffect(() => {
@@ -362,11 +392,24 @@ const DocumentCenter: React.FC<{ onBack: () => void }> = ({ onBack }) => {
       <Tabs defaultActiveKey="assets" style={{ flex: 1, minHeight: 0 }} tabBarStyle={{ padding: '0 16px' }}>
         <TabPane tab={`资料 ${assets.length}`} key="assets">
           <div style={{ padding: 16, overflow: 'auto', height: '100%' }}>
-            {assets.length === 0 ? (
+            <Space style={{ width: '100%', marginBottom: 12 }}>
+              <Select
+                value={selectedSpaceId}
+                onChange={setSelectedSpaceId}
+                style={{ minWidth: 180 }}
+                options={[
+                  { value: 'all', label: `全部资料 (${assets.length})` },
+                  { value: 'unassigned', label: '未分类' },
+                  ...spaces.map((space) => ({ value: space.id, label: space.name })),
+                ]}
+              />
+              <Button size="small" onClick={handleCreateSpace}>新建空间</Button>
+            </Space>
+            {visibleAssets.length === 0 ? (
               <Empty description="暂无资料" />
             ) : (
               <List
-                dataSource={assets}
+                dataSource={visibleAssets}
                 renderItem={(asset) => (
                   <List.Item>
                     <Card size="small" style={{ width: '100%' }}>
@@ -379,6 +422,7 @@ const DocumentCenter: React.FC<{ onBack: () => void }> = ({ onBack }) => {
                               <Tag color={statusColor(asset.localParseStatus)}>解析 {asset.localParseStatus}</Tag>
                               <Tag color={statusColor(asset.nativeUploadStatus)}>模型 {asset.nativeUploadStatus}</Tag>
                               <Tag color={statusColor(asset.ocrStatus)}>OCR {asset.ocrStatus}</Tag>
+                              {asset.spaceId && <Tag color="blue">{spaces.find((space) => space.id === asset.spaceId)?.name || '未知空间'}</Tag>}
                             </Space>
                           </div>
                           {asset.error && <Text type="secondary" style={{ fontSize: 12 }}>{asset.error}</Text>}
@@ -387,6 +431,13 @@ const DocumentCenter: React.FC<{ onBack: () => void }> = ({ onBack }) => {
                           )}
                         </div>
                         <Space size={4}>
+                          <Select
+                            size="small"
+                            value={asset.spaceId || 'unassigned'}
+                            style={{ width: 108 }}
+                            onChange={(value) => handleMoveAsset(asset, value === 'unassigned' ? undefined : value)}
+                            options={[{ value: 'unassigned', label: '未分类' }, ...spaces.map((space) => ({ value: space.id, label: space.name }))]}
+                          />
                           <Tooltip title="查看详情">
                             <Button type="text" icon={<EyeOutlined />} onClick={() => handleOpenDetail(asset)} />
                           </Tooltip>

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { BrowserObservation, ComputerUsePageContext, ComputerUsePhase } from '../shared/automationTypes';
-import { isPhaseTargetReached } from './phaseCompletion';
+import type { BrowserObservation, ComputerUseIntent, ComputerUsePageContext, ComputerUsePhase } from '../shared/automationTypes';
+import { getPhaseFinishEvidence, isPhaseTargetReached } from './phaseCompletion';
 
 function makeContext(observation: BrowserObservation): ComputerUsePageContext {
   return {
@@ -29,6 +29,14 @@ const phase: ComputerUsePhase = {
   goal: '进入 饮片管理 > 库存预警',
   targets: ['饮片管理', '库存预警'],
   navigationPath: ['饮片管理', '库存预警'],
+};
+
+const formIntent: ComputerUseIntent = {
+  rawGoal: '输入用户花名秋枫',
+  taskType: 'form',
+  objective: '输入用户花名秋枫',
+  entities: ['用户花名', '秋枫'],
+  riskLevel: 'low',
 };
 
 describe('phaseCompletion', () => {
@@ -149,5 +157,68 @@ describe('phaseCompletion', () => {
       goal: '打开文件中心',
       targets: ['文件中心'],
     }, context)).toBe(true);
+  });
+
+  it('requires the observed form value before completing a fill phase', () => {
+    const fillPhase: ComputerUsePhase = {
+      id: 'fill_alias',
+      type: 'fill_form',
+      goal: '输入用户花名秋枫',
+      formValues: [{ label: '用户花名', value: '秋枫', control: 'input' }],
+    };
+    const context = makeContext({
+      ...baseObservation,
+      elements: [{
+        elementId: 'alias',
+        role: 'textbox',
+        tag: 'input',
+        text: '',
+        selector: '#alias',
+        selectors: ['#alias'],
+        bbox: { x: 10, y: 10, width: 120, height: 32 },
+        visible: true,
+        enabled: true,
+        parentText: '用户花名',
+        value: '',
+      }],
+    });
+
+    expect(getPhaseFinishEvidence({
+      phase: fillPhase,
+      intent: formIntent,
+      context,
+      history: [{ action: { action: 'type', elementId: 'alias', text: '秋枫' } }],
+      runState: { currentPhaseIndex: 0, completedPhases: [] },
+    })).toMatchObject({ ok: false });
+  });
+
+  it('completes a fill phase when the selected value is present in form metadata', () => {
+    const fillPhase: ComputerUsePhase = {
+      id: 'select_system',
+      type: 'fill_form',
+      goal: '选择子系统',
+      formValues: [{ label: '子系统', value: '智慧药房WMS仓储', control: 'select' }],
+    };
+    const context = {
+      ...makeContext(baseObservation),
+      collections: [{
+        id: 'forms',
+        type: 'form_group' as const,
+        items: [{
+          index: 1,
+          text: '子系统',
+          confidence: 1,
+          metadata: { label: '子系统', currentValue: '智慧药房WMS仓储', controlType: 'select' as const },
+        }],
+      }],
+    };
+
+    expect(getPhaseFinishEvidence({
+      phase: fillPhase,
+      intent: formIntent,
+      context,
+      history: [{ action: { action: 'select_option', elementId: 'system', text: '智慧药房WMS仓储' } }],
+      runState: { currentPhaseIndex: 0, completedPhases: [] },
+    })).toMatchObject({ ok: true });
   });
 });

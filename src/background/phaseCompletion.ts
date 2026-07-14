@@ -70,8 +70,9 @@ function isOpenSiteReached(phase: ComputerUsePhase, context: ComputerUsePageCont
 function isSearchResultReached(phase: ComputerUsePhase, context: ComputerUsePageContext): boolean {
   const query = phase.query || phase.targets?.[0];
   const decodedUrl = safeDecodeUrl(context.observation.url);
+  if ((context.collections || []).some((collection) => collection.type === 'search_results' && collection.items.length > 0)) return true;
   if (context.observation.pageState?.kind === 'result_page' && (!query || decodedUrl.includes(query))) return true;
-  if (/[?&](wd|q|search_query)=/i.test(decodedUrl) && (!query || decodedUrl.includes(query))) return true;
+  if (/[?&](wd|word|q|query|keyword|search_query)=/i.test(decodedUrl) && (!query || decodedUrl.includes(query))) return true;
   return Boolean(query && context.observation.title?.includes(query) && /(搜索|search|百度|bing|google|youtube)/i.test(context.observation.title));
 }
 
@@ -183,7 +184,18 @@ function getPageEvidenceText(context: ComputerUsePageContext): string {
         element.text,
         element.context,
         element.parentText,
+        element.value,
         element.href,
+      ].filter(Boolean).join(' '))
+      .join(' '),
+    (context.collections || [])
+      .filter((collection) => collection.type === 'form_group')
+      .flatMap((collection) => collection.items)
+      .map((item) => [
+        item.text,
+        item.metadata?.label,
+        item.metadata?.currentValue,
+        item.metadata?.selectedText,
       ].filter(Boolean).join(' '))
       .join(' '),
   ].filter(Boolean).join(' ');
@@ -294,12 +306,13 @@ export function getPhaseFinishEvidence(input: {
       : { ok: false, reason: '未捕获到下载完成或部分下载结果。' };
   }
   if (input.phase.type === 'fill_form') {
-    const expectedValues = input.phase.formValues?.map((item) => item.value).filter(Boolean) || [];
-    if (!expectedValues.length) return { ok: false, reason: '缺少要填写的字段和值。' };
+    const expectedFields = input.phase.formValues?.filter((item) => item.label && item.value) || [];
+    if (!expectedFields.length) return { ok: false, reason: '缺少要填写的字段和值。' };
     const text = getPageEvidenceText(input.context);
-    return expectedValues.some((value) => includesCompact(text, value))
+    const missing = expectedFields.filter((field) => !includesCompact(text, field.value));
+    return missing.length === 0
       ? { ok: true }
-      : { ok: true, reason: '字段填写动作已执行，但当前观察结果未暴露字段值。' };
+      : { ok: false, reason: `字段值未通过校验：${missing.map((field) => `${field.label}=${field.value}`).join('、')}。` };
   }
   if (input.phase.type === 'click_action') {
     return input.history.some((item) => item.action?.action === 'click')

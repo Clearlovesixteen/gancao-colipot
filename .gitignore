@@ -12,6 +12,9 @@ dist
 .trae
 dist-ssr
 *.local
+test-results
+playwright-report
+.learnings/
 
 # Editor directories and files
 .vscode/*

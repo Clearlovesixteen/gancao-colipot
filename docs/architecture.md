@@ -1,11 +1,29 @@
 # 甘草 Copilot 架构图
 
-当前项目是一个 Manifest V3 Chrome 扩展。Vite 打包 4 个运行入口：
+当前项目是一个 Manifest V3 Chrome 扩展。Vite 打包 6 个运行入口：
 
 - `sidePanel.js`: 插件侧边栏，承载登录、聊天、文件上传、资料中心、OCR 和工具箱。
 - `dashboard.js`: 自动化工作台，承载工作流列表、工作流编辑器、流程图和运行日志。
 - `background.js`: 扩展后台模块化服务工作线程，是消息路由、AI 编排、页面工具网关、自动化执行、下载入库和资料工具中心。
 - `content.js`: 注入业务页面，负责页面观察、DOM 动作执行、搜索结果提取、控制台错误采集、选中文本入口和页面登录态同步。
+- `ocrHost.js`: Offscreen Document OCR 宿主，在 SidePanel 关闭后继续运行 PaddleOCR 任务。
+- `paddleocrSandbox.js`: Chrome sandbox 中的 PaddleOCR/ONNX Runtime，隔离需要 eval 的模型运行时。
+
+## V3.2 统一底座
+
+- `ModelGateway`: background-only 模型网关，读取用户本地配置，统一流式对话、JSON 规划、文本补全、取消和连接测试。SidePanel 不持有 API Key，也不直接请求模型服务。
+- `DocumentRepository`: 唯一资料访问层，沿用 `gancao_document_center` v1，不重建已有资料；旧 `documentDb/documentStore` 仅保留兼容 re-export。
+- `TaskExecutorRegistry`: 统一运行 `computer_use / page_monitor / page_diagnosis / document_qa / ocr / extract / workflow`，统一状态、停止、结果和 trace snapshot。
+
+## V3.3-V4 产品能力
+
+- 任务结果不再只有 trace JSON。任务中心按 Computer Use 下载、资料问答引用、OCR、页面诊断和结构化提取显示交付结果卡。
+- 成功 Computer Use 任务可保存为参数化 `computerTask` 工作流；`{{variable}}` 占位符和任务配置中的默认参数会写入 workflow，运行任务可用 `metadata.variables` 覆盖默认值。
+- 页面监控支持内容变化、包含目标内容、数值阈值、新增记录和状态转换规则。监控定义保存在任务记录中，每次检查写入独立历史；连续失败达到上限后自动暂停 alarm。
+- Memory 会话支持搜索、重命名、归档、删除和继续会话；长期记忆仍与聊天记录分开保存。
+- 资料资产可归属本地资料空间。旧资料保持无空间归属，不触发 IndexedDB 重建或数据迁移。
+- 自定义命令保存在 `chrome.storage.local`，支持 prompt/task 两种执行模式、风险等级、版本递增以及 JSON 导入导出；Chat 命令菜单动态合并内置和自定义命令。
+- `Automation Task Center`: 所有任务类型均可配置、运行、停止、查看结果和重试。Service Worker 重启后遗留 running 任务会安全收口为 stopped。
 
 ## 总体架构图
 
@@ -80,7 +98,8 @@ flowchart LR
 ```mermaid
 flowchart LR
   BG["background/index.ts<br/>统一消息入口"]
-  GLM["AI 对话客户端<br/>glm-client.ts"]
+  Model["ModelGateway<br/>BYOK / 流式 / JSON / 取消 / 脱敏"]
+  Tasks["TaskExecutorRegistry<br/>七类统一任务执行器"]
   Gateway["业务工具网关<br/>handleBusinessTool"]
   Auto["固定工作流<br/>automation.ts"]
   CU["智能浏览器操作调度器<br/>computerUseRunner.ts<br/>阶段循环 / RunState / PhaseMemory"]
@@ -93,13 +112,17 @@ flowchart LR
   Verify["步骤校验<br/>verifyComputerUseStep.ts<br/>动作级校验"]
   Download["下载入库<br/>downloadManager.ts"]
   Trace["任务轨迹<br/>computerUseTrace.ts"]
-  DB["资料库<br/>documentDb.ts"]
+  DB["DocumentRepository<br/>唯一 IndexedDB 访问层"]
   Content["内容脚本工具<br/>content/tools.ts"]
 
-  BG --> GLM
+  BG --> Model
+  BG --> Tasks
   BG --> Gateway
   BG --> Auto
   BG --> CU
+  Tasks --> CU
+  Tasks --> Auto
+  Tasks --> DB
   Gateway --> DB
   Gateway --> Content
   Auto --> Content
@@ -208,11 +231,11 @@ flowchart TB
   Upload["用户上传 / 粘贴文件"]
   LocalParse["本地解析<br/>shared/fileParser.ts<br/>Excel / Word / PDF / 文本 / 表格"]
   RawFile["原始文件保存<br/>rawFiles"]
-  OCR["OCR 识别<br/>sidePanel/utils/ocrEngine.ts<br/>Tesseract + pdfjs"]
+  OCR["OCR 识别<br/>Offscreen Host + PaddleOCR sandbox<br/>ONNX Runtime Web + pdfjs"]
   OCRStruct["OCR 结构化<br/>shared/ocrStructurer.ts<br/>字段 / 表格 / 正文区块 / 摘要"]
   WebCapture["网页结构化采集<br/>extract_page_structured_data"]
   Download["浏览器导出下载<br/>downloadManager.ts<br/>chrome.downloads 监听"]
-  Store["资料库访问层<br/>documentStore.ts / documentDb.ts<br/>同一套 IndexedDB 结构"]
+  Store["唯一资料库访问层<br/>shared/documentRepository.ts<br/>兼容原 IndexedDB v1"]
   Chunk["文档分块与评分<br/>shared/documentChunker.ts"]
   Tools["资料工具<br/>list/read/search/summarize/compare/generate tasks/export"]
   Results["资料结果<br/>需求任务清单 / 网页结构化数据 / 表格结果"]

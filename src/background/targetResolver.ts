@@ -19,6 +19,17 @@ type ResolutionCandidate = {
   x?: number;
   y?: number;
   source?: 'collection' | 'element' | 'coordinate';
+  matchedBy?: string;
+  score?: number;
+  verificationHint?: string;
+};
+
+export type RejectedTargetCandidate = {
+  text: string;
+  purpose?: string;
+  collectionType?: ObservedCollectionType;
+  score?: number;
+  reason: string;
 };
 
 export type TargetResolution = {
@@ -27,7 +38,17 @@ export type TargetResolution = {
   candidate?: ResolutionCandidate;
   blocked?: boolean;
   reason?: string;
+  matchedBy?: string;
+  score?: number;
+  rejectedCandidates?: RejectedTargetCandidate[];
+  verificationHint?: string;
 };
+
+function verificationHint(step: PlannedStep): string {
+  if (step.action === 'download_file') return 'download event completed or partial';
+  if (step.action === 'type' || step.action === 'select_option') return 'target value equals requested value';
+  return step.verify?.type || 'page or target state changed';
+}
 
 function compact(text?: string): string {
   return String(text || '').replace(/\s+/g, '').trim();
@@ -120,6 +141,9 @@ function findExplicitCandidate(input: {
   return {
     ...explicit,
     source: 'element',
+    matchedBy: target.elementId ? 'explicit_element_id' : 'explicit_selector',
+    score: 1000,
+    verificationHint: verificationHint(input.step),
   };
 }
 
@@ -197,14 +221,27 @@ function findCollectionCandidate(input: {
       text: bestRowAction.action.text || bestRowAction.item.text,
       purpose: rowActionPurpose(bestRowAction.action) || target?.purpose || '',
       source: 'collection',
+      matchedBy: 'collection_row_action',
+      score: bestRowAction.score,
+      verificationHint: verificationHint(input.step),
     };
   }
 
   const candidates = collections.flatMap((collection) => (
     collection.items.map((item) => ({ collection, item, score: scoreCollectionItem({ item, collection, step: input.step, phase: input.phase, runState: input.runState }) }))
   ))
+    .filter(({ collection, item }) => {
+      if (collection.type !== 'menu_group' || !target?.text) return true;
+      return includesTarget(item.text, target.text);
+    })
     .filter(({ item }) => Boolean(item.elementId || item.selector))
     .filter(({ item }) => input.step.action !== 'download_file' || itemPurpose(item) === 'download_button')
+    .filter(({ collection, item }) => (
+      collection.type !== 'action_group'
+      || input.step.action !== 'download_file'
+      || Boolean(target?.ordinal)
+      || !Number(item.metadata?.rowIndex || 0)
+    ))
     .filter(({ item }) => !isFailed(input.phaseMemory, item))
     .sort((a, b) => b.score - a.score || a.item.index - b.item.index);
   const best = candidates[0];
@@ -216,6 +253,9 @@ function findCollectionCandidate(input: {
     href: best.item.href,
     purpose: itemPurpose(best.item) || target?.purpose || '',
     source: 'collection',
+    matchedBy: target?.ordinal ? 'collection_ordinal' : target?.purpose ? 'collection_purpose' : 'collection_semantic_text',
+    score: best.score,
+    verificationHint: verificationHint(input.step),
   };
 }
 
@@ -232,6 +272,7 @@ function findElementCandidate(input: {
   const elements = input.context.observation.elements
     .filter((element) => element.visible && element.enabled)
     .filter((element) => input.step.action !== 'download_file' || element.purpose === 'download_button')
+    .filter((element) => input.step.action !== 'download_file' || Boolean(target?.ordinal) || element.region !== 'table_area')
     .filter((element) => !isFailed(input.phaseMemory, element))
     .map((element) => {
       let score = (element.score || 0) * 10;
@@ -258,7 +299,30 @@ function findElementCandidate(input: {
     text: best.element.text,
     purpose: best.element.purpose,
     source: 'element',
+    matchedBy: 'element_fallback',
+    score: best.score,
+    verificationHint: verificationHint(input.step),
   };
+}
+
+function rejectedCandidates(input: {
+  step: PlannedStep;
+  context: ComputerUsePageContext;
+  phase?: ComputerUsePhase;
+  runState?: ComputerUseRunState;
+}): RejectedTargetCandidate[] {
+  const target = input.step.target;
+  return (input.context.collections || []).flatMap((collection) => collection.items.map((item) => {
+    const score = scoreCollectionItem({ item, collection, step: input.step, phase: input.phase, runState: input.runState });
+    const purpose = itemPurpose(item);
+    let reason = '语义匹配分数不足';
+    if (target?.collectionType && collection.type !== target.collectionType) reason = `集合类型不匹配，期望 ${target.collectionType}`;
+    else if (target?.purpose && purpose !== target.purpose) reason = `动作用途不匹配，期望 ${target.purpose}`;
+    else if (target?.ordinal && item.index !== target.ordinal) reason = `序号不匹配，期望第 ${target.ordinal} 项`;
+    return { text: item.text, purpose, collectionType: collection.type, score, reason };
+  }))
+    .sort((a, b) => (b.score || 0) - (a.score || 0))
+    .slice(0, 8);
 }
 
 function actionNeedsTarget(step: PlannedStep): boolean {
@@ -275,9 +339,17 @@ export function resolvePlannedStepTarget(input: {
   phaseMemory?: ComputerUsePhaseMemory;
 }): TargetResolution {
   if (!actionNeedsTarget(input.step)) return { step: input.step };
+  const semanticTarget = Boolean(
+    input.step.target?.collectionType
+    || input.step.target?.collectionId
+    || input.step.target?.ordinal
+    || input.step.target?.parentPath?.length
+  );
+  const collectionCandidate = findCollectionCandidate(input);
   const explicitCandidate = findExplicitCandidate(input);
-  const collectionCandidate = explicitCandidate ? null : findCollectionCandidate(input);
-  const candidate = explicitCandidate || collectionCandidate || findElementCandidate(input);
+  const candidate = semanticTarget
+    ? collectionCandidate || explicitCandidate || findElementCandidate(input)
+    : explicitCandidate || collectionCandidate || findElementCandidate(input);
   if (!candidate) {
     const downloadTarget = input.step.action === 'download_file' || input.phase?.type === 'download_file';
     return {
@@ -286,6 +358,8 @@ export function resolvePlannedStepTarget(input: {
       reason: downloadTarget
         ? '无法解析真实导出/下载按钮：当前语义集合中没有可用的 download_button。'
         : `无法解析动作目标：${input.step.target?.text || input.step.target?.purpose || input.phase?.goal || input.step.action}`,
+      rejectedCandidates: rejectedCandidates(input),
+      verificationHint: verificationHint(input.step),
     };
   }
 
@@ -307,5 +381,12 @@ export function resolvePlannedStepTarget(input: {
     : candidate.selector
       ? input.context.observation.elements.find((item) => item.selector === candidate.selector || item.selectors?.includes(candidate.selector || ''))
       : undefined;
-  return { step: nextStep, element, candidate };
+  return {
+    step: nextStep,
+    element,
+    candidate,
+    matchedBy: candidate.matchedBy,
+    score: candidate.score,
+    verificationHint: candidate.verificationHint || verificationHint(input.step),
+  };
 }

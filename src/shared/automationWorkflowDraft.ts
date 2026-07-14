@@ -1,5 +1,15 @@
 import type { AutomationRun, AutomationWorkflow } from './automationTypes';
 
+function inferVariables(goal: string, configured: unknown): Record<string, unknown> {
+  const variables = configured && typeof configured === 'object' && !Array.isArray(configured)
+    ? { ...(configured as Record<string, unknown>) }
+    : {};
+  Array.from(goal.matchAll(/\{\{(\w+)\}\}/g)).forEach((match) => {
+    if (!(match[1] in variables)) variables[match[1]] = '';
+  });
+  return variables;
+}
+
 export function createWorkflowDraftFromComputerUseRun(run: AutomationRun): { name: string; workflow: AutomationWorkflow } {
   if (run.kind !== 'computer_use') {
     throw new Error('只有 Computer Use 任务可以保存为工作流草稿');
@@ -13,7 +23,7 @@ export function createWorkflowDraftFromComputerUseRun(run: AutomationRun): { nam
     name,
     workflow: {
       name,
-      variables: {},
+      variables: inferVariables(goal, run.metadata?.workflowVariables),
       steps: [{
         type: 'computerTask',
         goal,

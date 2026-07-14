@@ -5,6 +5,7 @@ import {
   patchAutomationRun,
 } from '../shared/automationRunStore';
 import { comparePageMonitorSnapshots, createPageMonitorSnapshot } from '../shared/pageMonitor';
+import { appendPageMonitorCheck } from '../shared/pageMonitorHistory';
 
 const ALARM_PREFIX = 'page-monitor:';
 
@@ -107,16 +108,29 @@ export async function runPageMonitorNow(runId: string, deps: PageMonitorDeps): P
     await new Promise((resolve) => setTimeout(resolve, 500));
 
     const nextSnapshot = await captureMonitorSnapshot(tabId, monitor, deps);
-    const compare = comparePageMonitorSnapshots(monitor.lastSnapshot, nextSnapshot);
+    const compare = comparePageMonitorSnapshots(monitor.lastSnapshot, nextSnapshot, monitor.rule);
+    const shouldNotify = compare.matched && monitor.lastNotifiedHash !== nextSnapshot.hash;
     const nextMonitor: PageMonitorMetadata = {
       ...monitor,
       lastSnapshot: nextSnapshot,
       lastCheckedAt: Date.now(),
       lastChangedAt: compare.changed ? Date.now() : monitor.lastChangedAt,
+      lastNotifiedHash: shouldNotify ? nextSnapshot.hash : monitor.lastNotifiedHash,
       lastRunError: undefined,
+      consecutiveFailures: 0,
+      pausedReason: undefined,
     };
+    await appendPageMonitorCheck({
+      monitorRunId: run.id,
+      checkedAt: Date.now(),
+      status: compare.matched ? 'changed' : 'unchanged',
+      summary: compare.summary,
+      snapshotHash: nextSnapshot.hash,
+      previousHash: compare.previousHash,
+      diffPreview: compare.diffPreview,
+    });
     await patchAutomationRun(run.id, {
-      status: compare.changed ? 'success' : 'idle',
+      status: compare.matched ? 'success' : 'idle',
       endedAt: Date.now(),
       resultSummary: compare.summary,
       error: undefined,
@@ -130,22 +144,37 @@ export async function runPageMonitorNow(runId: string, deps: PageMonitorDeps): P
         monitor: nextMonitor,
       },
     });
-    return { success: true, changed: compare.changed };
+    return { success: true, changed: compare.matched };
   } catch (error: any) {
     const message = error?.message || '页面监控失败';
+    const failures = (monitor.consecutiveFailures || 0) + 1;
+    const maxFailures = monitor.maxConsecutiveFailures || 3;
+    const shouldPause = failures >= maxFailures;
+    await appendPageMonitorCheck({
+      monitorRunId: run.id,
+      checkedAt: Date.now(),
+      status: 'failed',
+      summary: shouldPause ? `连续失败 ${failures} 次，监控已自动暂停。` : `监控检查失败（${failures}/${maxFailures}）`,
+      error: message,
+    });
     await patchAutomationRun(run.id, {
       status: 'failed',
       endedAt: Date.now(),
       error: message,
+      schedule: shouldPause ? { ...(run.schedule || { enabled: false }), enabled: false } : run.schedule,
       metadata: {
         ...(run.metadata || {}),
         monitor: {
           ...monitor,
           lastCheckedAt: Date.now(),
           lastRunError: message,
+          consecutiveFailures: failures,
+          maxConsecutiveFailures: maxFailures,
+          pausedReason: shouldPause ? `连续失败 ${failures} 次` : undefined,
         },
       },
     });
+    if (shouldPause) await chrome.alarms.clear(alarmName(run.id));
     return { success: false, error: message };
   } finally {
     if (tabId) chrome.tabs.remove(tabId).catch(() => {});
@@ -172,8 +201,12 @@ export async function syncPageMonitorAlarms(): Promise<void> {
   await Promise.all(runs.filter((run) => run.kind === 'page_monitor').map(upsertPageMonitorAlarm));
 }
 
-export async function handlePageMonitorAlarm(name: string, deps: PageMonitorDeps): Promise<void> {
+export async function handlePageMonitorAlarm(name: string, deps: PageMonitorDeps & { runTask?: (runId: string) => Promise<unknown> }): Promise<void> {
   const runId = runIdFromAlarm(name);
   if (!runId) return;
+  if (deps.runTask) {
+    await deps.runTask(runId);
+    return;
+  }
   await runPageMonitorNow(runId, deps);
 }

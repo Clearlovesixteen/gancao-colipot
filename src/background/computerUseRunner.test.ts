@@ -447,9 +447,11 @@ describe('ComputerUseRunner', () => {
       if (page === 'results') {
         return {
           ...observation(),
-          url: 'https://www.baidu.com/s?wd=%E7%94%98%E8%8D%89%E5%8C%BB%E7%94%9F',
-          title: '甘草医生_百度搜索',
-          pageState: { kind: 'result_page', hasModal: false, hasCaptcha: false, hasLoginSignal: false },
+          // Some search sites render results asynchronously before updating URL/title.
+          // The semantic search_results collection is the reliable completion evidence.
+          url: 'https://www.baidu.com/',
+          title: '百度一下，你就知道',
+          pageState: { kind: 'search_page', hasModal: false, hasCaptcha: false, hasLoginSignal: true },
           elements: [],
         };
       }

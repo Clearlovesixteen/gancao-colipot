@@ -5,6 +5,7 @@ export interface ContextHubResult {
   url: string;
   pageState?: BrowserObservation['pageState'];
   signals: Array<{ type: string; severity: 'info' | 'warning' | 'error'; message: string }>;
+  pageSignals: Array<{ type: string; severity: 'info' | 'warning' | 'error'; message: string }>;
   collections: Array<{
     type: string;
     title?: string;
@@ -17,6 +18,20 @@ export interface ContextHubResult {
     fields: unknown[];
     tables: unknown[];
     lists: unknown[];
+  };
+  structuredAsset?: { id?: string; title?: string };
+  formSummary?: {
+    fieldCount: number;
+    fields: Array<{ label: string; purpose?: string; controlType?: string; required?: boolean; currentValue?: string }>;
+  };
+  tableSummary?: {
+    tableCount: number;
+    rowCount: number;
+    preview: string[];
+  };
+  actionSummary?: {
+    actionCount: number;
+    actions: Array<{ text: string; purpose?: string; actionKind?: string; riskLevel?: string; rowIndex?: number }>;
   };
   tableCount: number;
   textPreview: string;
@@ -45,6 +60,49 @@ function summarizeCollections(collections: ObservedCollection[] = []): ContextHu
     count: collection.items.length,
     preview: collection.items.slice(0, 5).map((item) => item.text).filter(Boolean),
   }));
+}
+
+function summarizeForms(collections: ObservedCollection[] = []): ContextHubResult['formSummary'] {
+  const fields = collections
+    .filter((collection) => collection.type === 'form_group')
+    .flatMap((collection) => collection.items)
+    .map((item) => ({
+      label: String(item.metadata?.label || item.text || ''),
+      purpose: item.purpose || item.metadata?.fieldPurpose,
+      controlType: item.metadata?.controlType,
+      required: item.metadata?.required,
+      currentValue: item.metadata?.currentValue === undefined ? undefined : String(item.metadata.currentValue),
+    }))
+    .filter((item) => item.label)
+    .slice(0, 80);
+  return fields.length ? { fieldCount: fields.length, fields } : undefined;
+}
+
+function summarizeTables(collections: ObservedCollection[] = [], tableCount = 0): ContextHubResult['tableSummary'] {
+  const rows = collections
+    .filter((collection) => collection.type === 'table_row_group')
+    .flatMap((collection) => collection.items);
+  if (!tableCount && !rows.length) return undefined;
+  return {
+    tableCount,
+    rowCount: rows.length,
+    preview: rows.slice(0, 5).map((item) => item.text).filter(Boolean),
+  };
+}
+
+function summarizeActions(collections: ObservedCollection[] = []): ContextHubResult['actionSummary'] {
+  const actions = collections
+    .filter((collection) => collection.type === 'action_group')
+    .flatMap((collection) => collection.items)
+    .map((item) => ({
+      text: item.text || String(item.metadata?.iconLabel || ''),
+      purpose: item.purpose,
+      actionKind: item.metadata?.actionKind,
+      riskLevel: item.riskLevel || item.metadata?.riskLevel,
+      rowIndex: item.metadata?.rowIndex,
+    }))
+    .slice(0, 80);
+  return actions.length ? { actionCount: actions.length, actions } : undefined;
 }
 
 function buildSignals(input: {
@@ -117,13 +175,21 @@ export async function collectPageContextHub(input: {
   const consoleErrors = getErrors(consoleResult);
   const structuredPayload = structured?.data || structured;
   const textPreview = String(pageInfo?.text || structuredPayload?.text || '').slice(0, 4000);
+  const collections = observation?.collections || [];
+  const tableCount = Array.isArray(tables?.tables)
+    ? tables.tables.length
+    : Array.isArray(structuredPayload?.tables)
+      ? structuredPayload.tables.length
+      : 0;
+  const pageSignals = buildSignals({ observation, consoleErrors, textPreview });
 
   return {
     title: pageInfo?.title || observation?.title || structuredPayload?.title || '当前页面',
     url: pageInfo?.url || observation?.url || structuredPayload?.url || '',
     pageState: observation?.pageState,
-    signals: buildSignals({ observation, consoleErrors, textPreview }),
-    collections: summarizeCollections(observation?.collections || []),
+    signals: pageSignals,
+    pageSignals,
+    collections: summarizeCollections(collections),
     consoleErrors,
     structuredData: structuredPayload ? {
       headings: Array.isArray(structuredPayload.headings) ? structuredPayload.headings.slice(0, 30) : [],
@@ -131,11 +197,11 @@ export async function collectPageContextHub(input: {
       tables: Array.isArray(structuredPayload.tables) ? structuredPayload.tables.slice(0, 10) : [],
       lists: Array.isArray(structuredPayload.lists) ? structuredPayload.lists.slice(0, 20) : [],
     } : undefined,
-    tableCount: Array.isArray(tables?.tables)
-      ? tables.tables.length
-      : Array.isArray(structuredPayload?.tables)
-        ? structuredPayload.tables.length
-        : 0,
+    structuredAsset: structured?.asset || structuredResult?.asset,
+    formSummary: summarizeForms(collections),
+    tableSummary: summarizeTables(collections, tableCount),
+    actionSummary: summarizeActions(collections),
+    tableCount,
     textPreview,
     warnings,
   };

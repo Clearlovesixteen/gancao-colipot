@@ -16,6 +16,7 @@ describe('automationWorkflowDraft', () => {
         maxSteps: 18,
         startUrl: 'https://example.com',
         allowHighRisk: false,
+        workflowVariables: { warehouse: '杭州仓' },
       },
     };
 
@@ -29,6 +30,20 @@ describe('automationWorkflowDraft', () => {
       startUrl: 'https://example.com',
       allowHighRisk: false,
     }]);
+    expect(draft.workflow.variables).toEqual({ warehouse: '杭州仓' });
+  });
+
+  it('infers empty defaults for placeholders in the goal', () => {
+    const draft = createWorkflowDraftFromComputerUseRun({
+      id: 'run-vars',
+      title: '参数任务',
+      kind: 'computer_use',
+      status: 'success',
+      goal: '查询 {{warehouse}} 中 {{operator}} 的记录',
+      createdAt: 1,
+      updatedAt: 2,
+    });
+    expect(draft.workflow.variables).toEqual({ warehouse: '', operator: '' });
   });
 
   it('rejects non-computer-use runs', () => {

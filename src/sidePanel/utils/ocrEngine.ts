@@ -40,6 +40,11 @@ export interface OcrQuality {
 export interface OcrOptions {
   maxPages?: number;
   onProgress?: (progress: OcrProgress) => void;
+  signal?: AbortSignal;
+}
+
+function assertNotAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new DOMException('OCR 已停止', 'AbortError');
 }
 
 interface PaddleOcrLine {
@@ -426,11 +431,13 @@ async function recognizeCanvas(
 }
 
 export async function ocrImage(file: Blob, options: OcrOptions = {}): Promise<OcrResult> {
+  assertNotAborted(options.signal);
   const bridge = await getPaddleSandboxBridge(options.onProgress);
   const dataUrl = await readBlobAsDataUrl(file);
   const image = await loadImage(dataUrl);
   const enhanced = preprocessCanvas(image, { binarize: false });
   let page = await recognizeCanvas(enhanced, 1, bridge, 1, options.onProgress);
+  assertNotAborted(options.signal);
   if (shouldRetryOcr(page)) {
     const binarized = preprocessCanvas(image, { binarize: true });
     const retryPage = await recognizeCanvas(binarized, 1, bridge, 1, options.onProgress);
@@ -463,6 +470,7 @@ export async function renderPdfPageToCanvases(pdf: any, pageNumber: number): Pro
 }
 
 export async function ocrPdf(file: Blob, options: OcrOptions = {}): Promise<OcrResult> {
+  assertNotAborted(options.signal);
   const maxPages = options.maxPages || 20;
   const loadingTask = getDocument({
     data: new Uint8Array(await file.arrayBuffer()),
@@ -474,27 +482,40 @@ export async function ocrPdf(file: Blob, options: OcrOptions = {}): Promise<OcrR
   const pageCount = Math.min(pdf.numPages, maxPages);
   const bridge = await getPaddleSandboxBridge(options.onProgress);
   const pages: OcrPageResult[] = [];
+  let stopped = false;
 
   try {
     for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
-      options.onProgress?.({ status: 'rendering_pdf', progress: (pageNumber - 1) / pageCount, pageNumber, pageCount });
-      const canvases = await renderPdfPageToCanvases(pdf, pageNumber);
-      let page = await recognizeCanvas(canvases.enhanced, pageNumber, bridge, pageCount, options.onProgress);
-      if (shouldRetryOcr(page)) {
-        const retryPage = await recognizeCanvas(canvases.binarized, pageNumber, bridge, pageCount, options.onProgress);
-        page = pickBetterOcrPage(page, retryPage);
+      try {
+        assertNotAborted(options.signal);
+        options.onProgress?.({ status: 'rendering_pdf', progress: (pageNumber - 1) / pageCount, pageNumber, pageCount });
+        const canvases = await renderPdfPageToCanvases(pdf, pageNumber);
+        let page = await recognizeCanvas(canvases.enhanced, pageNumber, bridge, pageCount, options.onProgress);
+        assertNotAborted(options.signal);
+        if (shouldRetryOcr(page)) {
+          const retryPage = await recognizeCanvas(canvases.binarized, pageNumber, bridge, pageCount, options.onProgress);
+          page = pickBetterOcrPage(page, retryPage);
+        }
+        pages.push(page);
+      } catch (error: any) {
+        if (options.signal?.aborted || error?.name === 'AbortError') {
+          stopped = true;
+          break;
+        }
+        throw error;
       }
-      pages.push(page);
     }
 
     const text = pages.map((page) => `## Page ${page.pageNumber}\n${page.text}`).join('\n\n').trim();
     const quality = mergeOcrQuality(pages);
     const hasText = Boolean(text.trim());
+    const warnings = getOcrWarnings(quality, hasText);
+    if (stopped) warnings.unshift(`OCR 已停止，已保留完成的 ${pages.length} 页。`);
     return {
       text,
       pages,
       quality,
-      warnings: getOcrWarnings(quality, hasText),
+      warnings,
     };
   } finally {
     try {
