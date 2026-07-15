@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { Button, Card, Empty, Input, List, Modal, Progress, Select, Space, Table, Tabs, Tag, Tooltip, Typography, message } from 'antd';
+import { Alert, Button, Card, Empty, Input, List, Modal, Progress, Select, Space, Table, Tabs, Tag, Tooltip, Typography, message } from 'antd';
 import { CopyOutlined, DeleteOutlined, DownloadOutlined, EyeOutlined, FileSearchOutlined, ReloadOutlined, ScanOutlined } from '@ant-design/icons';
-import type { DocumentAsset, DocumentContent, DocumentResult, DocumentSpace, PageStructuredData, RequirementTaskResult, StructuredOcrResult } from '../../../shared/documentTypes';
+import type { DocumentAsset, DocumentContent, DocumentResult, DocumentSpace, DocumentTable, PageStructuredData, RequirementTaskResult, StructuredOcrField, StructuredOcrResult } from '../../../shared/documentTypes';
 import {
   deleteDocumentAsset,
   getDocumentContent,
@@ -37,7 +37,7 @@ function statusColor(status: string) {
   return 'default';
 }
 
-const DocumentCenter: React.FC<{ onBack: () => void }> = ({ onBack }) => {
+const DocumentCenter: React.FC<{ onBack: () => void; reference?: { documentId: string; pageNumber?: number; sectionTitle?: string; chunkId?: string } | null }> = ({ onBack, reference }) => {
   const [assets, setAssets] = useState<DocumentAsset[]>([]);
   const [results, setResults] = useState<DocumentResult[]>([]);
   const [loading, setLoading] = useState(false);
@@ -45,6 +45,7 @@ const DocumentCenter: React.FC<{ onBack: () => void }> = ({ onBack }) => {
   const [detail, setDetail] = useState<{ asset: DocumentAsset; content: DocumentContent | null } | null>(null);
   const [spaces, setSpaces] = useState<DocumentSpace[]>([]);
   const [selectedSpaceId, setSelectedSpaceId] = useState<string>('all');
+  const [ocrCorrection, setOcrCorrection] = useState<{ fields: string; tables: string } | null>(null);
 
   const refresh = async () => {
     setLoading(true);
@@ -68,6 +69,53 @@ const DocumentCenter: React.FC<{ onBack: () => void }> = ({ onBack }) => {
     : selectedSpaceId === 'unassigned'
       ? assets.filter((asset) => !asset.spaceId)
       : assets.filter((asset) => asset.spaceId === selectedSpaceId);
+
+  useEffect(() => {
+    if (!reference?.documentId || !assets.length) return;
+    const asset = assets.find((item) => item.id === reference.documentId);
+    if (!asset) return;
+    getDocumentContent(asset.id).then((content) => setDetail({ asset, content })).catch(() => {});
+  }, [assets, reference]);
+
+  const saveOcrCorrection = async () => {
+    if (!detail?.content?.structuredOcr || !ocrCorrection) return;
+    try {
+      const fields = JSON.parse(ocrCorrection.fields) as StructuredOcrField[];
+      const tables = JSON.parse(ocrCorrection.tables) as DocumentTable[];
+      if (!Array.isArray(fields) || !Array.isArray(tables)) throw new Error('字段和表格必须是 JSON 数组');
+      const structuredOcr: StructuredOcrResult = {
+        ...detail.content.structuredOcr,
+        fields,
+        tables: tables.map((table) => ({
+          ...table,
+          rowCount: table.rows?.length || 0,
+          columnCount: table.headers?.length || 0,
+        })),
+      };
+      const correctedMarkdown = structuredOcrToMarkdown(structuredOcr);
+      const nextContent: DocumentContent = {
+        ...detail.content,
+        structuredOcr,
+        text: [detail.content.localText, correctedMarkdown].filter(Boolean).join('\n\n'),
+        tables: [
+          ...(detail.content.tables || []).filter((table) => !table.title?.startsWith('OCR 表格')),
+          ...structuredOcr.tables,
+        ],
+        metadata: {
+          ...(detail.content.metadata || {}),
+          ocrCorrection: { correctedAt: Date.now(), source: 'manual' },
+        },
+        updatedAt: Date.now(),
+      };
+      await saveDocumentContent(nextContent);
+      await rebuildDocumentChunks(detail.asset, nextContent);
+      setDetail({ asset: detail.asset, content: nextContent });
+      setOcrCorrection(null);
+      message.success('OCR 校正已保存，资料检索索引已更新');
+    } catch (error: any) {
+      message.error(error?.message || 'OCR 校正内容格式不正确');
+    }
+  };
 
   const handleCreateSpace = () => {
     let name = '';
@@ -523,11 +571,35 @@ const DocumentCenter: React.FC<{ onBack: () => void }> = ({ onBack }) => {
           >
             复制 OCR
           </Button>,
+          <Button
+            key="correct-ocr"
+            disabled={!detail?.content?.structuredOcr}
+            onClick={() => setOcrCorrection({
+              fields: JSON.stringify(detail?.content?.structuredOcr?.fields || [], null, 2),
+              tables: JSON.stringify(detail?.content?.structuredOcr?.tables || [], null, 2),
+            })}
+          >
+            校正字段/表格
+          </Button>,
           <Button key="close" type="primary" onClick={() => setDetail(null)}>关闭</Button>,
         ]}
       >
         {detail && (
-          <Tabs defaultActiveKey={detail.content?.structuredOcr ? 'structuredOcr' : 'ocr'}>
+          <>
+          {reference?.documentId === detail.asset.id && (reference.pageNumber || reference.sectionTitle || reference.chunkId) && (
+            <Alert
+              type="info"
+              showIcon
+              style={{ marginBottom: 12 }}
+              message="已定位到引用资料"
+              description={[
+                reference.pageNumber ? `第 ${reference.pageNumber} 页` : '',
+                reference.sectionTitle ? `章节：${reference.sectionTitle}` : '',
+                reference.chunkId ? `片段：${reference.chunkId}` : '',
+              ].filter(Boolean).join(' · ')}
+            />
+          )}
+          <Tabs defaultActiveKey={reference?.documentId === detail.asset.id ? 'text' : detail.content?.structuredOcr ? 'structuredOcr' : 'ocr'}>
             <TabPane tab="OCR 结构化" key="structuredOcr">
               {renderStructuredOcr(detail.content?.structuredOcr)}
             </TabPane>
@@ -571,7 +643,22 @@ const DocumentCenter: React.FC<{ onBack: () => void }> = ({ onBack }) => {
               </pre>
             </TabPane>
           </Tabs>
+          </>
         )}
+      </Modal>
+      <Modal
+        title="人工校正 OCR 结构"
+        visible={Boolean(ocrCorrection)}
+        onCancel={() => setOcrCorrection(null)}
+        onOk={saveOcrCorrection}
+        okText="保存并重建索引"
+        width={760}
+      >
+        <Typography.Paragraph type="secondary">修改字段和表格 JSON。保存后会保留 OCR 原文，并更新结构化内容和资料检索索引。</Typography.Paragraph>
+        <Typography.Text strong>字段</Typography.Text>
+        <Input.TextArea value={ocrCorrection?.fields} onChange={(event) => setOcrCorrection((current) => current ? { ...current, fields: event.target.value } : current)} autoSize={{ minRows: 6, maxRows: 12 }} style={{ margin: '8px 0 16px' }} />
+        <Typography.Text strong>表格</Typography.Text>
+        <Input.TextArea value={ocrCorrection?.tables} onChange={(event) => setOcrCorrection((current) => current ? { ...current, tables: event.target.value } : current)} autoSize={{ minRows: 6, maxRows: 14 }} style={{ marginTop: 8 }} />
       </Modal>
     </div>
   );

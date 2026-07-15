@@ -11,8 +11,10 @@ const { Title, Text } = Typography;
 
 import AutomationList from './AutomationList';
 
-const Tools: React.FC = () => {
-  const [currentTool, setCurrentTool] = useState<string | null>(null);
+export type DocumentReferenceTarget = { documentId: string; pageNumber?: number; sectionTitle?: string; chunkId?: string };
+
+const Tools: React.FC<{ initialTool?: string | null; documentReference?: DocumentReferenceTarget | null }> = ({ initialTool = null, documentReference = null }) => {
+  const [currentTool, setCurrentTool] = useState<string | null>(initialTool);
 
   if (currentTool === 'excel-merge') {
     return (
@@ -38,7 +40,7 @@ const Tools: React.FC = () => {
   }
 
   if (currentTool === 'documents') {
-    return <DocumentCenter onBack={() => setCurrentTool(null)} />;
+    return <DocumentCenter onBack={() => setCurrentTool(null)} reference={documentReference} />;
   }
 
   if (currentTool === 'memory') {

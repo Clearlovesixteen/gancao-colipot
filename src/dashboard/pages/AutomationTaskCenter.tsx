@@ -14,6 +14,7 @@ import {
   Modal,
   Select,
   Space,
+  Switch,
   Table,
   Tag,
   Tooltip,
@@ -84,7 +85,7 @@ const TaskOutputCard: React.FC<{ run: AutomationRun }> = ({ run }) => {
             header={<Text strong>引用来源</Text>}
             dataSource={output.sources}
             renderItem={(source: any) => (
-              <List.Item>
+              <List.Item actions={[source.documentId ? <Button key="copy-ref" type="link" size="small" onClick={() => navigator.clipboard.writeText(JSON.stringify(source))}>复制定位</Button> : null]}>
                 <Space direction="vertical" size={0}>
                   <Text>{source.documentTitle || source.fileName || source.documentId || '资料来源'}</Text>
                   <Text type="secondary">
@@ -247,6 +248,7 @@ const AutomationTaskCenter: React.FC = () => {
         extractMode: 'page_text',
         ruleType: 'changed',
         maxConsecutiveFailures: 3,
+        extensionNotification: true,
       });
       return;
     }
@@ -445,6 +447,12 @@ const AutomationTaskCenter: React.FC = () => {
             operator: values.ruleOperator,
           },
           maxConsecutiveFailures: Number(values.maxConsecutiveFailures || 3),
+          notifications: {
+            extension: values.extensionNotification !== false,
+            feishuWebhook: values.feishuWebhook?.trim() || undefined,
+            dingtalkWebhook: values.dingtalkWebhook?.trim() || undefined,
+            webhook: values.webhook?.trim() || undefined,
+          },
         },
       },
       createdAt: now,
@@ -763,6 +771,14 @@ const AutomationTaskCenter: React.FC = () => {
             }}
           </Form.Item>
           <Form.Item name="maxConsecutiveFailures" label="连续失败后自动暂停"><InputNumber min={1} max={10} style={{ width: '100%' }} /></Form.Item>
+          <Collapse ghost>
+            <Collapse.Panel header="变化通知" key="notifications">
+              <Form.Item name="extensionNotification" label="插件通知" valuePropName="checked"><Switch /></Form.Item>
+              <Form.Item name="feishuWebhook" label="飞书机器人 Webhook"><Input.Password placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/..." /></Form.Item>
+              <Form.Item name="dingtalkWebhook" label="钉钉机器人 Webhook"><Input.Password placeholder="https://oapi.dingtalk.com/robot/send?..." /></Form.Item>
+              <Form.Item name="webhook" label="通用 Webhook"><Input.Password placeholder="https://example.com/hooks/monitor" /></Form.Item>
+            </Collapse.Panel>
+          </Collapse>
         </Form>
       </Modal>
 

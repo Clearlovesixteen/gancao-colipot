@@ -1,6 +1,6 @@
 import { GLMClient, type GLMSendResult } from '../sidePanel/utils/glm-client';
 import {
-  getActiveModelProfile,
+  getModelProfile,
   validateModelProfile,
   type ModelProfile,
   redactSecrets,
@@ -17,6 +17,7 @@ type JsonCallInput = {
   system: string;
   user: unknown;
   timeoutMs?: number;
+  profileId?: string;
 };
 
 type TextCallInput = JsonCallInput & { temperature?: number };
@@ -43,16 +44,16 @@ export class ModelGateway {
   private messageHandlers = new Set<Parameters<GLMClient['onMessage']>[0]>();
   private statusHandlers = new Set<Parameters<GLMClient['onStatusChange']>[0]>();
 
-  async getProfile(): Promise<ModelProfile> {
-    const profile = await getActiveModelProfile();
+  async getProfile(profileId?: string): Promise<ModelProfile> {
+    const profile = await getModelProfile(profileId);
     if (!profile) throw new ModelGatewayError('MODEL_NOT_CONFIGURED', '尚未配置模型，请先在工作台的模型设置中添加 API Key。');
     const error = validateModelProfile(profile);
     if (error) throw new ModelGatewayError('MODEL_NOT_CONFIGURED', error);
     return profile;
   }
 
-  async getClient(): Promise<GLMClient> {
-    const profile = await this.getProfile();
+  async getClient(profileId?: string): Promise<GLMClient> {
+    const profile = await this.getProfile(profileId);
     if (!this.client || this.profileId !== profile.id || this.profileUpdatedAt !== profile.updatedAt) {
       this.client?.cancelCurrentRequest();
       this.client = new GLMClient({ profile });
@@ -72,12 +73,12 @@ export class ModelGateway {
     this.profileUpdatedAt = 0;
   }
 
-  async send(messageHistory: any[], requestId?: string, memoryContext?: string): Promise<GLMSendResult> {
-    return (await this.getClient()).send(messageHistory, undefined, requestId, memoryContext);
+  async send(messageHistory: any[], requestId?: string, memoryContext?: string, profileId?: string): Promise<GLMSendResult> {
+    return (await this.getClient(profileId)).send(messageHistory, undefined, requestId, memoryContext);
   }
 
   async callJson(input: JsonCallInput): Promise<unknown> {
-    const profile = await this.getProfile();
+    const profile = await this.getProfile(input.profileId);
     if (!profile.capabilities.json) throw new ModelGatewayError('MODEL_CAPABILITY_MISSING', '当前模型配置未启用 JSON 能力。');
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), input.timeoutMs || 15000);
@@ -113,7 +114,7 @@ export class ModelGateway {
   }
 
   async completeText(input: TextCallInput): Promise<string> {
-    const profile = await this.getProfile();
+    const profile = await this.getProfile(input.profileId);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), input.timeoutMs || 30000);
     try {

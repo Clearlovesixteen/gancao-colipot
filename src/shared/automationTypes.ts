@@ -417,6 +417,15 @@ export interface ComputerUseRunState {
   warnings?: string[];
 }
 
+export interface ComputerUseResumeCheckpoint {
+  goal: string;
+  taskPlan: ComputerUseTaskPlan;
+  phaseIndex: number;
+  runState: ComputerUseRunState;
+  lastPageUrl?: string;
+  createdAt: number;
+}
+
 export type BrowserActionType =
   | 'click'
   | 'double_click'
@@ -673,6 +682,14 @@ export interface PageMonitorMetadata {
   consecutiveFailures?: number;
   maxConsecutiveFailures?: number;
   pausedReason?: string;
+  notifications?: PageMonitorNotificationConfig;
+}
+
+export interface PageMonitorNotificationConfig {
+  extension?: boolean;
+  feishuWebhook?: string;
+  dingtalkWebhook?: string;
+  webhook?: string;
 }
 
 export interface AutomationTaskTemplate {

@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Input, Button, Space, Typography, Spin, Avatar, Badge, Image, Tag, Drawer, Tooltip, Dropdown, Menu, message, Modal, Tabs, Card, Table, Empty, Timeline, Collapse, List } from 'antd';
+import { Input, Button, Space, Typography, Spin, Avatar, Badge, Image, Tag, Drawer, Tooltip, Dropdown, Menu, message, Modal, Tabs, Card, Table, Empty, Timeline, Collapse, List, Select, Switch } from 'antd';
 import { SendOutlined, UserOutlined, RobotOutlined, ThunderboltOutlined, PaperClipOutlined, DeleteOutlined, ToolOutlined, AppstoreOutlined, MoreOutlined, StopOutlined, CopyOutlined, ReloadOutlined, HistoryOutlined, PlusOutlined, EditOutlined, InboxOutlined } from '@ant-design/icons';
 import { Message } from '../../utils/sse';
 import Tools from '../Tools';
+import type { DocumentReferenceTarget } from '../Tools';
 import moment from 'moment';
 import styles from './Chat.module.scss';
 import { parseUploadedFile, type ParsedUploadedFile } from '../../../shared/fileParser';
@@ -27,7 +28,7 @@ import { COPILOT_COMMANDS, getQuickCommands, type CopilotCommandId } from '../..
 import { useCommandRecommendations } from './useCommandRecommendations';
 import { createAndRunChatTask } from '../../utils/chatTaskClient';
 import { getAutomationRun } from '../../../shared/automationRunStore';
-import { listCustomCommands, type CustomCopilotCommand } from '../../../shared/customCommandStore';
+import { listCustomCommands, renderCustomCommandMetadata, renderCustomCommandTemplate, type CustomCopilotCommand } from '../../../shared/customCommandStore';
 import {
   buildMemoryContext,
   archiveChatSession,
@@ -37,6 +38,7 @@ import {
   inferMemoryType,
   listChatSessions,
   saveChatMessage,
+  suggestMemoryCandidatesFromMessage,
   updateChatSession,
   upsertUserMemory,
   type ChatSession,
@@ -70,10 +72,11 @@ interface FileAttachment {
 type ChatMessage = Message & {
   llmContent?: string;
   nativeFiles?: NativeFileReference[];
-  kind?: 'text' | 'ocr_result' | 'file_attachment' | 'computer_use_task' | 'tool_result' | 'diagnosis_result';
+  kind?: 'text' | 'ocr_result' | 'file_attachment' | 'computer_use_task' | 'tool_result' | 'diagnosis_result' | 'document_qa_result';
   computerUseTrace?: ComputerUseTaskTraceState;
   attachments?: ChatAttachmentItem[];
   ocrResult?: OcrResultMessageData;
+  documentQaResult?: { answer: string; sources: Array<{ documentId: string; documentTitle?: string; fileName?: string; pageNumber?: number; sectionTitle?: string; chunkId?: string; excerpt?: string }> };
 };
 
 type ChatAttachmentItem = {
@@ -834,6 +837,8 @@ const Chat: React.FC = () => {
   const [isTyping, setIsTyping] = useState(false);
   const [attachedFiles, setAttachedFiles] = useState<FileAttachment[]>([]);
   const [toolsVisible, setToolsVisible] = useState(false);
+  const [toolsInitialTool, setToolsInitialTool] = useState<string | null>(null);
+  const [documentReference, setDocumentReference] = useState<DocumentReferenceTarget | null>(null);
   const [sessionsVisible, setSessionsVisible] = useState(false);
   const [chatSessions, setChatSessions] = useState<ChatSession[]>([]);
   const [sessionQuery, setSessionQuery] = useState('');
@@ -853,6 +858,7 @@ const Chat: React.FC = () => {
   const currentSessionIdRef = useRef<string | null>(null);
   const chatTaskIdsRef = useRef<Set<string>>(new Set());
   const ocrTaskAssetsRef = useRef<Map<string, string>>(new Map());
+  const pendingModelProfileIdRef = useRef<string | undefined>();
 
   useEffect(() => {
     currentSessionIdRef.current = currentSessionId;
@@ -887,7 +893,16 @@ const Chat: React.FC = () => {
     const sessionId = currentSessionIdRef.current;
     if (!sessionId || !msg?.id) return;
     saveChatMessage(toStoredChatMessage(msg, sessionId))
-      .then(refreshChatSessions)
+      .then(async () => {
+        if (msg.type === 'user') {
+          await suggestMemoryCandidatesFromMessage({
+            content: msg.llmContent || msg.content || '',
+            sessionId,
+            messageId: msg.id,
+          });
+        }
+        await refreshChatSessions();
+      })
       .catch((error) => console.warn('[ChatMemory] 保存聊天消息失败:', error));
   }, [refreshChatSessions, toStoredChatMessage]);
 
@@ -1036,6 +1051,8 @@ const Chat: React.FC = () => {
         sourceSessionId: currentSessionIdRef.current || undefined,
         sourceMessageId: msg.id,
         confidence: 0.9,
+        status: 'confirmed',
+        enabled: true,
       });
       message.success(`已记住：${memory.title}`);
     } catch (error: any) {
@@ -1188,6 +1205,8 @@ const Chat: React.FC = () => {
 
   const sendPromptToAI = useCallback((content: string, llmContent = content) => {
     const requestId = createAiRequestId();
+    const modelProfileId = pendingModelProfileIdRef.current;
+    pendingModelProfileIdRef.current = undefined;
     activeAiRequestIdRef.current = requestId;
     stoppedAiRequestIdsRef.current.delete(requestId);
     shouldAutoScrollRef.current = true;
@@ -1218,6 +1237,7 @@ const Chat: React.FC = () => {
           requestId,
           messageHistory,
           memoryContext: memoryContext.contextText,
+          modelProfileId,
         }, async (response) => {
         const runtimeError = chrome.runtime.lastError?.message;
         if (activeAiRequestIdRef.current !== requestId) return;
@@ -1476,7 +1496,18 @@ const Chat: React.FC = () => {
             addAssistantMessage(`${run.title}失败：${run.error || message.result?.error || '未知错误'}`);
             return;
           }
-          if (run.kind === 'page_diagnosis' || run.kind === 'document_qa') {
+          if (run.kind === 'document_qa') {
+            const qaMessage: ChatMessage = {
+              id: `document_qa_${Date.now()}`,
+              content: String(output?.answer || run.resultSummary || '任务已完成'),
+              type: 'assistant',
+              kind: 'document_qa_result',
+              documentQaResult: { answer: String(output?.answer || run.resultSummary || '任务已完成'), sources: output?.sources || [] },
+              timestamp: Date.now(),
+            };
+            setMessages((items) => [...items, qaMessage]);
+            persistChatMessage(qaMessage);
+          } else if (run.kind === 'page_diagnosis') {
             addAssistantMessage(String(output?.answer || run.resultSummary || '任务已完成'));
           } else if (run.kind === 'ocr') {
             const structuredOcr = output?.structuredOcr || output?.result?.structuredOcr;
@@ -1824,29 +1855,47 @@ const Chat: React.FC = () => {
   const handleCustomCommand = useCallback(async (commandId: string) => {
     const command = customCommands.find((item) => item.id === commandId);
     if (!command) return;
-    if (command.mode === 'prompt') {
-      setInputValue(command.promptTemplate);
-      return;
-    }
-    const runCommand = async () => {
+    const executeWithValues = async (values: Record<string, unknown>) => {
+      const renderedPrompt = renderCustomCommandTemplate(command.promptTemplate, values);
+      const renderedMetadata = renderCustomCommandMetadata(command.metadata || {}, values) as Record<string, unknown>;
+      if (command.mode === 'prompt') {
+        pendingModelProfileIdRef.current = command.modelProfileId;
+        setInputValue(renderedPrompt);
+        return;
+      }
+      const runCommand = async () => {
       try {
         const run = await createAndRunChatTask({
           kind: command.taskKind || 'computer_use',
           title: command.title,
-          goal: command.promptTemplate,
-          metadata: command.metadata || {},
+          goal: renderedPrompt,
+          metadata: { ...renderedMetadata, modelProfileId: command.modelProfileId },
         });
         chatTaskIdsRef.current.add(run.id);
         message.success(`任务「${command.title}」已启动`);
       } catch (error: any) {
         message.error(normalizeUserFacingError(error, '命令执行失败'));
       }
-    };
+      };
     if (command.riskLevel === 'high') {
-      Modal.confirm({ title: '确认执行高风险命令', content: command.promptTemplate, onOk: runCommand });
+      Modal.confirm({ title: '确认执行高风险命令', content: renderedPrompt, onOk: runCommand });
       return;
     }
     await runCommand();
+    };
+    const fields = command.inputSchema || [];
+    if (!fields.length) { await executeWithValues({}); return; }
+    const values: Record<string, unknown> = Object.fromEntries(fields.map((field) => [field.name, field.defaultValue ?? '']));
+    Modal.confirm({
+      title: command.title,
+      width: 520,
+      content: <Space direction="vertical" style={{ width: '100%' }}>{fields.map((field) => <div key={field.name}><Text>{field.label}{field.required ? ' *' : ''}</Text>{field.type === 'select' ? <Select style={{ width: '100%', marginTop: 4 }} defaultValue={field.defaultValue as any} options={field.options || []} onChange={(value: string) => { values[field.name] = value; }} /> : field.type === 'boolean' ? <Switch style={{ marginLeft: 8 }} defaultChecked={Boolean(field.defaultValue)} onChange={(value: boolean) => { values[field.name] = value; }} /> : <Input style={{ marginTop: 4 }} type={field.type === 'number' ? 'number' : 'text'} defaultValue={field.defaultValue as any} onChange={(event) => { values[field.name] = field.type === 'number' ? Number(event.target.value) : event.target.value; }} />}</div>)}</Space>,
+      onOk: async () => {
+        const missing = fields.find((field) => field.required && (values[field.name] === '' || values[field.name] === undefined));
+        if (missing) throw new Error(`请填写${missing.label}`);
+        await executeWithValues(values);
+      },
+    });
   }, [customCommands]);
 
   const handleSummarizeFile = async (file: FileAttachment) => {
@@ -2029,12 +2078,15 @@ const Chat: React.FC = () => {
       setInputValue('');
       setAttachedFiles([]);
       
+      const modelProfileId = pendingModelProfileIdRef.current;
+      pendingModelProfileIdRef.current = undefined;
       buildMemoryContext(llmContent || displayContent, currentSessionIdRef.current || undefined)
         .then((memoryContext) => chrome.runtime.sendMessage({
           type: 'SEND_MESSAGE',
           requestId,
           messageHistory: messageHistory,
           memoryContext: memoryContext.contextText,
+          modelProfileId,
         }, async (response) => {
         const runtimeError = chrome.runtime.lastError?.message;
         if (activeAiRequestIdRef.current !== requestId) return;
@@ -2488,6 +2540,29 @@ const Chat: React.FC = () => {
                 );
               }
 
+              if (msg.kind === 'document_qa_result' && msg.documentQaResult) {
+                return (
+                  <div key={msg.id} className={`${styles.messageItem} ${styles.messageItemLeft}`}>
+                    <div className={`${styles.messageContent} ${styles.messageContentLeft} ${styles.structuredMessageContent}`}>
+                      <Avatar size={36} icon={<RobotOutlined />} className={`${styles.avatar} ${styles.avatarBot}`} />
+                      <Card size="small" title="资料回答" className={styles.structuredBubble}>
+                        <MarkdownMessage content={msg.documentQaResult.answer} />
+                        {msg.documentQaResult.sources.length > 0 && (
+                          <List size="small" header={<Text strong>引用来源</Text>} dataSource={msg.documentQaResult.sources} renderItem={(source) => (
+                            <List.Item actions={[<Button key="open" type="link" size="small" onClick={() => { setDocumentReference(source); setToolsInitialTool('documents'); setToolsVisible(true); }}>定位</Button>]}>
+                              <Space direction="vertical" size={0}>
+                                <Text>{source.documentTitle || source.fileName || source.documentId}</Text>
+                                <Text type="secondary">{[source.pageNumber ? `第 ${source.pageNumber} 页` : '', source.sectionTitle, source.chunkId].filter(Boolean).join(' · ')}</Text>
+                              </Space>
+                            </List.Item>
+                          )} />
+                        )}
+                      </Card>
+                    </div>
+                  </div>
+                );
+              }
+
               // 解析消息中的文件链接
               const imageRegex = /\[图片: ([^\]]+)\]\(([^)]+)\)/g;
               const fileRegex = /\[文件: ([^\]]+)\]/g;
@@ -2890,7 +2965,7 @@ const Chat: React.FC = () => {
           bodyStyle={{ padding: 0 }}
           headerStyle={{ padding: '16px 20px' }}
         >
-          <Tools />
+          <Tools initialTool={toolsInitialTool} documentReference={documentReference} />
         </Drawer>
         <Drawer
           title="会话历史"

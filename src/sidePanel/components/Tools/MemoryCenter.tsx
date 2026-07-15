@@ -1,10 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Button, Card, Empty, Input, List, Modal, Space, Switch, Tag, Tooltip, Typography, message } from 'antd';
-import { ArrowLeftOutlined, DeleteOutlined, EditOutlined, StopOutlined } from '@ant-design/icons';
+import { ArrowLeftOutlined, CheckOutlined, CloseOutlined, DeleteOutlined, EditOutlined, StopOutlined } from '@ant-design/icons';
 import moment from 'moment';
 import {
   clearChatHistory,
   clearUserMemories,
+  confirmUserMemoryCandidate,
   deleteUserMemory,
   isMemoryEnabled,
   listUserMemories,
@@ -56,6 +57,8 @@ const MemoryCenter: React.FC<MemoryCenterProps> = ({ onBack }) => {
       `${memory.title} ${memory.content} ${memory.type}`.toLowerCase().includes(text)
     ));
   }, [keyword, memories]);
+  const candidates = filteredMemories.filter((memory) => memory.status === 'candidate');
+  const confirmedMemories = filteredMemories.filter((memory) => memory.status !== 'candidate');
 
   const handleToggleEnabled = async (checked: boolean) => {
     await setMemoryEnabled(checked);
@@ -144,7 +147,27 @@ const MemoryCenter: React.FC<MemoryCenterProps> = ({ onBack }) => {
 
       <div style={{ flex: 1, overflow: 'auto', padding: 12 }}>
         <List
-          dataSource={filteredMemories}
+          header={candidates.length ? <Text strong>待确认记忆（{candidates.length}）</Text> : undefined}
+          dataSource={candidates}
+          locale={{ emptyText: null }}
+          renderItem={(memory) => (
+            <List.Item>
+              <Card size="small" style={{ width: '100%', borderColor: '#faad14' }}>
+                <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                  <Space wrap><Tag color="gold">候选</Tag><Tag>{memoryTypeLabel[memory.type]}</Tag><Text strong>{memory.title}</Text></Space>
+                  <Text>{memory.content}</Text>
+                  <Space>
+                    <Button size="small" type="primary" icon={<CheckOutlined />} onClick={async () => { await confirmUserMemoryCandidate(memory.id); message.success('已保存为长期记忆'); await refresh(); }}>确认记住</Button>
+                    <Button size="small" icon={<CloseOutlined />} onClick={async () => { await deleteUserMemory(memory.id); await refresh(); }}>忽略</Button>
+                  </Space>
+                </Space>
+              </Card>
+            </List.Item>
+          )}
+        />
+        <List
+          header={<Text strong>长期记忆（{confirmedMemories.length}）</Text>}
+          dataSource={confirmedMemories}
           locale={{ emptyText: <Empty description="暂无长期记忆，可在聊天消息中点击“记住这条”" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
           renderItem={(memory) => (
             <List.Item>

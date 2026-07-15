@@ -4,6 +4,10 @@ import {
   exportCustomCommands,
   importCustomCommands,
   listCustomCommands,
+  listCustomCommandVersions,
+  renderCustomCommandMetadata,
+  renderCustomCommandTemplate,
+  rollbackCustomCommand,
   upsertCustomCommand,
 } from './customCommandStore';
 
@@ -19,6 +23,7 @@ describe('customCommandStore', () => {
     expect(updated.version).toBe(2);
     expect(await listCustomCommands()).toEqual([]);
     expect(await listCustomCommands(true)).toHaveLength(1);
+    expect(await listCustomCommandVersions(created.id)).toHaveLength(2);
     await deleteCustomCommand(created.id);
     expect(await listCustomCommands(true)).toEqual([]);
   });
@@ -29,5 +34,18 @@ describe('customCommandStore', () => {
     await chrome.storage.local.clear();
     expect(await importCustomCommands(raw)).toBe(1);
     expect((await listCustomCommands())[0]).toMatchObject({ title: '表格提取', taskKind: 'extract' });
+  });
+
+  it('renders prompt and nested metadata variables', () => {
+    expect(renderCustomCommandTemplate('查询 {{name}} 的 {{status}}', { name: '秋枫', status: '异常' })).toBe('查询 秋枫 的 异常');
+    expect(renderCustomCommandMetadata({ filter: { name: '{{name}}' } }, { name: '秋枫' })).toEqual({ filter: { name: '秋枫' } });
+  });
+
+  it('rolls back by creating a new version from the selected snapshot', async () => {
+    const created = await upsertCustomCommand({ title: '命令', promptTemplate: '第一版' });
+    await upsertCustomCommand({ ...created, promptTemplate: '第二版' });
+    const rolledBack = await rollbackCustomCommand(created.id, 1);
+    expect(rolledBack.promptTemplate).toBe('第一版');
+    expect(rolledBack.version).toBe(3);
   });
 });

@@ -1065,4 +1065,60 @@ describe('ComputerUseRunner', () => {
     ]);
     expect(page).toBe('file_detail');
   });
+
+  it('resumes from the failed phase without replaying completed phases or the initial start URL', async () => {
+    const navigated: string[] = [];
+    const emitted: any[] = [];
+    const resumeIntent: ComputerUseIntent = {
+      rawGoal: '先等待，再打开结果页',
+      taskType: 'navigation',
+      objective: '打开结果页',
+      entities: ['结果页'],
+      riskLevel: 'low',
+      taskPlan: {
+        rawGoal: '先等待，再打开结果页',
+        summary: '等待 -> 打开结果页',
+        phases: [
+          { id: 'done_wait', type: 'wait', goal: '等待', waitMs: 1 },
+          { id: 'open_result', type: 'open_site', goal: '打开结果页', startUrl: 'https://result.test/' },
+        ],
+      },
+    };
+    const runner = new ComputerUseRunner({
+      tabId: 1,
+      runId: 'run_resume',
+      goal: resumeIntent.rawGoal,
+      maxSteps: 3,
+      startUrl: 'https://initial.test/',
+      signal: new AbortController().signal,
+      navigate: async (_tabId, url) => { navigated.push(url); },
+      understandIntent: async () => resumeIntent,
+      executeBrowserTool: async (_tabId, toolName) => {
+        if (toolName === 'observe_page') return { ...observation(), url: 'https://result.test/', title: '结果页' };
+        if (toolName === 'get_page_info') return { text: '结果页' };
+        if (toolName === 'extract_page_structured_data') return { headings: ['结果页'], tables: [] };
+        throw new Error(`unexpected tool: ${toolName}`);
+      },
+      confirmAction: async () => true,
+      emit: (message) => emitted.push(message),
+      resumeCheckpoint: {
+        goal: resumeIntent.rawGoal,
+        taskPlan: resumeIntent.taskPlan!,
+        phaseIndex: 1,
+        runState: {
+          currentPhaseIndex: 1,
+          completedPhases: [{ phase: resumeIntent.taskPlan!.phases[0], success: true, summary: '等待完成' }],
+          warnings: [],
+        },
+        createdAt: Date.now(),
+      },
+    });
+
+    await runner.run();
+
+    expect(navigated).toEqual(['https://result.test/']);
+    expect(emitted.some((message) => message.result?.summary?.includes('正在从失败阶段继续'))).toBe(true);
+    const finished = emitted.find((message) => message.type === 'COMPUTER_USE_FINISHED');
+    expect(finished?.runState?.completedPhases).toHaveLength(2);
+  });
 });

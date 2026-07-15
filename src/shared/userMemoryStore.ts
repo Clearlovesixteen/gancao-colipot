@@ -32,6 +32,7 @@ export type UserMemory = {
   sourceMessageId?: string;
   confidence: number;
   enabled: boolean;
+  status?: 'candidate' | 'confirmed';
   createdAt: number;
   updatedAt: number;
 };
@@ -256,7 +257,7 @@ export async function clearChatHistory(): Promise<void> {
 export async function listUserMemories(includeDisabled = false): Promise<UserMemory[]> {
   const memories = await getAllFromStore<UserMemory>(MEMORIES_STORE);
   return memories
-    .filter((item) => includeDisabled || item.enabled)
+    .filter((item) => includeDisabled || (item.enabled && item.status !== 'candidate'))
     .sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
@@ -288,12 +289,51 @@ export async function upsertUserMemory(input: Partial<UserMemory> & Pick<UserMem
     sourceMessageId: input.sourceMessageId || existing?.sourceMessageId,
     confidence: input.confidence ?? existing?.confidence ?? 0.8,
     enabled: input.enabled ?? existing?.enabled ?? true,
+    status: input.status || existing?.status || 'confirmed',
     createdAt: existing?.createdAt || input.createdAt || now,
     updatedAt: now,
   };
 
   await runStore(MEMORIES_STORE, 'readwrite', (store) => store.put(memory));
   return memory;
+}
+
+export async function suggestMemoryCandidatesFromMessage(input: {
+  content: string;
+  sessionId?: string;
+  messageId?: string;
+}): Promise<UserMemory[]> {
+  if (!(await isMemoryEnabled()) || isSensitiveMemoryContent(input.content)) return [];
+  const sentences = input.content
+    .split(/[。！？!?\n]+/)
+    .map(normalizeText)
+    .filter((sentence) => sentence.length >= 6 && sentence.length <= 240)
+    .filter((sentence) => (
+      /(?:我希望|我喜欢|我习惯|我需要|不要|别再|以后|默认|必须)/.test(sentence)
+      || /(?:流程是|步骤是|操作链路|通常先|然后再)/.test(sentence)
+      || /(?:叫做|是指|字段含义|业务术语)/.test(sentence)
+    ))
+    .slice(0, 3);
+  const candidates: UserMemory[] = [];
+  for (const content of sentences) {
+    const memory = await upsertUserMemory({
+      content,
+      type: inferMemoryType(content),
+      sourceSessionId: input.sessionId,
+      sourceMessageId: input.messageId,
+      confidence: 0.7,
+      enabled: false,
+      status: 'candidate',
+    });
+    if (memory.status === 'candidate') candidates.push(memory);
+  }
+  return candidates;
+}
+
+export async function confirmUserMemoryCandidate(id: string): Promise<UserMemory | null> {
+  const memory = await getUserMemory(id);
+  if (!memory) return null;
+  return upsertUserMemory({ ...memory, status: 'confirmed', enabled: true, confidence: Math.max(memory.confidence, 0.85) });
 }
 
 export async function deleteUserMemory(id: string): Promise<void> {

@@ -13,6 +13,7 @@ import type {
   ComputerUseNeedsConfirmationMessage,
   ComputerUseProgressMessage,
   ComputerUseRunState,
+  ComputerUseResumeCheckpoint,
   ComputerUseTaskPlan,
   ObservedElement,
   PlannedStep,
@@ -59,6 +60,7 @@ export type ComputerUseRunnerDeps = {
   }) => Promise<ComputerUseAction>;
   confirmAction: (message: ComputerUseNeedsConfirmationMessage) => Promise<boolean>;
   emit: (msg: ComputerUseProgressMessage | ComputerUseNeedsConfirmationMessage | ComputerUseFinishedMessage | ComputerUseErrorMessage) => void;
+  resumeCheckpoint?: ComputerUseResumeCheckpoint;
 };
 
 type ComputerUseHistoryEntry = {
@@ -1152,23 +1154,53 @@ export class ComputerUseRunner {
   }
 
   async run(): Promise<void> {
+    let activeTaskPlan: ComputerUseTaskPlan | undefined;
+    let activeRunState: ComputerUseRunState | undefined;
     try {
-      if (this.deps.startUrl) {
+      if (this.deps.startUrl && !this.deps.resumeCheckpoint) {
         await this.deps.navigate(this.deps.tabId, this.deps.startUrl, 'complete', 30000, this.deps.signal);
       }
 
       const baseIntent = this.deps.understandIntent
         ? await this.deps.understandIntent({ goal: this.deps.goal })
         : await understandComputerUseIntent({ goal: this.deps.goal });
-      const taskPlan = baseIntent.taskPlan || getSinglePhaseTaskPlan(baseIntent);
-      const runState: ComputerUseRunState = {
-        currentPhaseIndex: 0,
-        completedPhases: [],
-        warnings: [],
-      };
+      const checkpoint = this.deps.resumeCheckpoint?.goal === this.deps.goal
+        ? this.deps.resumeCheckpoint
+        : undefined;
+      const taskPlan = checkpoint?.taskPlan || baseIntent.taskPlan || getSinglePhaseTaskPlan(baseIntent);
+      activeTaskPlan = taskPlan;
+      const runState: ComputerUseRunState = checkpoint
+        ? {
+          currentPhaseIndex: checkpoint.phaseIndex,
+          completedPhases: [...checkpoint.runState.completedPhases],
+          downloadResult: checkpoint.runState.downloadResult,
+          warnings: [...(checkpoint.runState.warnings || [])],
+        }
+        : {
+          currentPhaseIndex: 0,
+          completedPhases: [],
+          warnings: [],
+        };
+      activeRunState = runState;
 
       let stepIndex = 0;
-      for (let phaseIndex = 0; phaseIndex < taskPlan.phases.length; phaseIndex += 1) {
+      const startPhaseIndex = Math.max(0, Math.min(checkpoint?.phaseIndex || 0, Math.max(0, taskPlan.phases.length - 1)));
+      if (checkpoint) {
+        this.deps.emit({
+          type: 'COMPUTER_USE_PROGRESS',
+          runId: this.deps.runId,
+          goal: this.deps.goal,
+          stepIndex,
+          state: 'observing',
+          phaseIndex: startPhaseIndex,
+          phaseType: taskPlan.phases[startPhaseIndex]?.type,
+          phaseGoal: taskPlan.phases[startPhaseIndex]?.goal,
+          phase: taskPlan.phases[startPhaseIndex],
+          runState,
+          result: { summary: `正在从失败阶段继续：${taskPlan.phases[startPhaseIndex]?.goal || '未完成阶段'}` },
+        });
+      }
+      for (let phaseIndex = startPhaseIndex; phaseIndex < taskPlan.phases.length; phaseIndex += 1) {
         const phase = taskPlan.phases[phaseIndex];
         const phaseMemory = this.getPhaseMemory(phase);
         runState.currentPhaseIndex = phaseIndex;
@@ -1686,6 +1718,9 @@ export class ComputerUseRunner {
         runId: this.deps.runId,
         goal: this.deps.goal,
         error: error?.message || 'Computer Use 执行失败',
+        runState: activeRunState || this.deps.resumeCheckpoint?.runState,
+        phaseIndex: activeRunState?.currentPhaseIndex,
+        phase: activeTaskPlan?.phases[activeRunState?.currentPhaseIndex || 0],
       });
     }
   }

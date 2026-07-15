@@ -84,6 +84,11 @@ export async function getActiveModelProfile(): Promise<ModelProfile | null> {
   return (await listModelProfiles()).find((profile) => profile.active) || null;
 }
 
+export async function getModelProfile(id?: string): Promise<ModelProfile | null> {
+  if (!id) return getActiveModelProfile();
+  return (await listModelProfiles()).find((profile) => profile.id === id) || null;
+}
+
 export async function upsertModelProfile(input: Partial<ModelProfile> & Pick<ModelProfile, 'name' | 'provider' | 'baseUrl' | 'model'>): Promise<ModelProfile> {
   const profiles = await listModelProfiles();
   const now = Date.now();

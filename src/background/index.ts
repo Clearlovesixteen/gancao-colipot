@@ -36,6 +36,7 @@ import type {
   ComputerUsePhaseMemory,
   ComputerUseRunState,
   ComputerUseTaskIntent,
+  ComputerUseResumeCheckpoint,
 } from '../shared/automationTypes';
 import { getAutomationRun, listAutomationRuns, patchAutomationRun } from '../shared/automationRunStore';
 import { handleAutomationTaskMessage } from './handlers/automationTaskHandlers';
@@ -117,8 +118,8 @@ function slimObservationForPrompt(observation: BrowserObservation): any {
   };
 }
 
-async function callComputerUseJson(system: string, user: unknown): Promise<unknown> {
-  return modelGateway.callJson({ system, user, timeoutMs: COMPUTER_USE_LLM_TIMEOUT_MS });
+async function callComputerUseJson(system: string, user: unknown, profileId?: string): Promise<unknown> {
+  return modelGateway.callJson({ system, user, timeoutMs: COMPUTER_USE_LLM_TIMEOUT_MS, profileId });
 }
 
 async function planComputerUseAction(input: {
@@ -126,7 +127,7 @@ async function planComputerUseAction(input: {
   stepIndex: number;
   observation: BrowserObservation;
   history: Array<{ action?: ComputerUseAction; result?: unknown }>;
-}): Promise<ComputerUseAction> {
+}, profileId?: string): Promise<ComputerUseAction> {
   const parsed = await callComputerUseJson(
     [
       '你是浏览器 Computer Use 执行器，每次只输出一个 JSON 动作。',
@@ -140,6 +141,7 @@ async function planComputerUseAction(input: {
       observation: slimObservationForPrompt(input.observation),
       history: input.history.slice(-6),
     },
+    profileId,
   );
   if (!parsed || typeof parsed !== 'object' || !(parsed as ComputerUseAction).action) {
     throw new ModelGatewayError('MODEL_INVALID_RESPONSE', 'Computer Use 规划结果缺少 action。');
@@ -147,11 +149,11 @@ async function planComputerUseAction(input: {
   return parsed as ComputerUseAction;
 }
 
-async function understandComputerUseIntentWithLLM(goal: string, taskIntent?: ComputerUseTaskIntent): Promise<ComputerUseIntent> {
+async function understandComputerUseIntentWithLLM(goal: string, taskIntent?: ComputerUseTaskIntent, profileId?: string): Promise<ComputerUseIntent> {
   return await understandComputerUseIntentCore({
     goal,
     taskIntent,
-    callLLM: ({ system, user }) => callComputerUseJson(system, user),
+    callLLM: ({ system, user }) => callComputerUseJson(system, user, profileId),
   });
 }
 
@@ -162,10 +164,10 @@ async function createComputerUsePlanWithLLM(input: {
   phase?: ComputerUsePhase;
   runState?: ComputerUseRunState;
   phaseMemory?: ComputerUsePhaseMemory;
-}): Promise<ComputerUsePlan> {
+}, profileId?: string): Promise<ComputerUsePlan> {
   return await createComputerUsePlanCore({
     ...input,
-    callLLM: ({ system, user }) => callComputerUseJson(system, user),
+    callLLM: ({ system, user }) => callComputerUseJson(system, user, profileId),
   });
 }
 
@@ -752,6 +754,8 @@ async function runComputerUseOnTab(options: {
   startUrl?: string;
   allowHighRisk?: boolean;
   externalSignal?: AbortSignal;
+  resumeCheckpoint?: ComputerUseResumeCheckpoint;
+  modelProfileId?: string;
 }): Promise<unknown> {
   const runId = options.runId || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const controller = new AbortController();
@@ -802,13 +806,14 @@ async function runComputerUseOnTab(options: {
         }),
         understandIntent: ({ goal }) => deterministicMode
           ? understandComputerUseIntentCore({ goal, taskIntent: intent })
-          : understandComputerUseIntentWithLLM(goal, intent),
+          : understandComputerUseIntentWithLLM(goal, intent, options.modelProfileId),
         createPlan: deterministicMode
           ? (input) => createComputerUsePlanCore(input)
-          : createComputerUsePlanWithLLM,
-        planNextAction: planComputerUseAction,
+          : (input) => createComputerUsePlanWithLLM(input, options.modelProfileId),
+        planNextAction: (input) => planComputerUseAction(input, options.modelProfileId),
         confirmAction: waitForComputerUseConfirmation,
         emit,
+        resumeCheckpoint: options.resumeCheckpoint,
       }).run();
 
     runPromise.finally(() => {
@@ -818,12 +823,25 @@ async function runComputerUseOnTab(options: {
   });
 }
 
-function summarizeComputerUseTrace(runId: string): { traceSummary: AutomationRunTraceSummary; traceSnapshot: unknown } {
+function summarizeComputerUseTrace(runId: string): { traceSummary: AutomationRunTraceSummary; traceSnapshot: unknown; checkpoint?: ComputerUseResumeCheckpoint } {
   const trace = getComputerUseTrace(runId);
   const entries = trace?.entries || [];
   const lastEntry = entries[entries.length - 1] as any;
   const lastObservation = [...entries].reverse().find((entry: any) => entry.observation)?.observation as BrowserObservation | undefined;
   const phaseEntries = entries.filter((entry: any) => entry.phaseType || entry.phaseGoal);
+  const lastRunState = [...entries].reverse().find((entry: any) => entry.runState)?.runState;
+  const taskPlan = (entries.find((entry: any) => entry.result?.taskPlan) as any)?.result?.taskPlan
+    || entries.find((entry: any) => entry.plan)?.intent?.taskPlan;
+  const checkpoint = trace?.status === 'error' && lastRunState && taskPlan
+    ? {
+      goal: trace.goal,
+      taskPlan,
+      phaseIndex: Number(lastEntry?.phaseIndex ?? lastRunState.currentPhaseIndex ?? 0),
+      runState: lastRunState,
+      lastPageUrl: lastObservation?.url,
+      createdAt: Date.now(),
+    } satisfies ComputerUseResumeCheckpoint
+    : undefined;
   return {
     traceSnapshot: trace || null,
     traceSummary: {
@@ -836,7 +854,8 @@ function summarizeComputerUseTrace(runId: string): { traceSummary: AutomationRun
       lastPageUrl: lastObservation?.url,
       lastError: lastEntry?.error,
       lastVerification: lastEntry?.verification ? JSON.stringify(lastEntry.verification).slice(0, 500) : undefined,
-    },
+      },
+    checkpoint,
   };
 }
 
@@ -863,6 +882,7 @@ async function executeComputerUseTask(run: AutomationRun, signal: AbortSignal): 
   }
 
   const computerUseRunId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const resumeCheckpoint = (run.metadata?.resumeCheckpoint || undefined) as ComputerUseResumeCheckpoint | undefined;
   await patchAutomationRun(run.id, { metadata: { ...(run.metadata || {}), computerUseRunId } });
   try {
     const result: any = await runComputerUseOnTab({
@@ -874,8 +894,13 @@ async function executeComputerUseTask(run: AutomationRun, signal: AbortSignal): 
     startUrl: startUrl || undefined,
     allowHighRisk: run.metadata?.allowHighRisk === true,
     externalSignal: signal,
+    resumeCheckpoint,
+    modelProfileId: typeof run.metadata?.modelProfileId === 'string' ? run.metadata.modelProfileId : undefined,
     });
     const { traceSummary, traceSnapshot } = summarizeComputerUseTrace(computerUseRunId);
+    await patchAutomationRun(run.id, {
+      metadata: { ...(run.metadata || {}), computerUseRunId, resumeCheckpoint: undefined },
+    });
     return {
       status: result?.result?.partial ? 'partial' : 'success',
       summary: result?.summary || '自动操作完成',
@@ -883,7 +908,10 @@ async function executeComputerUseTask(run: AutomationRun, signal: AbortSignal): 
       trace: { traceSummary, traceSnapshot, computerUseRunId },
     };
   } catch (error: any) {
-    const { traceSummary, traceSnapshot } = summarizeComputerUseTrace(computerUseRunId);
+    const { traceSummary, traceSnapshot, checkpoint } = summarizeComputerUseTrace(computerUseRunId);
+    await patchAutomationRun(run.id, {
+      metadata: { ...(run.metadata || {}), computerUseRunId, resumeCheckpoint: checkpoint },
+    });
     return {
       status: signal.aborted || error?.message === '已停止' ? 'stopped' : 'failed',
       summary: error?.message || '自动操作失败',
@@ -904,6 +932,7 @@ async function executePageDiagnosisTask(run: AutomationRun): Promise<TaskResult>
   const answer = await modelGateway.completeText({
     system: '你是页面诊断助手。请按“问题摘要、风险等级、可能原因、定位步骤、修复建议、需要补充的信息”输出，禁止编造未采集到的错误。',
     user: { goal: run.goal || '诊断当前页面', context },
+    profileId: typeof run.metadata?.modelProfileId === 'string' ? run.metadata.modelProfileId : undefined,
   });
   return { status: 'success', summary: '页面诊断完成', output: { answer, context } };
 }
@@ -931,6 +960,7 @@ async function executeDocumentQaTask(run: AutomationRun): Promise<TaskResult> {
   const answer = await modelGateway.completeText({
     system: '你是资料问答助手。先给结论，再标注引用来源（文件名、页码、章节或 chunk），明确不确定和缺失信息。只依据给定资料回答。',
     user: { question, sources },
+    profileId: typeof run.metadata?.modelProfileId === 'string' ? run.metadata.modelProfileId : undefined,
   });
   return { status: matches.length ? 'success' : 'partial', summary: '资料问答完成', output: { answer, sources } };
 }
@@ -1920,7 +1950,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
         await initModelGatewayEvents();
         const messageHistory = message.messageHistory || [];
-        const result = await modelGateway.send(messageHistory, message.requestId, message.memoryContext);
+        const result = await modelGateway.send(messageHistory, message.requestId, message.memoryContext, message.modelProfileId);
         sendResponse({
           ...result,
           error: result.success ? undefined : result.error || 'AI 请求失败',

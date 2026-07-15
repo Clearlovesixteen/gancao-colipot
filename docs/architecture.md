@@ -20,10 +20,13 @@
 - 任务结果不再只有 trace JSON。任务中心按 Computer Use 下载、资料问答引用、OCR、页面诊断和结构化提取显示交付结果卡。
 - 成功 Computer Use 任务可保存为参数化 `computerTask` 工作流；`{{variable}}` 占位符和任务配置中的默认参数会写入 workflow，运行任务可用 `metadata.variables` 覆盖默认值。
 - 页面监控支持内容变化、包含目标内容、数值阈值、新增记录和状态转换规则。监控定义保存在任务记录中，每次检查写入独立历史；连续失败达到上限后自动暂停 alarm。
-- Memory 会话支持搜索、重命名、归档、删除和继续会话；长期记忆仍与聊天记录分开保存。
+- 页面监控命中规则后可投递 Chrome 通知、飞书、钉钉和通用 Webhook；通知结果单独记录，不改变页面采集本身的成功状态。
+- Memory 会话支持搜索、重命名、归档、删除和继续会话；明确偏好、流程和术语会生成待确认候选，确认后才进入长期召回。
 - 资料资产可归属本地资料空间。旧资料保持无空间归属，不触发 IndexedDB 重建或数据迁移。
-- 自定义命令保存在 `chrome.storage.local`，支持 prompt/task 两种执行模式、风险等级、版本递增以及 JSON 导入导出；Chat 命令菜单动态合并内置和自定义命令。
+- 资料问答来源可打开对应资料并显示页码、章节或 chunk；OCR 人工校正保留原文并重建结构化索引。
+- 自定义命令保存在 `chrome.storage.local`，支持 prompt/task 两种执行模式、输入表单、模板变量、模型路由、版本回滚以及 JSON 导入导出；Chat 命令菜单动态合并内置和自定义命令。
 - `Automation Task Center`: 所有任务类型均可配置、运行、停止、查看结果和重试。Service Worker 重启后遗留 running 任务会安全收口为 stopped。
+- Computer Use 失败任务保存 `ComputerUseResumeCheckpoint`；同一任务重试时从失败 phase 继续，不重复已完成阶段。
 
 ## 总体架构图
 

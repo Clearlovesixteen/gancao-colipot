@@ -3,7 +3,7 @@
   "name": "gancao-copliot",
   "version": "1.0.0",
   "action": {},
-  "permissions": ["sidePanel", "tabs", "storage", "scripting", "activeTab", "downloads", "alarms", "offscreen"],
+  "permissions": ["sidePanel", "tabs", "storage", "scripting", "activeTab", "downloads", "alarms", "offscreen", "notifications"],
   "optional_permissions": ["debugger"],
   "host_permissions": [
     "<all_urls>",

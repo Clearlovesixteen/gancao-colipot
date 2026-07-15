@@ -6,6 +6,7 @@ import {
 } from '../shared/automationRunStore';
 import { comparePageMonitorSnapshots, createPageMonitorSnapshot } from '../shared/pageMonitor';
 import { appendPageMonitorCheck } from '../shared/pageMonitorHistory';
+import { sendMonitorNotifications } from './monitorNotification';
 
 const ALARM_PREFIX = 'page-monitor:';
 
@@ -110,12 +111,27 @@ export async function runPageMonitorNow(runId: string, deps: PageMonitorDeps): P
     const nextSnapshot = await captureMonitorSnapshot(tabId, monitor, deps);
     const compare = comparePageMonitorSnapshots(monitor.lastSnapshot, nextSnapshot, monitor.rule);
     const shouldNotify = compare.matched && monitor.lastNotifiedHash !== nextSnapshot.hash;
+    let notificationChannels: string[] = [];
+    let notificationError: string | undefined;
+    if (shouldNotify) {
+      try {
+        notificationChannels = await sendMonitorNotifications({
+          run,
+          monitor,
+          snapshot: nextSnapshot,
+          summary: compare.summary,
+          diffPreview: compare.diffPreview,
+        });
+      } catch (error: any) {
+        notificationError = error?.message || '通知发送失败';
+      }
+    }
     const nextMonitor: PageMonitorMetadata = {
       ...monitor,
       lastSnapshot: nextSnapshot,
       lastCheckedAt: Date.now(),
       lastChangedAt: compare.changed ? Date.now() : monitor.lastChangedAt,
-      lastNotifiedHash: shouldNotify ? nextSnapshot.hash : monitor.lastNotifiedHash,
+      lastNotifiedHash: shouldNotify && !notificationError ? nextSnapshot.hash : monitor.lastNotifiedHash,
       lastRunError: undefined,
       consecutiveFailures: 0,
       pausedReason: undefined,
@@ -132,7 +148,7 @@ export async function runPageMonitorNow(runId: string, deps: PageMonitorDeps): P
     await patchAutomationRun(run.id, {
       status: compare.matched ? 'success' : 'idle',
       endedAt: Date.now(),
-      resultSummary: compare.summary,
+      resultSummary: notificationError ? `${compare.summary}；通知发送失败：${notificationError}` : compare.summary,
       error: undefined,
       traceSummary: {
         snapshotHash: nextSnapshot.hash,
@@ -142,6 +158,8 @@ export async function runPageMonitorNow(runId: string, deps: PageMonitorDeps): P
       metadata: {
         ...(run.metadata || {}),
         monitor: nextMonitor,
+        notificationChannels,
+        notificationError,
       },
     });
     return { success: true, changed: compare.matched };
