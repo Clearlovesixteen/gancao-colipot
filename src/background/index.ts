@@ -69,6 +69,7 @@ import {
   upsertDocumentResult,
 } from './documentDb';
 import { sanitizeForPersistence, toAppErrorPayload } from '../shared/appErrors';
+import { resolveBrowserContextTabId } from './browserTabContext';
 
 const modelGateway = new ModelGateway();
 let modelGatewayEventsInitialized = false;
@@ -1211,7 +1212,7 @@ async function generateRequirementTasksWithLLM(
   return normalizeRequirementTaskResult(parsed, fallback, documentIds);
 }
 
-async function handleBusinessTool(toolName: string, args: any): Promise<any> {
+async function handleBusinessTool(toolName: string, args: any, contextTabId?: number): Promise<any> {
   if (!BUSINESS_TOOL_NAMES.has(toolName)) {
     return null;
   }
@@ -1451,9 +1452,20 @@ async function handleBusinessTool(toolName: string, args: any): Promise<any> {
     return { success: true, traces: listComputerUseTraces(args?.limit ?? 10) };
   }
 
-  const tabId = await getCurrentActiveTab();
+  const tabId = await resolveBrowserContextTabId(contextTabId, {
+    getTab: (id) => chrome.tabs.get(id),
+    getCurrentActiveTab,
+  });
   if (!tabId) {
     return { success: false, error: '无法获取活动标签页' };
+  }
+
+  const contextTab = await chrome.tabs.get(tabId).catch(() => undefined);
+  const contentAccessError = getTabContentAccessError(contextTab);
+  const tabLevelAction = toolName === 'browser_action'
+    && ['open_tab', 'switch_tab', 'close_tab'].includes(String(args?.action || ''));
+  if (contentAccessError && !tabLevelAction) {
+    return { success: false, error: contentAccessError, tabId };
   }
 
   if (toolName === 'extract_page_structured_data') {
@@ -2048,7 +2060,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
         await initModelGatewayEvents();
         const messageHistory = message.messageHistory || [];
-        const result = await modelGateway.send(messageHistory, message.requestId, message.memoryContext, message.modelProfileId);
+        const contextTabId = await resolveBrowserContextTabId(message.contextTabId, {
+          getTab: (id) => chrome.tabs.get(id),
+          getCurrentActiveTab,
+        });
+        const result = await modelGateway.send(
+          messageHistory,
+          message.requestId,
+          message.memoryContext,
+          message.modelProfileId,
+          contextTabId || undefined,
+        );
         sendResponse({
           ...result,
           error: result.success ? undefined : result.error || 'AI 请求失败',
@@ -2186,13 +2208,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           return;
         }
 
-        const businessResult = await handleBusinessTool(message.toolName, message.arguments || {});
+        const contextTabId = await resolveBrowserContextTabId(message.tabId, {
+          getTab: (id) => chrome.tabs.get(id),
+          getCurrentActiveTab,
+        });
+        const businessResult = await handleBusinessTool(
+          message.toolName,
+          message.arguments || {},
+          contextTabId || undefined,
+        );
         if (businessResult) {
           sendResponse(businessResult);
           return;
         }
 
-        const tabId = await getCurrentActiveTab();
+        const tabId = contextTabId;
         if (!tabId) {
           sendResponse({ error: '无法获取活动标签页' });
           return;

@@ -4,11 +4,17 @@
 
 > 项目目前处于 V3.x 持续迭代阶段，适合开发测试和内部业务场景验证。涉及提交、保存、删除、支付、发送等高风险操作时，仍应由用户确认后执行。
 
-## 在线技术文档
+## 在线文档
 
-- 技术架构与详细说明站点：[https://clearlovesixteen.github.io/gancao-colipot/](https://clearlovesixteen.github.io/gancao-colipot/)
-- 站点源码位于 [`docs/tech-site/`](docs/tech-site/)，包含总体架构、运行入口、Browser Use 闭环、消息协议、数据存储、模型网关、资料与 OCR、工作流、权限边界、开发运行和测试门禁。
-- GitHub Pages 发布配置位于 [`.github/workflows/pages.yml`](.github/workflows/pages.yml)。推送 `main` 分支且改动命中 `docs/tech-site/**` 或该 workflow 时，会自动发布文档站。
+GitHub Pages 文档站：[https://clearlovesixteen.github.io/gancao-colipot/](https://clearlovesixteen.github.io/gancao-colipot/)
+
+| 文档入口 | 适合谁 | 主要内容 |
+| --- | --- | --- |
+| [使用与运行文档](https://clearlovesixteen.github.io/gancao-colipot/#develop) | 插件使用者、部署与测试人员 | 环境准备、安装构建、加载扩展、模型配置、权限说明和常见问题排查 |
+| [技术架构文档](https://clearlovesixteen.github.io/gancao-colipot/#architecture) | 开发者、架构师和贡献者 | 总体架构、运行入口、Browser Use 闭环、消息协议、数据存储、模型网关、资料与 OCR、工作流和安全边界 |
+| [测试门禁与排障](https://clearlovesixteen.github.io/gancao-colipot/#quality) | 开发与测试人员 | TypeScript、Vitest、扩展 E2E、构建检查和典型故障定位 |
+
+站点源码位于 [`docs/tech-site/`](docs/tech-site/)，GitHub Pages 发布配置位于 [`.github/workflows/pages.yml`](.github/workflows/pages.yml)。推送 `main` 分支且改动命中站点源码或发布 workflow 时，会自动更新在线文档。
 
 ## 核心能力
 

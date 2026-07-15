@@ -44,6 +44,10 @@ import {
   type ChatSession,
   type StoredChatMessage,
 } from '../../../shared/userMemoryStore';
+import {
+  getActiveBrowserTabId,
+  shouldStopTypingForGatewayStatus,
+} from '../../utils/chatRequestState';
 
 const { TextArea } = Input;
 const { Text, Title } = Typography;
@@ -1231,13 +1235,17 @@ const Chat: React.FC = () => {
           nativeFiles: msg.nativeFiles,
         }));
 
-      buildMemoryContext(llmContent || content, currentSessionIdRef.current || undefined)
-        .then((memoryContext) => chrome.runtime.sendMessage({
+      Promise.all([
+        buildMemoryContext(llmContent || content, currentSessionIdRef.current || undefined),
+        getActiveBrowserTabId(),
+      ])
+        .then(([memoryContext, contextTabId]) => chrome.runtime.sendMessage({
           type: 'SEND_MESSAGE',
           requestId,
           messageHistory,
           memoryContext: memoryContext.contextText,
           modelProfileId,
+          contextTabId,
         }, async (response) => {
         const runtimeError = chrome.runtime.lastError?.message;
         if (activeAiRequestIdRef.current !== requestId) return;
@@ -1407,6 +1415,7 @@ const Chat: React.FC = () => {
         ) {
           return;
         }
+        setIsTyping(false);
         persistChatMessage(newMsg);
         
         // 处理steam消息
@@ -1424,7 +1433,7 @@ const Chat: React.FC = () => {
         });
       } else if (message.type === 'SSE_STATUS_CHANGE') {
         setConnectionStatus(message.status);
-        if (message.status === 'connected' || message.status === 'error' || message.status === 'disconnected') {
+        if (shouldStopTypingForGatewayStatus(message.status)) {
           setIsTyping(false);
         }
       } else if (message.type === 'COMPUTER_USE_PROGRESS') {

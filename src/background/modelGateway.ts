@@ -73,8 +73,14 @@ export class ModelGateway {
     this.profileUpdatedAt = 0;
   }
 
-  async send(messageHistory: any[], requestId?: string, memoryContext?: string, profileId?: string): Promise<GLMSendResult> {
-    return (await this.getClient(profileId)).send(messageHistory, undefined, requestId, memoryContext);
+  async send(
+    messageHistory: any[],
+    requestId?: string,
+    memoryContext?: string,
+    profileId?: string,
+    contextTabId?: number,
+  ): Promise<GLMSendResult> {
+    return (await this.getClient(profileId)).send(messageHistory, undefined, requestId, memoryContext, contextTabId);
   }
 
   async callJson(input: JsonCallInput): Promise<unknown> {

@@ -105,10 +105,12 @@ export class GLMClient {
   private messageHistory: GLMHistoryMessage[] = [];
   private activeRunId = 0;
   private activeMemoryContext = '';
+  private activeContextTabId?: number;
   private profile: ModelProfile;
 
   constructor(options: GLMClientOptions) {
     this.profile = options.profile;
+    this.activeContextTabId = options.tabId;
     // 初始化时设置状态
     this.setStatus('disconnected');
   }
@@ -132,7 +134,8 @@ export class GLMClient {
     messageHistory: GLMHistoryMessage[],
     continuedRunId?: number,
     requestId?: string,
-    memoryContext?: string
+    memoryContext?: string,
+    contextTabId?: number,
   ): Promise<GLMSendResult> {
     if (!messageHistory || messageHistory.length === 0) {
       return { success: false, error: '消息为空' };
@@ -144,6 +147,9 @@ export class GLMClient {
       this.cancelRequested = false;
       this.lastError = null;
       this.activeMemoryContext = memoryContext?.trim() || '';
+      this.activeContextTabId = Number.isInteger(contextTabId) && Number(contextTabId) > 0
+        ? Number(contextTabId)
+        : undefined;
     }
     const runId = isContinuation ? continuedRunId : this.activeRunId;
 
@@ -378,11 +384,11 @@ export class GLMClient {
         for (const line of lines) {
           const trimmedLine = line.trim();
           
-          if (!trimmedLine || !trimmedLine.startsWith('data: ')) {
+          if (!trimmedLine || !trimmedLine.startsWith('data:')) {
             continue;
           }
 
-          const dataStr = trimmedLine.slice(6).trim();
+          const dataStr = trimmedLine.slice(5).trim();
           
             if (dataStr === '[DONE]') {
               ensureRunActive();
@@ -583,7 +589,12 @@ export class GLMClient {
             type: 'EXECUTE_TOOL',
             toolName: toolCall.name,
             arguments: toolCall.arguments,
+            tabId: this.activeContextTabId,
           });
+          const nextTabId = Number(result?.tabId ?? result?.result?.tabId);
+          if (Number.isInteger(nextTabId) && nextTabId > 0) {
+            this.activeContextTabId = nextTabId;
+          }
           return {
             tool_call_id: toolCall.id,
             role: 'tool' as const,
