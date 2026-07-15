@@ -2297,7 +2297,7 @@ const Chat: React.FC = () => {
         <div className={styles.computerUseHeader}>
           <Space size={6} wrap>
             <ToolOutlined />
-            <Text strong>自动操作任务</Text>
+            <Text strong>Browser Use 任务</Text>
             <Tag color={statusMeta.color}>{statusMeta.label}</Tag>
           </Space>
           <Space size={4} wrap>

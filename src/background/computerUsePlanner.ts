@@ -10,6 +10,7 @@ import type {
   PlannedStep,
 } from '../shared/automationTypes';
 import { extractTablesFromComputerUseResult, summarizeExtractedTables } from '../shared/computerUseResults';
+import { summarizeBrowserUseOutputs } from './browserUseVariables';
 
 type PlannerLLM = (input: {
   system: string;
@@ -719,6 +720,12 @@ function findLatestDownloadCandidate(context: ComputerUsePageContext, runState?:
 }
 
 const SUPPORTED_ACTIONS = new Set<BrowserActionType | 'finish'>([
+  'open_tab',
+  'switch_tab',
+  'close_tab',
+  'go_back',
+  'go_forward',
+  'reload',
   'click',
   'double_click',
   'right_click',
@@ -748,6 +755,12 @@ function normalizeActionName(action: string): BrowserActionType | 'finish' | nul
     input: 'type',
     enter_text: 'type',
     fill_form: 'type',
+    new_tab: 'open_tab',
+    open_new_tab: 'open_tab',
+    activate_tab: 'switch_tab',
+    back: 'go_back',
+    forward: 'go_forward',
+    refresh: 'reload',
     clear: 'clear_input',
     clear_text: 'clear_input',
     focus_element: 'focus',
@@ -1244,7 +1257,7 @@ export async function createComputerUsePlan(input: {
   try {
     const raw = await input.callLLM({
       system: [
-        '你是浏览器 Computer Use 动态规划器，只输出 JSON。',
+        '你是 Browser Use 动态规划器，只输出 JSON。',
         '生成 1-3 步短计划，不要写死业务系统路径。',
         '如果页面上下文不足，必须用 finish 说明缺少什么，不要输出无意义 press_key。',
         '涉及导出/下载时，优先导航到目标页面，找到 purpose=download_button 的真实按钮后输出 download_file，不要用 extract_table 代替导出。',
@@ -1252,6 +1265,8 @@ export async function createComputerUsePlan(input: {
         '优先使用 page.collections 里的语义集合生成 target：搜索结果用 collectionType=search_results + ordinal，菜单/导航用 collectionType=menu_group + parentPath，导出/下载用 collectionType=action_group + purpose=download_button，文件列表用 collectionType=file_list。',
         '不要直接猜 CSS selector。只有当集合无法表达目标时，才使用 elementId/selector。',
         '同名菜单必须用 parentPath 消歧；第 N 项必须用 ordinal 表达，不要把第一个候选当成默认值。',
+        '可使用浏览器级动作 open_tab、switch_tab、close_tab、go_back、go_forward、reload；这些动作不需要 DOM selector。',
+        '后续阶段可通过 {{阶段ID.字段路径}}、{{download.filename}}、{{currentTab.title}} 引用已完成阶段输出。',
         '如果 history 里最近已经成功 download_file，必须输出 finish，总结下载文件和资料 ID。',
         '如果 history 里最近已经成功 extract_table 且包含 tables，且目标不是导出文件，必须输出 finish，总结已提取的数据，不要重复 extract_table。',
       ].join('\n'),
@@ -1263,6 +1278,7 @@ export async function createComputerUsePlan(input: {
           pageState: input.context.observation.pageState,
           phase: input.phase,
           runState: input.runState,
+          phaseOutputs: summarizeBrowserUseOutputs(input.runState),
           phaseMemory: input.phaseMemory,
           navigationPath: input.intent.navigationPath,
           collections: (input.context.collections || []).map(summarizeCollection).slice(0, 30),

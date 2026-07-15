@@ -45,10 +45,10 @@ export interface CopilotCommand {
 export const COPILOT_COMMANDS: CopilotCommand[] = [
   {
     id: 'computer_use',
-    title: '自动操作',
+    title: 'Browser Use',
     category: 'automation',
-    description: '基于当前页面执行浏览器自动操作，并展示完整任务 trace。',
-    inputPlaceholder: '请自动操作：',
+    description: '让 AI 在浏览器中观察、规划、执行并校验多步骤任务。',
+    inputPlaceholder: '请使用 Browser Use：',
     requiredContext: ['page', 'auth'],
     renderer: 'computer_use_task',
     riskLevel: 'medium',

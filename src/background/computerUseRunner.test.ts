@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { BrowserObservation, ComputerUseFinishedMessage, ComputerUseIntent, ComputerUseProgressMessage, ObservedElement } from '../shared/automationTypes';
+import { BrowserUseSession, type BrowserUseTabInfo } from './browserUseSession';
 import { ComputerUseRunner } from './computerUseRunner';
 
 function observation(): BrowserObservation {
@@ -104,6 +105,8 @@ describe('ComputerUseRunner', () => {
     expect(finished?.steps).toHaveLength(1);
     expect(finished?.steps[0].action?.action).toBe('extract_table');
     expect(finished?.steps[0].result).toEqual(tableResult);
+    expect(finished?.runState?.completedPhases).toHaveLength(1);
+    expect(finished?.runState?.outputs).toEqual({ single_phase: tableResult });
     expect(emitted.filter((message) => message.type === 'COMPUTER_USE_PROGRESS' && message.state === 'planning')).toHaveLength(1);
   });
 
@@ -1120,5 +1123,86 @@ describe('ComputerUseRunner', () => {
     expect(emitted.some((message) => message.result?.summary?.includes('正在从失败阶段继续'))).toBe(true);
     const finished = emitted.find((message) => message.type === 'COMPUTER_USE_FINISHED');
     expect(finished?.runState?.completedPhases).toHaveLength(2);
+  });
+
+  it('opens, takes control of and observes an explicitly requested new tab', async () => {
+    const emitted: any[] = [];
+    let tabs: BrowserUseTabInfo[] = [{
+      id: 1,
+      active: true,
+      url: 'https://work.test/',
+      title: '工作台',
+    }];
+    const session = new BrowserUseSession({
+      initialTabId: 1,
+      listTabs: async () => tabs,
+    });
+    await session.initialize();
+    const openIntent: ComputerUseIntent = {
+      rawGoal: '打开新页面 https://target.test/',
+      taskType: 'navigation',
+      objective: '在新标签页打开目标页面',
+      entities: ['目标页面'],
+      riskLevel: 'low',
+      startUrl: 'https://target.test/',
+      taskPlan: {
+        rawGoal: '打开新页面 https://target.test/',
+        summary: '在新标签页打开目标页面',
+        phases: [{
+          id: 'open_target',
+          type: 'open_site',
+          goal: '打开目标页面',
+          startUrl: 'https://target.test/',
+          openInNewTab: true,
+        }],
+      },
+    };
+    const observedTabIds: number[] = [];
+    const runner = new ComputerUseRunner({
+      tabId: 1,
+      tabSession: session,
+      runId: 'run_open_new_tab',
+      goal: openIntent.rawGoal,
+      maxSteps: 3,
+      signal: new AbortController().signal,
+      navigate: async () => { throw new Error('显式新标签页不应复用当前标签导航'); },
+      understandIntent: async () => openIntent,
+      executeBrowserTool: async (tabId, toolName) => {
+        observedTabIds.push(tabId);
+        if (toolName === 'observe_page') return {
+          ...observation(),
+          url: 'https://target.test/',
+          title: '目标页面',
+        };
+        if (toolName === 'get_page_info') return { text: '目标页面' };
+        if (toolName === 'extract_page_structured_data') return { headings: ['目标页面'], tables: [] };
+        throw new Error(`unexpected tool: ${toolName}`);
+      },
+      tabActionDeps: {
+        createTab: async ({ url, openerTabId }) => {
+          const tab = { id: 2, active: true, url, title: '目标页面', openerTabId };
+          tabs = tabs.map((item) => ({ ...item, active: false })).concat(tab);
+          return tab;
+        },
+        activateTab: async (tabId) => { tabs = tabs.map((item) => ({ ...item, active: item.id === tabId })); },
+        closeTab: async (tabId) => { tabs = tabs.filter((item) => item.id !== tabId); },
+        goBack: async () => {},
+        goForward: async () => {},
+        reload: async () => {},
+      },
+      confirmAction: async () => true,
+      emit: (message) => emitted.push(message),
+    });
+
+    await runner.run();
+
+    const finished = emitted.find((message) => message.type === 'COMPUTER_USE_FINISHED');
+    expect(finished?.runState?.browserSession?.currentTabId).toBe(2);
+    expect(finished?.runState?.outputs?.open_target).toEqual(expect.objectContaining({
+      url: 'https://target.test/',
+      title: '目标页面',
+    }));
+    expect(observedTabIds).not.toContain(1);
+    expect(observedTabIds).toContain(2);
   });
 });

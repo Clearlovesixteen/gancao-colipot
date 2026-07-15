@@ -243,6 +243,7 @@ function buildTaskPlan(goal: string, intent: Omit<ComputerUseIntent, 'taskPlan'>
   const formValues = extractFormValues(goal);
   const clickActionTargets = extractClickActionTargets(goal);
   const isFormWorkflow = formValues.length > 0 || clickActionTargets.length > 0;
+  const openInNewTab = /(?:新页面|新标签页|新的标签页)/.test(goal);
 
   if (explicitUrl && isFormWorkflow) {
     const urlIndex = goal.indexOf(explicitUrl);
@@ -270,6 +271,7 @@ function buildTaskPlan(goal: string, intent: Omit<ComputerUseIntent, 'taskPlan'>
       goal: `打开${explicitUrl}`,
       targets: [explicitUrl],
       startUrl: explicitUrl,
+      openInNewTab,
     });
     for (const [index, formValue] of formValues.entries()) {
       phases.push({
@@ -316,6 +318,7 @@ function buildTaskPlan(goal: string, intent: Omit<ComputerUseIntent, 'taskPlan'>
       targets: [intent.siteName || intent.startUrl],
       startUrl: intent.startUrl,
       siteName: intent.siteName,
+      openInNewTab,
     });
     phases.push({
       id: 'search_query',
@@ -594,6 +597,7 @@ function normalizeTaskPlan(raw: unknown, goal: string): ComputerUseTaskPlan | un
       targets,
       navigationPath: navigationPath.length ? navigationPath : undefined,
       startUrl: typeof phase.startUrl === 'string' && phase.startUrl.trim() ? phase.startUrl.trim() : undefined,
+      openInNewTab: phase.openInNewTab === true,
       siteName: typeof phase.siteName === 'string' && phase.siteName.trim() ? phase.siteName.trim() : undefined,
       query: typeof phase.query === 'string' && phase.query.trim() ? phase.query.trim() : undefined,
       ordinal: Number.isFinite(Number(phase.ordinal)) ? Math.max(1, Number(phase.ordinal)) : undefined,

@@ -326,7 +326,10 @@ function rejectedCandidates(input: {
 }
 
 function actionNeedsTarget(step: PlannedStep): boolean {
-  if (['finish', 'wait', 'scroll', 'extract_table', 'press_key', 'keyboard_shortcut'].includes(step.action)) return false;
+  if ([
+    'finish', 'wait', 'scroll', 'extract_table', 'press_key', 'keyboard_shortcut',
+    'open_tab', 'switch_tab', 'close_tab', 'go_back', 'go_forward', 'reload',
+  ].includes(step.action)) return false;
   if (step.target?.x !== undefined && step.target?.y !== undefined) return false;
   return true;
 }

@@ -267,6 +267,7 @@ export interface PlannedStep {
     collectionId?: string;
     ordinal?: number;
     parentPath?: string[];
+    tabId?: number;
     x?: number;
     y?: number;
   };
@@ -379,6 +380,7 @@ export interface ComputerUsePhase {
   targets?: string[];
   navigationPath?: string[];
   startUrl?: string;
+  openInNewTab?: boolean;
   siteName?: string;
   query?: string;
   ordinal?: number;
@@ -410,11 +412,31 @@ export interface ComputerUsePhaseResult {
   evidence?: ComputerUsePhaseEvidence;
 }
 
+export interface BrowserUseTabSnapshot {
+  tabId: number;
+  windowId?: number;
+  openerTabId?: number;
+  url?: string;
+  title?: string;
+  active?: boolean;
+  current?: boolean;
+}
+
+export interface BrowserUseSessionSnapshot {
+  initialTabId: number;
+  currentTabId: number;
+  startedAt: number;
+  updatedAt: number;
+  tabs: BrowserUseTabSnapshot[];
+}
+
 export interface ComputerUseRunState {
   currentPhaseIndex: number;
   completedPhases: ComputerUsePhaseResult[];
   downloadResult?: ComputerUseDownloadResult;
   warnings?: string[];
+  browserSession?: BrowserUseSessionSnapshot;
+  outputs?: Record<string, unknown>;
 }
 
 export interface ComputerUseResumeCheckpoint {
@@ -427,6 +449,12 @@ export interface ComputerUseResumeCheckpoint {
 }
 
 export type BrowserActionType =
+  | 'open_tab'
+  | 'switch_tab'
+  | 'close_tab'
+  | 'go_back'
+  | 'go_forward'
+  | 'reload'
   | 'click'
   | 'double_click'
   | 'right_click'
@@ -739,6 +767,8 @@ export interface ComputerUseAction {
   selector?: string;
   text?: string;
   parentPath?: string[];
+  tabId?: number;
+  url?: string;
   x?: number;
   y?: number;
   key?: string;

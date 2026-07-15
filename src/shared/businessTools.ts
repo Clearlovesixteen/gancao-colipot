@@ -80,13 +80,13 @@ export const BUSINESS_TOOLS: BusinessToolDefinition[] = [
     type: 'function',
     function: {
       name: 'browser_action',
-      description: '执行浏览器动作。支持点击、输入、按键、选择、勾选、悬停、拖拽、滚动、等待、文件输入定位和真实导出/下载。用户明确要求导出/下载时使用 download_file；涉及提交、删除、购买、付款等高风险动作前必须先向用户确认。',
+      description: '执行 Browser Use 原子动作。支持标签页、历史导航、点击、输入、按键、选择、滚动、等待、文件输入和真实导出/下载。用户明确要求导出/下载时使用 download_file；涉及提交、删除、购买、付款等高风险动作前必须先向用户确认。',
       parameters: {
         type: 'object',
         properties: {
           action: {
             type: 'string',
-            enum: ['click', 'double_click', 'right_click', 'click_by_coordinate', 'type', 'clear_input', 'focus', 'keyboard_shortcut', 'press_key', 'select_option', 'check', 'hover', 'drag', 'scroll', 'wait', 'wait_for_element', 'upload_file', 'download_file'],
+            enum: ['open_tab', 'switch_tab', 'close_tab', 'go_back', 'go_forward', 'reload', 'click', 'double_click', 'right_click', 'click_by_coordinate', 'type', 'clear_input', 'focus', 'keyboard_shortcut', 'press_key', 'select_option', 'check', 'hover', 'drag', 'scroll', 'wait', 'wait_for_element', 'upload_file', 'download_file'],
             description: '要执行的动作。',
           },
           elementId: {
@@ -100,6 +100,14 @@ export const BUSINESS_TOOLS: BusinessToolDefinition[] = [
           text: {
             type: 'string',
             description: '点击时可作为包含文本；输入时是输入内容。',
+          },
+          url: {
+            type: 'string',
+            description: 'open_tab 要打开的 URL。',
+          },
+          tabId: {
+            type: 'number',
+            description: 'switch_tab/close_tab 的目标标签页 ID。',
           },
           direction: {
             type: 'string',

@@ -551,7 +551,7 @@ const AutomationTaskCenter: React.FC = () => {
         <div>
           <Title level={4} style={{ margin: 0 }}>自动化任务中心</Title>
           <Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0 }}>
-            统一运行与追踪 Computer Use、页面监控、页面诊断、资料问答、OCR、数据提取和固定工作流。
+            统一运行与追踪 Browser Use、页面监控、页面诊断、资料问答、OCR、数据提取和固定工作流。
           </Paragraph>
         </div>
 
@@ -587,7 +587,7 @@ const AutomationTaskCenter: React.FC = () => {
             <Space>
               <Select value={kindFilter} onChange={setKindFilter} style={{ width: 150 }}>
                 <Option value="all">全部类型</Option>
-                <Option value="computer_use">Computer Use</Option>
+                <Option value="computer_use">Browser Use</Option>
                 <Option value="page_monitor">页面监控</Option>
                 <Option value="page_diagnosis">页面诊断</Option>
                 <Option value="document_qa">资料问答</Option>

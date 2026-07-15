@@ -4,6 +4,12 @@
 
 > 项目目前处于 V3.x 持续迭代阶段，适合开发测试和内部业务场景验证。涉及提交、保存、删除、支付、发送等高风险操作时，仍应由用户确认后执行。
 
+## 在线技术文档
+
+- 技术架构与详细说明站点：[https://clearlovesixteen.github.io/gancao-colipot/](https://clearlovesixteen.github.io/gancao-colipot/)
+- 站点源码位于 [`docs/tech-site/`](docs/tech-site/)，包含总体架构、运行入口、Browser Use 闭环、消息协议、数据存储、模型网关、资料与 OCR、工作流、权限边界、开发运行和测试门禁。
+- GitHub Pages 发布配置位于 [`.github/workflows/pages.yml`](.github/workflows/pages.yml)。推送 `main` 分支且改动命中 `docs/tech-site/**` 或该 workflow 时，会自动发布文档站。
+
 ## 核心能力
 
 ### AI 对话与模型配置
@@ -13,11 +19,13 @@
 - API Key 由用户自行配置，仅保存在本机 `chrome.storage.local`，不会写入源码、任务日志或导出结果。
 - 支持本地聊天历史、长期 Memory、会话搜索、重命名、归档和继续会话。
 
-### Computer Use 浏览器自动操作
+### Browser Use 浏览器智能代理
 
 - 将自然语言目标拆分为阶段化任务计划。
 - 通过页面语义集合识别菜单、表单、按钮、搜索结果、表格行和文件列表。
 - 支持点击、输入、选择、滚动、等待、下载和结构化提取等动作。
+- 支持显式打开、切换、关闭标签页，以及后退、前进和刷新；任务持续跟踪当前受控标签页。
+- 支持跨阶段变量引用，可将前序页面、下载和提取结果用于后续步骤。
 - 支持搜索并打开第 N 条自然结果、同名菜单父子路径消歧、业务筛选、真实导出和行内下载。
 - 每个任务保留 observation、目标解析、动作、验收证据和失败原因，未真正完成时不会显示成功。
 - 失败任务会保存阶段断点；从任务中心重试时可从失败 phase 继续，并保留已完成阶段与下载结果。
@@ -41,9 +49,9 @@
 
 ### 任务、工作流与命令
 
-- 统一任务中心支持 Computer Use、页面监控、页面诊断、资料问答、OCR、页面提取和固定工作流。
+- 统一任务中心支持 Browser Use、页面监控、页面诊断、资料问答、OCR、页面提取和固定工作流。
 - 长任务支持运行、停止、重试、结果查看和 Trace 复制。
-- 成功的 Computer Use 任务可保存为参数化工作流草稿。
+- 成功的 Browser Use 任务可保存为参数化工作流草稿。
 - 支持创建、编辑、启停、版本化、导入和导出自定义命令。
 - 自定义命令支持输入表单、模板变量、版本回滚和按命令选择模型；模型路由只作用于本次命令执行。
 - 对话中出现明确偏好、流程或业务术语时会生成本地候选 Memory，只有用户确认后才进入长期召回。
@@ -66,7 +74,7 @@ flowchart LR
 
   Background --> Model["ModelGateway"]
   Background --> Tasks["TaskExecutorRegistry"]
-  Background --> ComputerUse["Computer Use Runner"]
+  Background --> ComputerUse["Browser Use Agent"]
   Background --> Repository["DocumentRepository"]
 
   ComputerUse <-->|observe / act / verify| Content["Content Script"]
@@ -84,7 +92,7 @@ flowchart LR
 - PaddleOCR.js、ONNX Runtime Web、PDF.js
 - Vitest、Playwright
 
-更详细的模块和调用链请阅读 [docs/architecture.md](docs/architecture.md)。
+更详细的模块和调用链请阅读 [docs/architecture.md](docs/architecture.md)，或访问在线技术文档站：[https://clearlovesixteen.github.io/gancao-colipot/](https://clearlovesixteen.github.io/gancao-colipot/)。
 
 ## 本地开发
 
@@ -161,7 +169,7 @@ pnpm watch
 
 ```text
 src/
-├── background/       # Service Worker、模型网关、任务执行器、Computer Use
+├── background/       # Service Worker、模型网关、任务执行器、Browser Use
 ├── content/          # 页面观察、DOM 动作、控制台错误和登录态桥接
 ├── dashboard/        # 任务中心、模型设置和自动化工作台
 ├── offscreen/        # PaddleOCR Offscreen Host
@@ -171,7 +179,12 @@ public/
 ├── manifest.json
 └── ocrHost.html
 tests/e2e/             # Chromium 扩展端到端测试
-docs/                  # 架构和版本就绪说明
+docs/
+├── architecture.md    # 架构说明
+├── browser-use-goal.md # Browser Use 产品目标
+└── tech-site/         # GitHub Pages 技术文档站源码
+.github/workflows/
+└── pages.yml          # GitHub Pages 自动发布流程
 ```
 
 ## 数据与隐私
@@ -186,7 +199,7 @@ docs/                  # 架构和版本就绪说明
 
 ## 已知限制
 
-- Computer Use 目前只操作浏览器标签页，不是系统级桌面自动化。
+- Browser Use 目前只操作浏览器标签页，不是系统级桌面自动化。
 - 跨域 iframe、浏览器内置页面和强验证码页面可能无法操作。
 - 页面 DOM 结构发生大幅变化时，语义目标解析仍可能需要重新观察或用户补充上下文。
 - 本地页面监控依赖 Chrome 运行；浏览器完全关闭时不会执行定时检查。
@@ -202,6 +215,8 @@ docs/                  # 架构和版本就绪说明
 - 新功能必须通过 TypeScript、单测、生产构建和扩展 E2E 门禁。
 
 ## 路线图
+
+当前自动化产品目标已正式从 Computer Use 调整为 **Browser Use**：代理围绕浏览器中的页面观察、导航、搜索、表单、数据提取、下载、跨页面任务和结果交付自主完成任务，而不是模拟系统级鼠标键盘。现有 `computer_use` 类型和 `RUN_COMPUTER_USE` 消息名作为兼容协议继续保留。详细目标见 [Browser Use 产品目标](docs/browser-use-goal.md)。
 
 当前已完成 V3.2 统一底座，并落地失败阶段续跑、监控通知、候选 Memory、资料引用定位、OCR 人工校正、自定义命令表单/版本/模型路由等后续能力。下一阶段重点是：
 

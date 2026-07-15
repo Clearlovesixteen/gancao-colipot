@@ -51,6 +51,7 @@ describe('computerUseIntent', () => {
       'search',
       'select_collection_item',
     ]);
+    expect(intent.taskPlan?.phases[0]?.openInNewTab).not.toBe(true);
     expect(intent.taskPlan?.phases[2]).toEqual(expect.objectContaining({
       type: 'select_collection_item',
       collectionType: 'search_results',
@@ -93,6 +94,10 @@ describe('computerUseIntent', () => {
       'search',
       'select_collection_item',
     ]);
+    expect(intent.taskPlan?.phases[0]).toEqual(expect.objectContaining({
+      type: 'open_site',
+      openInNewTab: true,
+    }));
     expect(intent.taskPlan?.phases[2]).toEqual(expect.objectContaining({
       type: 'select_collection_item',
       collectionType: 'search_results',

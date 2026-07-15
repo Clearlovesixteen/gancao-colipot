@@ -10,6 +10,7 @@ import {
 } from '../shared/modelProfiles';
 import { AutomationRunner } from './automation';
 import { ComputerUseRunner } from './computerUseRunner';
+import { BrowserUseSession } from './browserUseSession';
 import { understandComputerUseIntent as understandComputerUseIntentCore } from './computerUseIntent';
 import { createComputerUsePlan as createComputerUsePlanCore } from './computerUsePlanner';
 import { parseComputerUseTask } from './computerUseTaskParser';
@@ -131,7 +132,7 @@ async function planComputerUseAction(input: {
   const parsed = await callComputerUseJson(
     [
       '你是浏览器 Computer Use 执行器，每次只输出一个 JSON 动作。',
-      '可选 action: click,double_click,right_click,click_by_coordinate,type,clear_input,focus,keyboard_shortcut,press_key,select_option,check,hover,drag,scroll,wait,wait_for_element,upload_file,download_file,extract_table,finish。',
+      '可选 action: open_tab,switch_tab,close_tab,go_back,go_forward,reload,click,double_click,right_click,click_by_coordinate,type,clear_input,focus,keyboard_shortcut,press_key,select_option,check,hover,drag,scroll,wait,wait_for_element,upload_file,download_file,extract_table,finish。',
       '优先使用 observation.elements 中的 elementId；没有可靠目标时返回 finish，并在 summary 中说明阻塞原因，禁止猜测点击。',
       '高风险动作必须设置 highRisk:true。',
     ].join('\n'),
@@ -762,6 +763,22 @@ async function runComputerUseOnTab(options: {
   const abortFromExternal = () => controller.abort();
   options.externalSignal?.addEventListener('abort', abortFromExternal, { once: true });
   const deterministicMode = (await chrome.storage.local.get('computerUseDeterministicMode')).computerUseDeterministicMode === true;
+  const initialTab = await chrome.tabs.get(options.tabId);
+  const tabSession = new BrowserUseSession({
+    initialTabId: options.tabId,
+    listTabs: async () => (await chrome.tabs.query({ windowId: initialTab.windowId }))
+      .flatMap((tab) => typeof tab.id === 'number'
+        ? [{
+          id: tab.id,
+          windowId: tab.windowId,
+          openerTabId: tab.openerTabId,
+          url: tab.url,
+          title: tab.title,
+          active: tab.active,
+        }]
+        : []),
+  });
+  await tabSession.initialize();
 
   return await new Promise((resolve, reject) => {
     const emit = (msg: any) => {
@@ -789,6 +806,7 @@ async function runComputerUseOnTab(options: {
     const intent = options.intent || parseComputerUseTask(options.goal, options.startUrl);
     const runPromise = new ComputerUseRunner({
         tabId: options.tabId,
+        tabSession,
         runId,
         goal: options.goal,
         maxSteps: Math.max(1, Math.min(Number(options.maxSteps || 8), 30)),
@@ -797,12 +815,32 @@ async function runComputerUseOnTab(options: {
         signal: controller.signal,
         navigate: navigateTab,
         executeBrowserTool,
-        executeDownloadAction: ({ action, pageUrl }) => performDownloadFileAction({
+        tabActionDeps: {
+          createTab: async ({ url, active, openerTabId }) => {
+            const tab = await chrome.tabs.create({ url, active, openerTabId });
+            if (typeof tab.id !== 'number') throw new Error('创建标签页失败：缺少标签页 ID');
+            const readyTab = await waitForBrowserUseTabReady(tab.id, 30_000, controller.signal);
+            return {
+              id: tab.id,
+              windowId: readyTab.windowId,
+              openerTabId: readyTab.openerTabId,
+              url: readyTab.url,
+              title: readyTab.title,
+              active: readyTab.active,
+            };
+          },
+          activateTab: async (tabId) => { await chrome.tabs.update(tabId, { active: true }); },
+          closeTab: async (tabId) => { await chrome.tabs.remove(tabId); },
+          goBack: async (tabId) => { await chrome.tabs.goBack(tabId); },
+          goForward: async (tabId) => { await chrome.tabs.goForward(tabId); },
+          reload: async (tabId) => { await chrome.tabs.reload(tabId); },
+        },
+        executeDownloadAction: ({ action, pageUrl, tabId }) => performDownloadFileAction({
           runId,
-          tabId: options.tabId,
+          tabId,
           pageUrl,
           action,
-          click: () => executeContentTool(options.tabId, 'click_element', action),
+          click: () => executeContentTool(tabId, 'click_element', action),
         }),
         understandIntent: ({ goal }) => deterministicMode
           ? understandComputerUseIntentCore({ goal, taskIntent: intent })
@@ -1528,6 +1566,38 @@ async function handleBusinessTool(toolName: string, args: any): Promise<any> {
   if (toolName === 'browser_action') {
     const action = args?.action;
 
+    if (action === 'open_tab') {
+      const url = String(args?.url || args?.value || args?.text || '').trim();
+      if (!url) return { success: false, error: '打开新标签页需要提供 URL' };
+      const tab = await chrome.tabs.create({ url, active: true, openerTabId: tabId });
+      if (typeof tab.id !== 'number') return { success: false, error: '创建标签页失败：缺少标签页 ID' };
+      const readyTab = await waitForBrowserUseTabReady(tab.id, Number(args?.timeoutMs || 30_000), new AbortController().signal);
+      return { success: true, tabId: tab.id, url: readyTab.url || url, title: readyTab.title };
+    }
+    if (action === 'switch_tab') {
+      const targetTabId = Number(args?.tabId || args?.value);
+      if (!Number.isFinite(targetTabId)) return { success: false, error: '切换标签页需要 tabId' };
+      const tab = await chrome.tabs.update(targetTabId, { active: true });
+      return { success: true, tabId: tab.id, url: tab.url, title: tab.title };
+    }
+    if (action === 'close_tab') {
+      const targetTabId = Number(args?.tabId || tabId);
+      await chrome.tabs.remove(targetTabId);
+      return { success: true, tabId: targetTabId };
+    }
+    if (action === 'go_back') {
+      await chrome.tabs.goBack(tabId);
+      return { success: true, tabId };
+    }
+    if (action === 'go_forward') {
+      await chrome.tabs.goForward(tabId);
+      return { success: true, tabId };
+    }
+    if (action === 'reload') {
+      await chrome.tabs.reload(tabId);
+      return { success: true, tabId };
+    }
+
     if (action === 'click' || action === 'double_click' || action === 'right_click' || action === 'click_by_coordinate') {
       return await executeBrowserTool(tabId, action === 'click_by_coordinate' ? 'click_by_coordinate' : 'click_element', {
         ...(action === 'double_click' ? { clickCount: 2 } : {}),
@@ -1693,11 +1763,21 @@ async function navigateTab(
   await chrome.tabs.update(tabId, { url });
 
   if (waitFor === 'none') return;
+  await waitForBrowserUseTabReady(tabId, timeoutMs, signal);
+}
 
-  await new Promise<void>((resolve, reject) => {
+async function waitForBrowserUseTabReady(
+  tabId: number,
+  timeoutMs: number,
+  signal: AbortSignal
+): Promise<chrome.tabs.Tab> {
+  const current = await chrome.tabs.get(tabId);
+  if (current.status === 'complete') return current;
+
+  return new Promise<chrome.tabs.Tab>((resolve, reject) => {
     const timeoutId = setTimeout(() => {
       cleanup();
-      reject(new Error('页面加载超时'));
+      reject(new Error('新标签页加载超时'));
     }, timeoutMs);
 
     const onAbort = () => {
@@ -1705,17 +1785,26 @@ async function navigateTab(
       reject(new Error('已停止'));
     };
 
-    const onUpdated = (updatedTabId: number, changeInfo: chrome.tabs.TabChangeInfo) => {
-      if (updatedTabId !== tabId) return;
-      if (changeInfo.status === 'complete') {
-        cleanup();
-        resolve();
+    const onUpdated = async (updatedTabId: number, changeInfo: chrome.tabs.TabChangeInfo) => {
+      if (updatedTabId !== tabId || changeInfo.status !== 'complete') return;
+      cleanup();
+      try {
+        resolve(await chrome.tabs.get(tabId));
+      } catch (error) {
+        reject(error);
       }
+    };
+
+    const onRemoved = (removedTabId: number) => {
+      if (removedTabId !== tabId) return;
+      cleanup();
+      reject(new Error('新标签页在加载完成前已关闭'));
     };
 
     const cleanup = () => {
       clearTimeout(timeoutId);
       chrome.tabs.onUpdated.removeListener(onUpdated);
+      chrome.tabs.onRemoved.removeListener(onRemoved);
       signal.removeEventListener('abort', onAbort);
     };
 
@@ -1727,6 +1816,15 @@ async function navigateTab(
 
     signal.addEventListener('abort', onAbort, { once: true });
     chrome.tabs.onUpdated.addListener(onUpdated);
+    chrome.tabs.onRemoved.addListener(onRemoved);
+    chrome.tabs.get(tabId).then((tab) => {
+      if (tab.status !== 'complete') return;
+      cleanup();
+      resolve(tab);
+    }).catch((error) => {
+      cleanup();
+      reject(error);
+    });
   });
 }
 
