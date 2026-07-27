@@ -78,6 +78,72 @@ export async function configureFixtureModel(harness: ExtensionHarness): Promise<
   expect(response?.success, response?.error).toBe(true);
 }
 
+async function putAutomationTask(extensionPage: Page, run: Record<string, unknown>): Promise<void> {
+  await extensionPage.evaluate(async (task) => {
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open('gancao_task_runtime', 1);
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        if (!db.objectStoreNames.contains('tasks')) {
+          const store = db.createObjectStore('tasks', { keyPath: 'id' });
+          store.createIndex('updatedAt', 'updatedAt', { unique: false });
+          store.createIndex('status', 'status', { unique: false });
+          store.createIndex('kind', 'kind', { unique: false });
+        }
+        if (!db.objectStoreNames.contains('taskDetails')) {
+          db.createObjectStore('taskDetails', { keyPath: 'taskId' });
+        }
+        if (!db.objectStoreNames.contains('meta')) {
+          db.createObjectStore('meta', { keyPath: 'key' });
+        }
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    await new Promise<void>((resolve, reject) => {
+      const transaction = database.transaction('tasks', 'readwrite');
+      transaction.objectStore('tasks').put(task);
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+    });
+    database.close();
+  }, run);
+}
+
+async function readAutomationTask(extensionPage: Page, taskId: string): Promise<any> {
+  return extensionPage.evaluate(async (id) => {
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open('gancao_task_runtime', 1);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const result = await new Promise<any>((resolve, reject) => {
+      const transaction = database.transaction(['tasks', 'taskDetails'], 'readonly');
+      const summaryRequest = transaction.objectStore('tasks').get(id);
+      const detailRequest = transaction.objectStore('taskDetails').get(id);
+      transaction.oncomplete = () => {
+        const summary = summaryRequest.result;
+        const detail = detailRequest.result;
+        if (!summary) {
+          resolve(null);
+          return;
+        }
+        resolve({
+          ...summary,
+          metadata: {
+            ...(summary.metadata || {}),
+            ...(detail?.output === undefined ? {} : { taskOutput: detail.output }),
+            ...(detail?.trace === undefined ? {} : { traceSnapshot: detail.trace }),
+          },
+        });
+      };
+      transaction.onerror = () => reject(transaction.error);
+    });
+    database.close();
+    return result;
+  }, taskId);
+}
+
 export async function runAutomationTask(
   harness: ExtensionHarness,
   input: {
@@ -91,26 +157,20 @@ export async function runAutomationTask(
   timeout = 90_000,
 ): Promise<any> {
   const taskId = `e2e_${input.kind}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  await harness.extensionPage.evaluate(async ({ taskId: id, task }) => {
-    const stored = await chrome.storage.local.get('automationRuns');
-    const runs = Array.isArray(stored.automationRuns) ? stored.automationRuns : [];
-    const now = Date.now();
-    await chrome.storage.local.set({
-      automationRuns: [{
-        id,
-        title: task.title,
-        kind: task.kind,
-        status: 'idle',
-        goal: task.goal,
-        source: 'system',
-        workflowId: task.workflowId,
-        schedule: task.schedule,
-        metadata: task.metadata || {},
-        createdAt: now,
-        updatedAt: now,
-      }, ...runs.filter((run: any) => run?.id !== id)],
-    });
-  }, { taskId, task: input });
+  const now = Date.now();
+  await putAutomationTask(harness.extensionPage, {
+    id: taskId,
+    title: input.title,
+    kind: input.kind,
+    status: 'idle',
+    goal: input.goal,
+    source: 'system',
+    workflowId: input.workflowId,
+    schedule: input.schedule,
+    metadata: input.metadata || {},
+    createdAt: now,
+    updatedAt: now,
+  });
 
   const started = await sendRuntimeMessage<{ success: boolean; runId?: string; error?: string }>(harness.extensionPage, {
     type: 'RUN_AUTOMATION_TASK',
@@ -120,41 +180,29 @@ export async function runAutomationTask(
   expect(started.success, started.error).toBe(true);
 
   await expect.poll(async () => {
-    return harness.extensionPage.evaluate(async (id) => {
-      const stored = await chrome.storage.local.get('automationRuns');
-      const run = (stored.automationRuns || []).find((item: any) => item?.id === id);
-      if (!run) return false;
-      return /success|partial|failed|stopped/.test(run.status) || (run.status === 'idle' && Boolean(run.endedAt));
-    }, taskId);
+    const run = await readAutomationTask(harness.extensionPage, taskId);
+    if (!run) return false;
+    return /success|partial|failed|stopped/.test(run.status) || (run.status === 'idle' && Boolean(run.endedAt));
   }, { timeout }).toBe(true);
 
-  return harness.extensionPage.evaluate(async (id) => {
-    const stored = await chrome.storage.local.get('automationRuns');
-    return (stored.automationRuns || []).find((item: any) => item?.id === id) || null;
-  }, taskId);
+  return readAutomationTask(harness.extensionPage, taskId);
 }
 
 export async function runComputerUse(harness: ExtensionHarness, goal: string, maxSteps = 16, resumeCheckpoint?: unknown): Promise<any> {
   await harness.fixturePage.bringToFront();
   const taskId = `e2e_browser_use_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  await harness.extensionPage.evaluate(async ({ taskId: id, taskGoal, taskMaxSteps, checkpoint }) => {
-    const stored = await chrome.storage.local.get('automationRuns');
-    const runs = Array.isArray(stored.automationRuns) ? stored.automationRuns : [];
-    const now = Date.now();
-    await chrome.storage.local.set({
-      automationRuns: [{
-        id,
-        title: `Browser Use E2E：${taskGoal.slice(0, 40)}`,
-        kind: 'browser_use',
-        status: 'idle',
-        goal: taskGoal,
-        source: 'system',
-        metadata: { maxSteps: taskMaxSteps, resumeCheckpoint: checkpoint },
-        createdAt: now,
-        updatedAt: now,
-      }, ...runs.filter((run: any) => run?.id !== id)],
-    });
-  }, { taskId, taskGoal: goal, taskMaxSteps: maxSteps, checkpoint: resumeCheckpoint });
+  const now = Date.now();
+  await putAutomationTask(harness.extensionPage, {
+    id: taskId,
+    title: `Browser Use E2E：${goal.slice(0, 40)}`,
+    kind: 'browser_use',
+    status: 'idle',
+    goal,
+    source: 'system',
+    metadata: { maxSteps, resumeCheckpoint },
+    createdAt: now,
+    updatedAt: now,
+  });
 
   const started = await sendRuntimeMessage<{ success: boolean; runId?: string; error?: string }>(harness.extensionPage, {
     type: 'RUN_AUTOMATION_TASK',
@@ -166,24 +214,14 @@ export async function runComputerUse(harness: ExtensionHarness, goal: string, ma
 
   try {
     await expect.poll(async () => {
-      return await harness.extensionPage.evaluate(async (id) => {
-        const stored = await chrome.storage.local.get('automationRuns');
-        const run = (stored.automationRuns || []).find((item: any) => item?.id === id);
-        return run?.status;
-      }, taskId);
+      return (await readAutomationTask(harness.extensionPage, taskId))?.status;
     }, { timeout: Number(process.env.BROWSER_USE_E2E_TIMEOUT || 90_000) }).toMatch(/success|partial|failed|stopped/);
   } catch (error) {
-    const latest = await harness.extensionPage.evaluate(async (id) => {
-      const stored = await chrome.storage.local.get('automationRuns');
-      return (stored.automationRuns || []).find((item: any) => item?.id === id) || null;
-    }, taskId);
+    const latest = await readAutomationTask(harness.extensionPage, taskId);
     throw new Error(`${error instanceof Error ? error.message : String(error)}\nLatest Browser Use task:\n${JSON.stringify(latest, null, 2)}`);
   }
 
-  const run = await harness.extensionPage.evaluate(async (id) => {
-    const stored = await chrome.storage.local.get('automationRuns');
-    return (stored.automationRuns || []).find((item: any) => item?.id === id) || null;
-  }, taskId);
+  const run = await readAutomationTask(harness.extensionPage, taskId);
   if (run?.metadata?.traceSnapshot) return run.metadata.traceSnapshot;
 
   const internalRunId = run?.metadata?.computerUseRunId;

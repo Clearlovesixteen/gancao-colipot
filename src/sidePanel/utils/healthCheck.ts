@@ -2,6 +2,7 @@ import { checkDocumentRepositoryHealth } from '../../shared/documentRepository';
 import { getPaddleOcrRuntimeOptions } from '../../shared/paddleOcrRuntime';
 import { isAuthenticated } from './auth';
 import { RUNTIME_BUILD_ID } from '../../shared/runtimeVersion';
+import { taskRepository } from '../../shared/taskRepository';
 
 export type HealthCheckStatus = 'pass' | 'warn' | 'fail';
 
@@ -182,6 +183,20 @@ async function checkDocumentDb(): Promise<HealthCheckItem> {
   }
 }
 
+async function checkTaskDb(): Promise<HealthCheckItem> {
+  try {
+    const health = await taskRepository.healthCheck();
+    return ok(
+      'tasks',
+      '任务库',
+      `IndexedDB v${health.version} 可读，任务 ${health.taskCount} 条，详情 ${health.detailCount} 条`,
+      health.stores.join(', '),
+    );
+  } catch (error: any) {
+    return fail('tasks', '任务库', '任务 IndexedDB 读取失败', error?.message);
+  }
+}
+
 async function checkTraceRead(): Promise<HealthCheckItem> {
   try {
     const response = await sendRuntimeMessage({
@@ -210,6 +225,7 @@ export async function runPluginHealthCheck(): Promise<HealthCheckItem[]> {
     checkDownloadsPermission(),
     checkPaddleOcrAssets(),
     checkDocumentDb(),
+    checkTaskDb(),
     checkTraceRead(),
   ]);
 }

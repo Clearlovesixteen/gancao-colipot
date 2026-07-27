@@ -62,7 +62,8 @@ flowchart LR
 
   subgraph RuntimeData["执行与数据层"]
     Content["content.js + content/tools.ts<br/>观察页面 / 执行动作 / 提取数据"]
-    ChromeStorage["chrome.storage.local<br/>登录态 / 模型配置 / 任务 / 工作流 / 草稿"]
+    ChromeStorage["chrome.storage.local<br/>登录态 / 模型配置 / 工作流 / 草稿 / 轻量启动状态"]
+    TaskRepository["IndexedDB: gancao_task_runtime<br/>任务摘要 / 输出 / Trace"]
     IndexedDB["IndexedDB: gancao_document_center<br/>assets / assetContents / chunks / results / rawFiles"]
   end
 
@@ -89,7 +90,7 @@ flowchart LR
 
   BrowserAuto --> Content
   BrowserAuto --> DocCenter
-  BrowserAuto --> ChromeStorage
+  BrowserAuto --> TaskRepository
 
   DocCenter --> IndexedDB
   DocCenter --> ChromeStorage
@@ -101,6 +102,8 @@ flowchart LR
   Content --> WebPage
   SidePanel --> ChromeStorage
   Dashboard --> ChromeStorage
+  SidePanel --> TaskRepository
+  Dashboard --> TaskRepository
   SidePanel --> IndexedDB
 ```
 

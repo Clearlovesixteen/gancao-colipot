@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   Alert,
   Button,
@@ -43,7 +43,8 @@ import type {
 import {
   AUTOMATION_TASK_TEMPLATES,
   deleteAutomationRun,
-  listAutomationRuns,
+  getAutomationRun,
+  listAutomationRunsPage,
   makeAutomationRunFromTemplate,
   patchAutomationRun,
   statusLabel,
@@ -174,7 +175,10 @@ const TaskOutputCard: React.FC<{ run: AutomationRun }> = ({ run }) => {
 };
 
 const AutomationTaskCenter: React.FC = () => {
+  const pageSize = 20;
   const [runs, setRuns] = useState<AutomationRun[]>([]);
+  const [runPage, setRunPage] = useState(1);
+  const [runTotal, setRunTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [keyword, setKeyword] = useState('');
   const [runningTask, setRunningTask] = useState<{ taskId: string } | null>(null);
@@ -189,20 +193,41 @@ const AutomationTaskCenter: React.FC = () => {
   const [workflows, setWorkflows] = useState<StoredAutomationWorkflow[]>([]);
   const [monitorChecks, setMonitorChecks] = useState<PageMonitorCheckRecord[]>([]);
 
-  const refresh = async () => {
+  const refresh = useCallback(async (page = runPage) => {
     setLoading(true);
     try {
-      setRuns(await listAutomationRuns());
+      const result = await listAutomationRunsPage({
+        offset: (page - 1) * pageSize,
+        limit: pageSize,
+        keyword,
+        status: statusFilter,
+        kind: kindFilter,
+      });
+      setRuns(result.items);
+      setRunTotal(result.total);
+      if (page > 1 && result.items.length === 0 && result.total > 0) {
+        setRunPage(page - 1);
+      }
     } finally {
       setLoading(false);
     }
-  };
+  }, [kindFilter, keyword, runPage, statusFilter]);
 
   useEffect(() => {
-    refresh();
     listDocumentAssets().then(setDocuments).catch(() => setDocuments([]));
     listAutomationWorkflows().then(setWorkflows).catch(() => setWorkflows([]));
   }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      refresh(runPage);
+    }, 180);
+    return () => window.clearTimeout(timer);
+  }, [refresh, runPage]);
+
+  useEffect(() => {
+    setRunPage(1);
+  }, [keyword, statusFilter, kindFilter]);
 
   useEffect(() => {
     if (detailRun?.kind !== 'page_monitor') {
@@ -229,18 +254,6 @@ const AutomationTaskCenter: React.FC = () => {
     chrome.runtime.onMessage.addListener(listener);
     return () => chrome.runtime.onMessage.removeListener(listener);
   }, [runningTask]);
-
-  const filteredRuns = useMemo(() => {
-    const text = keyword.trim().toLowerCase();
-    return runs.filter((run) => {
-      if (statusFilter !== 'all' && run.status !== statusFilter) return false;
-      if (kindFilter !== 'all' && run.kind !== kindFilter) return false;
-      if (!text) return true;
-      return [run.title, run.goal, run.resultSummary, run.error, run.tags?.join(' ')]
-        .filter(Boolean)
-        .some((value) => String(value).toLowerCase().includes(text));
-    });
-  }, [runs, keyword, statusFilter, kindFilter]);
 
   const handleCreateFromTemplate = async (templateId: string) => {
     const template = AUTOMATION_TASK_TEMPLATES.find((item) => item.id === templateId);
@@ -408,8 +421,15 @@ const AutomationTaskCenter: React.FC = () => {
   };
 
   const handleCopyFullLog = async (run: AutomationRun) => {
-    await navigator.clipboard.writeText(JSON.stringify(run, null, 2));
+    const fullRun = await getAutomationRun(run.id);
+    await navigator.clipboard.writeText(JSON.stringify(fullRun || run, null, 2));
     message.success('已复制完整任务记录');
+  };
+
+  const handleOpenDetail = async (run: AutomationRun) => {
+    setDetailRun(run);
+    const fullRun = await getAutomationRun(run.id);
+    if (fullRun) setDetailRun(fullRun);
   };
 
   const handleSaveWorkflowDraft = async (run: AutomationRun) => {
@@ -537,7 +557,7 @@ const AutomationTaskCenter: React.FC = () => {
               </Button>
             </Tooltip>
           )}
-          <Button size="small" icon={<EyeOutlined />} onClick={() => setDetailRun(run)}>
+          <Button size="small" icon={<EyeOutlined />} onClick={() => handleOpenDetail(run)}>
             详情
           </Button>
           {run.kind === 'browser_use' && (run.status === 'success' || run.status === 'partial') && (
@@ -613,7 +633,7 @@ const AutomationTaskCenter: React.FC = () => {
                 <Option value="idle">待运行</Option>
               </Select>
               <Search allowClear placeholder="搜索任务..." style={{ width: 260 }} onChange={(e) => setKeyword(e.target.value)} />
-              <Button icon={<ReloadOutlined />} onClick={refresh}>刷新</Button>
+              <Button icon={<ReloadOutlined />} onClick={() => refresh()}>刷新</Button>
             </Space>
           }
         >
@@ -621,8 +641,15 @@ const AutomationTaskCenter: React.FC = () => {
             rowKey="id"
             loading={loading}
             columns={columns}
-            dataSource={filteredRuns}
-            pagination={{ pageSize: 8 }}
+            dataSource={runs}
+            pagination={{
+              current: runPage,
+              pageSize,
+              total: runTotal,
+              showSizeChanger: false,
+              showTotal: (total) => `共 ${total} 条`,
+              onChange: setRunPage,
+            }}
             locale={{ emptyText: <Empty description="暂无任务记录，可先从模板加入任务" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
           />
         </Card>

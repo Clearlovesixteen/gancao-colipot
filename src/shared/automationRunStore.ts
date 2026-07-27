@@ -1,63 +1,9 @@
 import type { AutomationRun, AutomationRunStatus, AutomationTaskTemplate } from './automationTypes';
-
-export const AUTOMATION_RUNS_STORAGE_KEY = 'automationRuns';
-const MAX_RUNS = 200;
-
-export interface AutomationRunStoreAdapter {
-  get(key: string): Promise<Record<string, unknown>>;
-  set(values: Record<string, unknown>): Promise<void>;
-  remove?(key: string): Promise<void>;
-}
-
-function normalizeRuns(value: unknown): AutomationRun[] {
-  if (!Array.isArray(value)) return [];
-  return value
-    .map((item) => item as Partial<AutomationRun>)
-    .filter((item): item is AutomationRun => {
-      return Boolean(
-        item &&
-          typeof item.id === 'string' &&
-          typeof item.title === 'string' &&
-          typeof item.kind === 'string' &&
-          typeof item.status === 'string' &&
-          typeof item.createdAt === 'number' &&
-          typeof item.updatedAt === 'number',
-      );
-    })
-    .sort((a, b) => b.updatedAt - a.updatedAt);
-}
-
-function chromeStorageAdapter(): AutomationRunStoreAdapter | null {
-  const maybeChrome = (globalThis as any).chrome;
-  const local = maybeChrome?.storage?.local;
-  if (!local?.get || !local?.set) return null;
-  return {
-    get: (key) => local.get(key),
-    set: (values) => local.set(values),
-    remove: (key) => local.remove?.(key),
-  };
-}
-
-function localStorageAdapter(): AutomationRunStoreAdapter {
-  return {
-    async get(key) {
-      const raw = globalThis.localStorage?.getItem(key);
-      return { [key]: raw ? JSON.parse(raw) : undefined };
-    },
-    async set(values) {
-      Object.entries(values).forEach(([key, value]) => {
-        globalThis.localStorage?.setItem(key, JSON.stringify(value));
-      });
-    },
-    async remove(key) {
-      globalThis.localStorage?.removeItem(key);
-    },
-  };
-}
-
-function defaultAdapter(): AutomationRunStoreAdapter {
-  return chromeStorageAdapter() || localStorageAdapter();
-}
+import {
+  taskRepository,
+  type TaskRepositoryListOptions,
+  type TaskRepositoryPage,
+} from './taskRepository';
 
 export const AUTOMATION_TASK_TEMPLATES: AutomationTaskTemplate[] = [
   {
@@ -150,57 +96,45 @@ export const AUTOMATION_TASK_TEMPLATES: AutomationTaskTemplate[] = [
   },
 ];
 
-export async function listAutomationRuns(adapter = defaultAdapter()): Promise<AutomationRun[]> {
-  const result = await adapter.get(AUTOMATION_RUNS_STORAGE_KEY);
-  return normalizeRuns(result[AUTOMATION_RUNS_STORAGE_KEY]);
+export async function listAutomationRuns(options: TaskRepositoryListOptions = {}): Promise<AutomationRun[]> {
+  return taskRepository.list(options);
 }
 
-export async function getAutomationRun(id: string, adapter = defaultAdapter()): Promise<AutomationRun | null> {
-  const runs = await listAutomationRuns(adapter);
-  return runs.find((run) => run.id === id) || null;
+export async function listAutomationRunsPage(options: TaskRepositoryListOptions = {}): Promise<TaskRepositoryPage> {
+  return taskRepository.listPage(options);
+}
+
+export async function getAutomationRun(id: string): Promise<AutomationRun | null> {
+  return taskRepository.get(id);
 }
 
 export async function upsertAutomationRun(
   input: Omit<AutomationRun, 'createdAt' | 'updatedAt'> & Partial<Pick<AutomationRun, 'createdAt' | 'updatedAt'>>,
-  adapter = defaultAdapter(),
 ): Promise<AutomationRun> {
   const now = Date.now();
-  const runs = await listAutomationRuns(adapter);
-  const existing = runs.find((run) => run.id === input.id);
+  const existing = await taskRepository.get(input.id);
   const next: AutomationRun = {
     ...existing,
     ...input,
     createdAt: input.createdAt ?? existing?.createdAt ?? now,
     updatedAt: input.updatedAt ?? now,
   };
-  const merged = [next, ...runs.filter((run) => run.id !== input.id)]
-    .sort((a, b) => b.updatedAt - a.updatedAt)
-    .slice(0, MAX_RUNS);
-  await adapter.set({ [AUTOMATION_RUNS_STORAGE_KEY]: merged });
-  return next;
+  return taskRepository.upsert(next);
 }
 
 export async function patchAutomationRun(
   id: string,
   patch: Partial<Omit<AutomationRun, 'id' | 'createdAt'>>,
-  adapter = defaultAdapter(),
 ): Promise<AutomationRun | null> {
-  const existing = await getAutomationRun(id, adapter);
-  if (!existing) return null;
-  return upsertAutomationRun({ ...existing, ...patch, id, createdAt: existing.createdAt }, adapter);
+  return taskRepository.patch(id, patch);
 }
 
-export async function deleteAutomationRun(id: string, adapter = defaultAdapter()): Promise<void> {
-  const runs = await listAutomationRuns(adapter);
-  await adapter.set({ [AUTOMATION_RUNS_STORAGE_KEY]: runs.filter((run) => run.id !== id) });
+export async function deleteAutomationRun(id: string): Promise<void> {
+  await taskRepository.delete(id);
 }
 
-export async function clearAutomationRuns(adapter = defaultAdapter()): Promise<void> {
-  if (adapter.remove) {
-    await adapter.remove(AUTOMATION_RUNS_STORAGE_KEY);
-    return;
-  }
-  await adapter.set({ [AUTOMATION_RUNS_STORAGE_KEY]: [] });
+export async function clearAutomationRuns(): Promise<void> {
+  await taskRepository.clear();
 }
 
 export function makeAutomationRunFromTemplate(template: AutomationTaskTemplate): AutomationRun {
