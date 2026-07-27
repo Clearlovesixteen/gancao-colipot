@@ -14,6 +14,9 @@
 - `ModelGateway`: background-only 模型网关，读取用户本地配置，统一流式对话、JSON 规划、文本补全、取消和连接测试。SidePanel 不持有 API Key，也不直接请求模型服务。
 - `DocumentRepository`: 唯一资料访问层，所有上传、OCR、下载入库和资料问答都通过该仓库读写。重复的 `documentDb/documentStore` 已删除。
 - `TaskExecutorRegistry`: 统一运行 `browser_use / page_monitor / page_diagnosis / document_qa / ocr / extract / workflow`，统一状态、停止、结果和 trace snapshot。
+- `PageContextHub`: 页面诊断的唯一页面上下文入口，单次并行采集页面信息、语义观察、结构化数据、表格和控制台错误，并在发送给模型前压缩为有限摘要。
+- `pageSignals`: Content、PageContextHub 和 Browser Use 共用的页面信号定义与推导逻辑，统一登录、验证码、权限、空状态及脚本/资源/网络错误判断。
+- `DocumentContextHub`: 资料问答的唯一资料上下文入口，负责 chunk 检索、全文兜底、引用来源和 OCR/解析可靠性警告，不混入无关页面内容。
 
 ## V3.3-V4 产品能力
 

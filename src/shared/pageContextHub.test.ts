@@ -42,6 +42,7 @@ describe('collectPageContextHub', () => {
               },
             ],
             pageState: { kind: 'empty_page', hasModal: false, hasCaptcha: false, hasLoginSignal: false, hasEmptyState: true },
+            pageSignals: [{ type: 'empty', severity: 'info', message: '暂无数据', source: 'content' }],
             capturedAt: Date.now(),
           };
         }
@@ -69,5 +70,39 @@ describe('collectPageContextHub', () => {
     expect(context.actionSummary?.actions[0]).toMatchObject({ text: '查询', actionKind: 'search' });
     expect(context.tableSummary).toMatchObject({ tableCount: 1 });
     expect(context.tableCount).toBe(1);
+  });
+
+  it('compresses structured payloads and excludes raw html from model context', async () => {
+    const context = await collectPageContextHub({
+      includeStructuredData: true,
+      executeTool: async (toolName) => {
+        if (toolName === 'get_current_page_info') return { title: '页面', url: 'https://example.test/', text: '正文' };
+        if (toolName === 'observe_page') {
+          return {
+            success: true,
+            title: '页面',
+            url: 'https://example.test/',
+            viewport: { width: 1, height: 1, devicePixelRatio: 1 },
+            scroll: { x: 0, y: 0, maxX: 0, maxY: 0 },
+            elements: [],
+            capturedAt: 1,
+          };
+        }
+        if (toolName === 'extract_page_structured_data') {
+          return {
+            tables: [{
+              title: '大表格',
+              html: '<table>不应进入模型上下文</table>',
+              rows: Array.from({ length: 100 }, (_, index) => [`第 ${index} 行`, '内容']),
+            }],
+          };
+        }
+        return {};
+      },
+    });
+
+    const serialized = JSON.stringify(context.structuredData);
+    expect(serialized).not.toContain('不应进入模型上下文');
+    expect((context.structuredData?.tables[0] as any).rows).toHaveLength(8);
   });
 });

@@ -3,6 +3,7 @@ import type {
   ComputerUseVerificationResult,
   PlannedStep,
 } from '../shared/automationTypes';
+import { derivePageSignals, getBlockingPageSignal } from '../shared/pageSignals';
 
 function normalizeToolResult(result: any): any {
   if (result?.success === true && result?.result && typeof result.result === 'object') return result.result;
@@ -100,14 +101,17 @@ export function verifyComputerUseStep(input: {
 }): ComputerUseVerificationResult {
   const { step, result, before, after } = input;
 
-  if (after.observation.pageState?.hasCaptcha) {
-    return { success: false, blocking: true, reason: '页面出现验证码/安全验证，需要用户处理。' };
-  }
-  if (after.observation.pageState?.kind === 'login_page') {
-    return { success: false, blocking: true, reason: '页面疑似跳转到登录页，需要用户登录。' };
-  }
-  if (after.observation.pageState?.kind === 'permission_page' || after.observation.pageState?.hasPermissionDenied) {
-    return { success: false, blocking: true, reason: '页面提示权限不足，当前账号可能没有目标功能权限。' };
+  const blockingPageSignal = getBlockingPageSignal(
+    after.pageSignals
+    || after.observation.pageSignals
+    || derivePageSignals({
+      pageState: after.observation.pageState,
+      textPreview: after.pageTextPreview,
+      title: after.observation.title,
+    }),
+  );
+  if (blockingPageSignal) {
+    return { success: false, blocking: true, reason: blockingPageSignal.message };
   }
 
   if (step.action === 'finish') {

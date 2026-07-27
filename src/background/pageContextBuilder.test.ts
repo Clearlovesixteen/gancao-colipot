@@ -105,6 +105,35 @@ describe('pageContextBuilder', () => {
     expect(context.pageTextPreview).toContain('库存预警');
   });
 
+  it('reuses the unified page signals emitted by observe_page', async () => {
+    const executeBrowserTool = vi.fn(async (_tabId: number, toolName: string) => {
+      if (toolName === 'observe_page') {
+        return {
+          ...observation,
+          pageState: {
+            kind: 'permission_page',
+            hasModal: false,
+            hasCaptcha: false,
+            hasLoginSignal: false,
+            hasPermissionDenied: true,
+          },
+          pageSignals: [{ type: 'permission', severity: 'error', message: '没有权限', source: 'content' }],
+        };
+      }
+      if (toolName === 'extract_page_structured_data') return { headings: [], fields: [], tables: [], lists: [] };
+      if (toolName === 'extract_page_tables') return { tables: [] };
+      if (toolName === 'get_page_info') return { text: '' };
+      return {};
+    });
+
+    const context = await buildComputerUsePageContext({ tabId: 1, intent: baseIntent, executeBrowserTool });
+
+    expect(context.pageSignals).toEqual([
+      expect.objectContaining({ type: 'permission', message: '没有权限' }),
+    ]);
+    expect(context.observation.pageSignals).toEqual(context.pageSignals);
+  });
+
   it('keeps target navigation candidates even when they appear deep in a large sidebar', async () => {
     const manyMenus = Array.from({ length: 220 }, (_, index) => ({
       elementId: `nav_${index}`,

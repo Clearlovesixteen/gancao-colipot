@@ -11,6 +11,7 @@ import type {
 } from '../shared/automationTypes';
 import { extractTablesFromComputerUseResult, summarizeExtractedTables } from '../shared/computerUseResults';
 import { summarizeBrowserUseOutputs } from './browserUseVariables';
+import { derivePageSignals, getBlockingPageSignal } from '../shared/pageSignals';
 
 type PlannerLLM = (input: {
   system: string;
@@ -1110,11 +1111,17 @@ function buildRulePlan(
     return makeCompletePlan(completedExtract);
   }
 
-  if (context.observation.pageState?.hasCaptcha) {
-    return makeBlockedPlan('当前页面出现验证码/安全验证，需要用户先手动处理。');
-  }
-  if (context.observation.pageState?.kind === 'login_page') {
-    return makeBlockedPlan('当前页面疑似登录页，需要用户先完成登录。');
+  const blockingPageSignal = getBlockingPageSignal(
+    context.pageSignals
+    || context.observation.pageSignals
+    || derivePageSignals({
+      pageState: context.observation.pageState,
+      textPreview: context.pageTextPreview,
+      title: context.observation.title,
+    }),
+  );
+  if (blockingPageSignal) {
+    return makeBlockedPlan(blockingPageSignal.message);
   }
 
   const entities = intent.entities || [];

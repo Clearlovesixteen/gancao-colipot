@@ -285,6 +285,7 @@ export interface ComputerUseIntent {
 
 export interface ComputerUsePageContext {
   observation: BrowserObservation;
+  pageSignals?: BrowserPageSignal[];
   structuredData?: {
     headings: string[];
     fields: unknown[];

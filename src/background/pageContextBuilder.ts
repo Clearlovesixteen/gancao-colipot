@@ -8,6 +8,7 @@ import type {
 } from '../shared/automationTypes';
 import { buildObservedCollections } from './collectionBuilder';
 import { evaluateObservationQuality } from './observationQuality';
+import { derivePageSignals } from '../shared/pageSignals';
 
 type ExecuteBrowserTool = (tabId: number, toolName: string, args: any) => Promise<any>;
 
@@ -235,11 +236,18 @@ export async function buildComputerUsePageContext(input: {
   const observationQuality = evaluateObservationQuality({ observation, collections });
   const enrichedObservation: BrowserObservation = {
     ...observation,
+    pageSignals: derivePageSignals({
+      pageState: observation.pageState,
+      existingSignals: observation.pageSignals,
+      textPreview: pageTextPreview,
+      title: observation.title,
+    }),
     qualityReport: observationQuality,
   };
 
   return {
     observation: enrichedObservation,
+    pageSignals: enrichedObservation.pageSignals || [],
     structuredData,
     pageTextPreview,
     navigationCandidates: getNavigationCandidates(observation.elements, [

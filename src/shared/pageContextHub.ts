@@ -1,11 +1,12 @@
-import type { BrowserObservation, ObservedCollection } from './automationTypes';
+import type { BrowserObservation, BrowserPageSignal, ObservedCollection } from './automationTypes';
+import { derivePageSignals } from './pageSignals';
 
 export interface ContextHubResult {
   title: string;
   url: string;
   pageState?: BrowserObservation['pageState'];
-  signals: Array<{ type: string; severity: 'info' | 'warning' | 'error'; message: string }>;
-  pageSignals: Array<{ type: string; severity: 'info' | 'warning' | 'error'; message: string }>;
+  signals: BrowserPageSignal[];
+  pageSignals: BrowserPageSignal[];
   collections: Array<{
     type: string;
     title?: string;
@@ -105,30 +106,26 @@ function summarizeActions(collections: ObservedCollection[] = []): ContextHubRes
   return actions.length ? { actionCount: actions.length, actions } : undefined;
 }
 
-function buildSignals(input: {
-  observation?: BrowserObservation;
-  consoleErrors: any[];
-  textPreview: string;
-}): ContextHubResult['signals'] {
-  const signals: ContextHubResult['signals'] = [];
-  const pageState = input.observation?.pageState;
-  const haystack = `${input.textPreview} ${input.observation?.title || ''}`;
-  if (pageState?.hasLoginSignal || /(登录|登陆|扫码登录|请登录|login|sign in)/i.test(haystack)) {
-    signals.push({ type: 'login', severity: 'warning', message: '页面出现登录或未登录信号。' });
+function compactStructuredValue(value: unknown, depth = 0): unknown {
+  if (value === null || value === undefined || typeof value === 'boolean' || typeof value === 'number') return value;
+  if (typeof value === 'string') return value.slice(0, 800);
+  if (depth >= 2) return String(value).slice(0, 800);
+  if (Array.isArray(value)) return value.slice(0, 8).map((item) => compactStructuredValue(item, depth + 1));
+  if (typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([key]) => !/^(html|outerHTML|innerHTML|rawHtml|screenshot|dataUrl)$/i.test(key))
+        .slice(0, 16)
+        .map(([key, item]) => [key, compactStructuredValue(item, depth + 1)]),
+    );
   }
-  if (pageState?.hasCaptcha || /(验证码|安全验证|captcha)/i.test(haystack)) {
-    signals.push({ type: 'captcha', severity: 'warning', message: '页面出现验证码或安全验证信号。' });
-  }
-  if (pageState?.hasPermissionDenied || /(无权限|权限不足|403|forbidden|unauthorized|未授权)/i.test(haystack)) {
-    signals.push({ type: 'permission', severity: 'error', message: '页面出现权限不足信号。' });
-  }
-  if (pageState?.hasEmptyState || /(暂无数据|无数据|empty|no data)/i.test(haystack)) {
-    signals.push({ type: 'empty', severity: 'info', message: '页面可能为空状态或无数据。' });
-  }
-  if (input.consoleErrors.length) {
-    signals.push({ type: 'console_error', severity: 'error', message: `捕获到 ${input.consoleErrors.length} 条控制台/资源错误。` });
-  }
-  return signals;
+  return String(value).slice(0, 800);
+}
+
+function compactStructuredList(value: unknown, limit: number): unknown[] {
+  return Array.isArray(value)
+    ? value.slice(0, limit).map((item) => compactStructuredValue(item))
+    : [];
 }
 
 export async function collectPageContextHub(input: {
@@ -172,7 +169,14 @@ export async function collectPageContextHub(input: {
   const observation = unwrapResult(observationResult) as BrowserObservation | undefined;
   const structured = unwrapResult(structuredResult);
   const tables = unwrapResult(tablesResult);
-  const consoleErrors = getErrors(consoleResult);
+  const consoleErrors = getErrors(consoleResult).slice(-50).map((error) => ({
+    source: error?.source,
+    level: error?.level,
+    message: String(error?.message || error || '').slice(0, 1200),
+    stack: error?.stack ? String(error.stack).slice(0, 2400) : undefined,
+    resourceUrl: error?.resourceUrl,
+    timestamp: error?.timestamp,
+  }));
   const structuredPayload = structured?.data || structured;
   const textPreview = String(pageInfo?.text || structuredPayload?.text || '').slice(0, 4000);
   const collections = observation?.collections || [];
@@ -181,7 +185,13 @@ export async function collectPageContextHub(input: {
     : Array.isArray(structuredPayload?.tables)
       ? structuredPayload.tables.length
       : 0;
-  const pageSignals = buildSignals({ observation, consoleErrors, textPreview });
+  const pageSignals = derivePageSignals({
+    pageState: observation?.pageState,
+    existingSignals: observation?.pageSignals,
+    consoleErrors,
+    textPreview,
+    title: pageInfo?.title || observation?.title,
+  });
 
   return {
     title: pageInfo?.title || observation?.title || structuredPayload?.title || '当前页面',
@@ -192,10 +202,10 @@ export async function collectPageContextHub(input: {
     collections: summarizeCollections(collections),
     consoleErrors,
     structuredData: structuredPayload ? {
-      headings: Array.isArray(structuredPayload.headings) ? structuredPayload.headings.slice(0, 30) : [],
-      fields: Array.isArray(structuredPayload.fields) ? structuredPayload.fields.slice(0, 80) : [],
-      tables: Array.isArray(structuredPayload.tables) ? structuredPayload.tables.slice(0, 10) : [],
-      lists: Array.isArray(structuredPayload.lists) ? structuredPayload.lists.slice(0, 20) : [],
+      headings: compactStructuredList(structuredPayload.headings, 30),
+      fields: compactStructuredList(structuredPayload.fields, 80),
+      tables: compactStructuredList(structuredPayload.tables, 10),
+      lists: compactStructuredList(structuredPayload.lists, 20),
     } : undefined,
     structuredAsset: structured?.asset || structuredResult?.asset,
     formSummary: summarizeForms(collections),
