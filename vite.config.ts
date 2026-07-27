@@ -142,7 +142,7 @@ export default defineConfig({
         dashboard: resolve(__dirname, 'src/dashboard/index.tsx'),
         background: resolve(__dirname, 'src/background/index.ts'),
         content: resolve(__dirname, 'src/content/index.ts'),
-        paddleocrSandbox: resolve(__dirname, 'src/sidePanel/utils/paddleocrSandbox.ts'),
+        paddleocrSandbox: resolve(__dirname, 'src/sandbox/paddleocrSandbox.ts'),
         ocrHost: resolve(__dirname, 'src/offscreen/ocrHost.ts'),
       },
       output: {

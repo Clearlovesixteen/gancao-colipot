@@ -6,8 +6,8 @@
 - `dashboard.js`: 自动化工作台，承载工作流列表、工作流编辑器、流程图和运行日志。
 - `background.js`: 扩展后台模块化服务工作线程，是消息路由、AI 编排、页面工具网关、自动化执行、下载入库和资料工具中心。
 - `content.js`: 注入业务页面，负责页面观察、DOM 动作执行、搜索结果提取、控制台错误采集、选中文本入口和页面登录态同步。
-- `ocrHost.js`: Offscreen Document OCR 宿主，在 SidePanel 关闭后继续运行 PaddleOCR 任务。
-- `paddleocrSandbox.js`: Chrome sandbox 中的 PaddleOCR/ONNX Runtime，隔离需要 eval 的模型运行时。
+- `ocrHost.js`: Offscreen Document OCR 宿主，在 SidePanel 关闭后继续运行 PaddleOCR 任务；负责读取资料原文件、逐页进度和结果入库。
+- `paddleocrSandbox.js`: 独立 `src/sandbox` 运行时中的 PaddleOCR/ONNX Runtime，隔离需要 eval 的模型代码，不属于 SidePanel 依赖图。
 
 ## V3.2 统一底座
 

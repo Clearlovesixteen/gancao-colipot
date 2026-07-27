@@ -3,7 +3,7 @@ import type { TaskResult } from './taskExecutorRegistry';
 
 const OFFSCREEN_URL = 'ocrHost.html';
 
-async function ensureOcrHost(): Promise<void> {
+export async function ensureOcrHost(): Promise<void> {
   if (!chrome.offscreen) throw new Error('当前 Chrome 版本不支持 Offscreen Document');
   const contexts = chrome.runtime.getContexts
     ? await chrome.runtime.getContexts({ contextTypes: [chrome.runtime.ContextType.OFFSCREEN_DOCUMENT], documentUrls: [chrome.runtime.getURL(OFFSCREEN_URL)] })
