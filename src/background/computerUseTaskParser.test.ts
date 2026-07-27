@@ -61,7 +61,7 @@ describe('computerUseTaskParser', () => {
     }));
   });
 
-  it('parses YouTube site search tasks into the search fast path', () => {
+  it('parses YouTube site search signals for the unified phase compiler', () => {
     const intent = parseComputerUseTask('请自动操作：打开youtube，搜索贝爷，然后点击第1个搜索结果');
 
     expect(intent).toEqual(expect.objectContaining({

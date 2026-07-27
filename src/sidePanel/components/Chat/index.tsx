@@ -1,18 +1,15 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Input, Button, Space, Typography, Spin, Avatar, Badge, Image, Tag, Drawer, Tooltip, Dropdown, Menu, message, Modal, Tabs, Card, Table, Empty, Timeline, Collapse, List, Select, Switch } from 'antd';
 import { SendOutlined, UserOutlined, RobotOutlined, ThunderboltOutlined, PaperClipOutlined, DeleteOutlined, ToolOutlined, AppstoreOutlined, MoreOutlined, StopOutlined, CopyOutlined, ReloadOutlined, HistoryOutlined, PlusOutlined, EditOutlined, InboxOutlined } from '@ant-design/icons';
-import { Message } from '../../utils/sse';
+import type { NativeFileReference } from '../../../shared/modelRuntimeTypes';
 import Tools from '../Tools';
 import type { DocumentReferenceTarget } from '../Tools';
 import moment from 'moment';
 import styles from './Chat.module.scss';
 import { parseUploadedFile, type ParsedUploadedFile } from '../../../shared/fileParser';
 import type { NativeLLMFile } from '../../utils/llm-files';
-import type { NativeFileReference } from '../../utils/glm-client';
 import type { DocumentAsset, DocumentContent, NativeUploadStatus, OcrStatus, RequirementTaskResult, StructuredOcrResult } from '../../../shared/documentTypes';
-import {
-  shouldRouteToDocumentQa,
-} from '../../utils/agentOrchestrator';
+import { shouldRouteToDocumentQa } from '../../utils/documentQaRouting';
 import {
   getDocumentContent,
   makeDocumentId,
@@ -20,127 +17,52 @@ import {
   saveDocumentContent,
   saveRawFile,
   upsertDocumentAsset,
-} from '../../utils/documentStore';
+} from '../../../shared/documentRepository';
 import { structuredOcrToMarkdown } from '../../../shared/ocrStructurer';
 import { formatComputerUseTablesMessage, getLatestExtractedTablesFromSteps } from '../../../shared/computerUseResults';
-import type { BrowserObservation, ComputerUseAction, ComputerUseTrace, ComputerUseTraceEntry } from '../../../shared/automationTypes';
+import type { BrowserObservation, ComputerUseAction, ComputerUseResumeCheckpoint, ComputerUseTrace, ComputerUseTraceEntry } from '../../../shared/automationTypes';
 import { COPILOT_COMMANDS, getQuickCommands, type CopilotCommandId } from '../../utils/copilotCommands';
 import { useCommandRecommendations } from './useCommandRecommendations';
-import { createAndRunChatTask } from '../../utils/chatTaskClient';
+import {
+  createAndRunChatTask,
+  createAutomationTaskId,
+  stopAutomationTask,
+} from '../../../shared/automationTaskClient';
 import { getAutomationRun } from '../../../shared/automationRunStore';
 import { listCustomCommands, renderCustomCommandMetadata, renderCustomCommandTemplate, type CustomCopilotCommand } from '../../../shared/customCommandStore';
 import {
   buildMemoryContext,
   archiveChatSession,
-  createChatSession,
   deleteChatSession,
-  getChatSessionMessages,
   inferMemoryType,
-  listChatSessions,
-  saveChatMessage,
-  suggestMemoryCandidatesFromMessage,
   updateChatSession,
   upsertUserMemory,
-  type ChatSession,
-  type StoredChatMessage,
 } from '../../../shared/userMemoryStore';
 import {
   getActiveBrowserTabId,
   shouldStopTypingForGatewayStatus,
 } from '../../utils/chatRequestState';
+import {
+  hasRenderableChatMessage,
+  mergeIncomingChatMessage,
+  shouldPersistIncomingChatMessage,
+} from '../../utils/chatMessageState';
+import { RUNTIME_BUILD_ID } from '../../../shared/runtimeVersion';
+import { useChatSessions } from './useChatSessions';
+import type {
+  ChatAttachmentItem,
+  ChatMessage,
+  ComputerUseTaskStatus,
+  ComputerUseTaskTraceState,
+  FileAttachment,
+  OcrResultMessageData,
+  OcrViewerState,
+} from './types';
 
 const { TextArea } = Input;
 const { Text, Title } = Typography;
 const { TabPane } = Tabs;
 const { Panel } = Collapse;
-
-interface FileAttachment {
-  uid: string;
-  fileId: string;
-  name: string;
-  type: string;
-  size: number;
-  url?: string;
-  thumbUrl?: string;
-  parsed?: ParsedUploadedFile;
-  parseStatus: ParsedUploadedFile['status'];
-  parseWarning?: string;
-  parseError?: string;
-  nativeFile?: NativeLLMFile;
-  nativeUploadStatus: NativeUploadStatus | 'uploading';
-  nativeUploadError?: string;
-  ocrStatus: OcrStatus;
-  ocrProgress?: number;
-}
-
-type ChatMessage = Message & {
-  llmContent?: string;
-  nativeFiles?: NativeFileReference[];
-  kind?: 'text' | 'ocr_result' | 'file_attachment' | 'computer_use_task' | 'tool_result' | 'diagnosis_result' | 'document_qa_result';
-  computerUseTrace?: ComputerUseTaskTraceState;
-  attachments?: ChatAttachmentItem[];
-  ocrResult?: OcrResultMessageData;
-  documentQaResult?: { answer: string; sources: Array<{ documentId: string; documentTitle?: string; fileName?: string; pageNumber?: number; sectionTitle?: string; chunkId?: string; excerpt?: string }> };
-};
-
-type ChatAttachmentItem = {
-  id: string;
-  fileId: string;
-  name: string;
-  type: string;
-  size: number;
-  thumbUrl?: string;
-  parseStatus: ParsedUploadedFile['status'];
-  nativeUploadStatus: NativeUploadStatus | 'uploading';
-  ocrStatus: OcrStatus;
-};
-
-type OcrResultMessageData = {
-  fileName: string;
-  documentId: string;
-  status: 'success' | 'low_confidence' | 'empty';
-  pageCount: number;
-  fieldCount: number;
-  tableCount: number;
-  sectionCount: number;
-  previewFields: Array<{ key: string; value: string }>;
-  warnings: string[];
-  text: string;
-  structuredOcr?: StructuredOcrResult;
-};
-
-type StoredUploadedFile = {
-  id: string;
-  name: string;
-  type: string;
-  size: number;
-  uploadTime: number;
-  content: string;
-  parsed: ParsedUploadedFile;
-  nativeFile?: NativeLLMFile;
-  asset?: DocumentAsset;
-};
-
-type OcrViewerState = {
-  fileName: string;
-  documentId: string;
-  text: string;
-  structuredOcr?: StructuredOcrResult;
-};
-
-type ComputerUseTaskStatus = 'running' | 'waiting_confirmation' | 'finished' | 'error' | 'stopped';
-
-type ComputerUseTaskTraceState = {
-  runId: string;
-  goal: string;
-  status: ComputerUseTaskStatus;
-  currentStep?: string;
-  summary?: string;
-  error?: string;
-  entries: ComputerUseTraceEntry[];
-  lastObservation?: BrowserObservation;
-  steps?: Array<{ action?: ComputerUseAction; result?: unknown }>;
-};
 
 const MAX_LLM_FILE_CONTEXT_LENGTH = 60000;
 
@@ -305,10 +227,12 @@ function makeComputerUseEntryFromEvent(event: any): ComputerUseTraceEntry {
       phaseGoal: event.phaseGoal,
       phase: event.phase,
       runState: event.runState,
+      resumeCheckpoint: event.resumeCheckpoint,
       result: {
       steps: event.steps,
       verification: event.verification,
       runState: event.runState,
+      resumeCheckpoint: event.resumeCheckpoint,
     },
   };
 }
@@ -328,6 +252,7 @@ function traceStateFromBackgroundTrace(trace: ComputerUseTrace): ComputerUseTask
     error: lastEntry?.error,
     entries: trace.entries,
     lastObservation: [...trace.entries].reverse().find((entry) => entry.observation)?.observation,
+    resumeCheckpoint: [...trace.entries].reverse().find((entry) => entry.resumeCheckpoint)?.resumeCheckpoint,
   };
 }
 const MAX_LLM_TEXT_PER_FILE = 24000;
@@ -562,6 +487,7 @@ function parseMarkdownTableRow(line: string): string[] {
 function renderMarkdownTable(lines: string[], key: string) {
   const headers = parseMarkdownTableRow(lines[0] || '');
   const rows = lines.slice(2).map(parseMarkdownTableRow).filter(row => row.some(Boolean));
+
   return (
     <div key={key} className={styles.markdownTableWrap}>
       <table className={styles.markdownTable}>
@@ -835,7 +761,6 @@ const OcrResultCard: React.FC<{
 };
 
 const Chat: React.FC = () => {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputValue, setInputValue] = useState('');
   const [connectionStatus, setConnectionStatus] = useState<'connected' | 'disconnected' | 'connecting' | 'error'>('disconnected');
   const [isTyping, setIsTyping] = useState(false);
@@ -843,14 +768,10 @@ const Chat: React.FC = () => {
   const [toolsVisible, setToolsVisible] = useState(false);
   const [toolsInitialTool, setToolsInitialTool] = useState<string | null>(null);
   const [documentReference, setDocumentReference] = useState<DocumentReferenceTarget | null>(null);
-  const [sessionsVisible, setSessionsVisible] = useState(false);
-  const [chatSessions, setChatSessions] = useState<ChatSession[]>([]);
-  const [sessionQuery, setSessionQuery] = useState('');
-  const [showArchivedSessions, setShowArchivedSessions] = useState(false);
   const [customCommands, setCustomCommands] = useState<CustomCopilotCommand[]>([]);
-  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [ocrViewer, setOcrViewer] = useState<OcrViewerState | null>(null);
   const [computerUseRunId, setComputerUseRunId] = useState<string | null>(null);
+  const [browserUseTaskId, setBrowserUseTaskId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -858,118 +779,30 @@ const Chat: React.FC = () => {
   const stoppedAiRequestIdsRef = useRef<Set<string>>(new Set());
   const shouldAutoScrollRef = useRef(true);
   const computerUseRunIdRef = useRef<string | null>(null);
-  const startComputerUseRef = useRef<((goal?: string) => void) | null>(null);
-  const currentSessionIdRef = useRef<string | null>(null);
+  const browserUseTaskIdRef = useRef<string | null>(null);
+  const startComputerUseRef = useRef<((goal?: string, resumeCheckpoint?: ComputerUseResumeCheckpoint) => void) | null>(null);
   const chatTaskIdsRef = useRef<Set<string>>(new Set());
   const ocrTaskAssetsRef = useRef<Map<string, string>>(new Map());
   const pendingModelProfileIdRef = useRef<string | undefined>();
-
-  useEffect(() => {
-    currentSessionIdRef.current = currentSessionId;
-  }, [currentSessionId]);
-
-  const refreshChatSessions = useCallback(async () => {
-    setChatSessions(await listChatSessions({ includeArchived: showArchivedSessions, query: sessionQuery }));
-  }, [sessionQuery, showArchivedSessions]);
-
-  useEffect(() => {
-    if (sessionsVisible) refreshChatSessions().catch(() => {});
-  }, [sessionsVisible, refreshChatSessions]);
-
-  const toStoredChatMessage = useCallback((msg: ChatMessage, sessionId: string): StoredChatMessage => ({
-    id: msg.id,
-    sessionId,
-    role: msg.type === 'user' ? 'user' : msg.type === 'assistant' ? 'assistant' : msg.type === 'system' ? 'system' : 'assistant',
-    content: msg.llmContent || msg.content || '',
-    kind: msg.kind,
-    attachments: msg.attachments?.map((item) => ({
-      id: item.id,
-      name: item.name,
-      type: item.type,
-      size: item.size,
-    })),
-    toolCalls: msg.tool_calls?.map((tool) => ({ name: tool.name, arguments: tool.arguments })),
-    computerUseRunId: msg.computerUseTrace?.runId,
-    timestamp: msg.timestamp || Date.now(),
-  }), []);
-
-  const persistChatMessage = useCallback((msg: ChatMessage) => {
-    const sessionId = currentSessionIdRef.current;
-    if (!sessionId || !msg?.id) return;
-    saveChatMessage(toStoredChatMessage(msg, sessionId))
-      .then(async () => {
-        if (msg.type === 'user') {
-          await suggestMemoryCandidatesFromMessage({
-            content: msg.llmContent || msg.content || '',
-            sessionId,
-            messageId: msg.id,
-          });
-        }
-        await refreshChatSessions();
-      })
-      .catch((error) => console.warn('[ChatMemory] 保存聊天消息失败:', error));
-  }, [refreshChatSessions, toStoredChatMessage]);
-
-  const toChatMessage = useCallback((msg: StoredChatMessage): ChatMessage => ({
-    id: msg.id,
-    content: msg.content,
-    llmContent: msg.content,
-    type: msg.role === 'user' ? 'user' : msg.role === 'system' ? 'system' : 'assistant',
-    timestamp: msg.timestamp,
-    kind: msg.kind as ChatMessage['kind'],
-    attachments: msg.attachments?.map((item) => ({
-      id: item.id || `${msg.id}_${item.name}`,
-      fileId: item.id || '',
-      name: item.name,
-      type: item.type || '',
-      size: item.size || 0,
-      parseStatus: 'parsed',
-      nativeUploadStatus: 'skipped',
-      ocrStatus: 'not_needed',
-    })),
-    tool_calls: msg.toolCalls?.map((tool, index) => ({
-      id: `${msg.id}_tool_${index}`,
-      name: tool.name,
-      arguments: tool.arguments || {},
-    })),
-  }), []);
-
-  const loadChatSession = useCallback(async (sessionId: string) => {
-    const storedMessages = await getChatSessionMessages(sessionId);
-    setCurrentSessionId(sessionId);
-    currentSessionIdRef.current = sessionId;
-    setMessages(storedMessages.map(toChatMessage));
-    setSessionsVisible(false);
-    shouldAutoScrollRef.current = true;
-    setTimeout(() => messagesEndRef.current?.scrollIntoView({ block: 'end' }), 0);
-  }, [toChatMessage]);
-
-  const createNewChatSession = useCallback(async () => {
-    const session = await createChatSession();
-    await refreshChatSessions();
-    setCurrentSessionId(session.id);
-    currentSessionIdRef.current = session.id;
-    setMessages([]);
-    setSessionsVisible(false);
-  }, [refreshChatSessions]);
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const sessions = await listChatSessions();
-      const session = sessions[0] || await createChatSession();
-      const storedMessages = await getChatSessionMessages(session.id);
-      if (cancelled) return;
-      setChatSessions(sessions[0] ? sessions : [session]);
-      setCurrentSessionId(session.id);
-      currentSessionIdRef.current = session.id;
-      setMessages(storedMessages.map(toChatMessage));
-    })().catch((error) => console.warn('[ChatMemory] 初始化会话失败:', error));
-
-    return () => {
-      cancelled = true;
-    };
-  }, [toChatMessage]);
+  const {
+    messages,
+    setMessages,
+    isSessionLoading,
+    sessionLoadError,
+    sessionsVisible,
+    setSessionsVisible,
+    chatSessions,
+    sessionQuery,
+    setSessionQuery,
+    showArchivedSessions,
+    setShowArchivedSessions,
+    currentSessionId,
+    currentSessionIdRef,
+    refreshChatSessions,
+    persistChatMessage,
+    loadChatSession,
+    createNewChatSession,
+  } = useChatSessions({ messagesEndRef, shouldAutoScrollRef });
 
   const addAssistantMessage = useCallback((content: string) => {
     const assistantMessage: ChatMessage = {
@@ -1161,6 +994,7 @@ const Chat: React.FC = () => {
         nextTrace.error = event.error || '自动操作失败';
         nextTrace.lastObservation = event.lastObservation || trace.lastObservation;
         nextTrace.steps = event.steps || trace.steps;
+        nextTrace.resumeCheckpoint = event.resumeCheckpoint || trace.resumeCheckpoint;
       }
       return nextTrace;
     });
@@ -1189,7 +1023,7 @@ const Chat: React.FC = () => {
   }, []);
 
   const retryComputerUse = useCallback((trace: ComputerUseTaskTraceState) => {
-    startComputerUseRef.current?.(trace.goal);
+    startComputerUseRef.current?.(trace.goal, trace.resumeCheckpoint);
   }, []);
 
   const requestDebuggerPermission = useCallback(async () => {
@@ -1241,6 +1075,7 @@ const Chat: React.FC = () => {
       ])
         .then(([memoryContext, contextTabId]) => chrome.runtime.sendMessage({
           type: 'SEND_MESSAGE',
+          clientBuildId: RUNTIME_BUILD_ID,
           requestId,
           messageHistory,
           memoryContext: memoryContext.contextText,
@@ -1281,24 +1116,18 @@ const Chat: React.FC = () => {
   }, [sendPromptToAI]);
 
   const handleStopGeneration = useCallback(() => {
-    if (computerUseRunIdRef.current) {
-      const runId = computerUseRunIdRef.current;
-      chrome.runtime.sendMessage({ type: 'STOP_COMPUTER_USE', runId }, (response) => {
-        const runtimeError = chrome.runtime.lastError?.message;
-        setIsTyping(false);
-        setComputerUseRunId(null);
-        computerUseRunIdRef.current = null;
-        if (runtimeError || response?.success === false) {
-          message.error(response?.error || runtimeError || '停止自动操作失败');
-          return;
-        }
-        mergeComputerUseEvent({
-          type: 'COMPUTER_USE_ERROR',
-          runId,
-          goal: '自动操作任务',
-          error: '已停止',
+    if (browserUseTaskIdRef.current) {
+      const taskId = browserUseTaskIdRef.current;
+      stopAutomationTask(taskId)
+        .then(() => {
+          setIsTyping(false);
+          setBrowserUseTaskId(null);
+          browserUseTaskIdRef.current = null;
+        })
+        .catch((error: any) => {
+          setIsTyping(false);
+          message.error(error?.message || '停止自动操作失败');
         });
-      });
       return;
     }
 
@@ -1318,9 +1147,9 @@ const Chat: React.FC = () => {
       }
       addAssistantMessage('已停止生成。');
     });
-  }, [addAssistantMessage, mergeComputerUseEvent]);
+  }, [addAssistantMessage]);
 
-  const startComputerUse = useCallback((goal?: string) => {
+  const startComputerUse = useCallback((goal?: string, resumeCheckpoint?: ComputerUseResumeCheckpoint) => {
     const finalGoal = (goal || inputValue.trim()).trim();
     if (!finalGoal) {
       setInputValue('请自动操作：');
@@ -1338,46 +1167,51 @@ const Chat: React.FC = () => {
     persistChatMessage(userMessage);
     setInputValue('');
     setIsTyping(true);
+    const taskId = createAutomationTaskId();
+    browserUseTaskIdRef.current = taskId;
+    setBrowserUseTaskId(taskId);
+    chatTaskIdsRef.current.add(taskId);
     let startupSettled = false;
     const startupTimer = window.setTimeout(() => {
       if (startupSettled) return;
       startupSettled = true;
       setIsTyping(false);
+      browserUseTaskIdRef.current = null;
+      setBrowserUseTaskId(null);
+      chatTaskIdsRef.current.delete(taskId);
       addAssistantMessage('自动操作启动超时：没有收到后台响应。请重新加载插件后重试，或查看扩展 background 控制台是否有报错。');
     }, 10000);
 
-    chrome.runtime.sendMessage({
-      type: 'RUN_COMPUTER_USE',
+    createAndRunChatTask({
+      id: taskId,
+      kind: 'computer_use',
+      title: `Browser Use：${finalGoal.slice(0, 40)}`,
       goal: finalGoal,
-      maxSteps: 10,
-      allowHighRisk: false,
-    }, async (response) => {
+      metadata: {
+        maxSteps: 10,
+        allowHighRisk: false,
+        resumeCheckpoint,
+      },
+    }).then(() => {
       if (startupSettled) return;
       startupSettled = true;
       window.clearTimeout(startupTimer);
-      const runtimeError = chrome.runtime.lastError?.message;
-      if (response?.code === 'UNAUTHENTICATED') {
+    }).catch(async (error: any) => {
+      if (startupSettled) return;
+      startupSettled = true;
+      window.clearTimeout(startupTimer);
+      browserUseTaskIdRef.current = null;
+      setBrowserUseTaskId(null);
+      chatTaskIdsRef.current.delete(taskId);
+      if (error?.code === 'UNAUTHENTICATED') {
         setIsTyping(false);
         await handleUnauthenticated();
         return;
       }
-      if (runtimeError || !response?.success) {
-        setIsTyping(false);
-        addAssistantMessage(`自动操作启动失败：${response?.error || runtimeError || '请稍后重试'}`);
-        return;
-      }
-      setComputerUseRunId(response.runId);
-      computerUseRunIdRef.current = response.runId;
-      mergeComputerUseEvent({
-        type: 'COMPUTER_USE_PROGRESS',
-        runId: response.runId,
-        goal: finalGoal,
-        stepIndex: 0,
-        state: 'observing',
-        result: { summary: '后台已接收自动操作任务，正在准备观察当前页面...' },
-      });
+      setIsTyping(false);
+      addAssistantMessage(`自动操作启动失败：${error?.message || '请稍后重试'}`);
     });
-  }, [addAssistantMessage, handleUnauthenticated, inputValue, mergeComputerUseEvent, persistChatMessage]);
+  }, [addAssistantMessage, handleUnauthenticated, inputValue, persistChatMessage]);
 
   useEffect(() => {
     startComputerUseRef.current = startComputerUse;
@@ -1408,36 +1242,29 @@ const Chat: React.FC = () => {
 
     const messageListener = (message: any) => {
       if (message.type === 'SSE_MESSAGE') {
-        const newMsg = message.message;
+        const newMsg = message.message as ChatMessage;
         if (
           newMsg?.requestId &&
           (stoppedAiRequestIdsRef.current.has(newMsg.requestId) || activeAiRequestIdRef.current !== newMsg.requestId)
         ) {
           return;
         }
-        setIsTyping(false);
-        persistChatMessage(newMsg);
-        
-        // 处理steam消息
-        setMessages(prev => {
-          const lastMessage = prev[prev.length - 1];
-          
-          if (lastMessage && 
-              lastMessage.type === 'assistant' && 
-              newMsg.type === 'assistant' &&
-              lastMessage.id === newMsg.id) {
-            return [...prev.slice(0, -1), newMsg];
-          } else {
-            return [...prev, newMsg];
-          }
-        });
+        if (!hasRenderableChatMessage(newMsg)) return;
+        setIsTyping(newMsg.delivery !== 'final');
+        if (shouldPersistIncomingChatMessage(newMsg)) persistChatMessage(newMsg);
+        setMessages(prev => mergeIncomingChatMessage(prev, newMsg));
       } else if (message.type === 'SSE_STATUS_CHANGE') {
         setConnectionStatus(message.status);
         if (shouldStopTypingForGatewayStatus(message.status)) {
           setIsTyping(false);
         }
       } else if (message.type === 'COMPUTER_USE_PROGRESS') {
-        if (computerUseRunIdRef.current && message.runId !== computerUseRunIdRef.current) return;
+        if (!message.automationTaskId || message.automationTaskId !== browserUseTaskIdRef.current) return;
+        if (!computerUseRunIdRef.current) {
+          computerUseRunIdRef.current = message.runId;
+          setComputerUseRunId(message.runId);
+        }
+        if (message.runId !== computerUseRunIdRef.current) return;
         mergeComputerUseEvent(message);
       } else if (message.type === 'AUTOMATION_TASK_PROGRESS') {
         const assetId = ocrTaskAssetsRef.current.get(message.taskId);
@@ -1448,6 +1275,7 @@ const Chat: React.FC = () => {
           )));
         }
       } else if (message.type === 'COMPUTER_USE_NEEDS_CONFIRMATION') {
+        if (!message.automationTaskId || message.automationTaskId !== browserUseTaskIdRef.current) return;
         if (computerUseRunIdRef.current && message.runId !== computerUseRunIdRef.current) return;
         mergeComputerUseEvent(message);
         Modal.confirm({
@@ -1473,6 +1301,7 @@ const Chat: React.FC = () => {
           },
         });
       } else if (message.type === 'COMPUTER_USE_FINISHED') {
+        if (!message.automationTaskId || message.automationTaskId !== browserUseTaskIdRef.current) return;
         if (computerUseRunIdRef.current && message.runId !== computerUseRunIdRef.current) return;
         mergeComputerUseEvent(message);
         setIsTyping(false);
@@ -1484,6 +1313,7 @@ const Chat: React.FC = () => {
           addAssistantMessage(formatComputerUseTablesMessage(tableSummary, message.summary));
         }
       } else if (message.type === 'COMPUTER_USE_ERROR') {
+        if (!message.automationTaskId || message.automationTaskId !== browserUseTaskIdRef.current) return;
         if (computerUseRunIdRef.current && message.runId !== computerUseRunIdRef.current) return;
         mergeComputerUseEvent(message);
         setIsTyping(false);
@@ -1498,6 +1328,16 @@ const Chat: React.FC = () => {
         getAutomationRun(message.taskId).then((run) => {
           if (!run) return;
           const output = (run.metadata as any)?.taskOutput;
+          if (run.kind === 'computer_use') {
+            if (browserUseTaskIdRef.current === run.id) {
+              browserUseTaskIdRef.current = null;
+              setBrowserUseTaskId(null);
+            }
+            setIsTyping(false);
+            const internalRunId = String(run.metadata?.computerUseRunId || '');
+            if (internalRunId) fetchComputerUseTrace(internalRunId);
+            return;
+          }
           if (message.type === 'AUTOMATION_TASK_ERROR') {
             if (ocrAssetId) setAttachedFiles((files) => files.map((file) => (
               file.fileId === ocrAssetId ? { ...file, ocrStatus: 'error', ocrProgress: undefined, parseError: run.error } : file
@@ -1562,7 +1402,7 @@ const Chat: React.FC = () => {
     chrome.runtime.onMessage.addListener(messageListener);
 
     // 获取当前连接状态
-    chrome.runtime.sendMessage({ type: 'GET_STATUS' }, (response) => {
+    chrome.runtime.sendMessage({ type: 'GET_STATUS', clientBuildId: RUNTIME_BUILD_ID }, (response) => {
       if (response?.status) {
         setConnectionStatus(response.status);
       }
@@ -1689,24 +1529,6 @@ const Chat: React.FC = () => {
         item.uid === fileId ? nextAttachment : item
       )));
 
-      const result = await chrome.storage.local.get('uploadedFiles');
-      const uploadedFiles: StoredUploadedFile[] = Array.isArray(result.uploadedFiles) ? result.uploadedFiles : [];
-      const nextUploadedFiles = [
-        ...uploadedFiles,
-        {
-          id: fileId,
-          name: fileName,
-          type: file.type || 'application/octet-stream',
-          size: file.size,
-          uploadTime: Date.now(),
-          content: previewDataUrl || parsed.text || '',
-          parsed,
-          nativeFile,
-          asset,
-        },
-      ].slice(-30);
-      await chrome.storage.local.set({ uploadedFiles: nextUploadedFiles });
-
       if (ocrStatus === 'pending') {
         window.setTimeout(() => {
           handleRunOcr(nextAttachment);
@@ -1729,17 +1551,6 @@ const Chat: React.FC = () => {
   }, []);
 
   const handleRemoveFile = (uid: string) => {
-    const removedFile = attachedFiles.find(f => f.uid === uid);
-    if (removedFile?.fileId) {
-      chrome.storage.local.get('uploadedFiles').then((result) => {
-        const uploadedFiles = Array.isArray(result.uploadedFiles) ? result.uploadedFiles : [];
-        const nextUploadedFiles = uploadedFiles.filter((item: StoredUploadedFile) => item.id !== removedFile.fileId);
-        return chrome.storage.local.set({ uploadedFiles: nextUploadedFiles });
-      }).catch((error) => {
-        console.error('删除文件存储失败:', error);
-      });
-    }
-
     setAttachedFiles(prev => {
       const file = prev.find(f => f.uid === uid);
       if (file?.url && file.url.startsWith('blob:')) {
@@ -2092,6 +1903,7 @@ const Chat: React.FC = () => {
       buildMemoryContext(llmContent || displayContent, currentSessionIdRef.current || undefined)
         .then((memoryContext) => chrome.runtime.sendMessage({
           type: 'SEND_MESSAGE',
+          clientBuildId: RUNTIME_BUILD_ID,
           requestId,
           messageHistory: messageHistory,
           memoryContext: memoryContext.contextText,
@@ -2298,7 +2110,9 @@ const Chat: React.FC = () => {
     const lastVerificationEntry = [...trace.entries].reverse().find((entry) => entry.verification);
     const navigationPath = [...trace.entries].reverse().find((entry) => entry.navigationPath?.length)?.navigationPath;
     const lastChosenElement = lastActionEntry?.chosenElement;
-    const isActiveTask = computerUseRunId === trace.runId && ['running', 'waiting_confirmation'].includes(trace.status);
+    const isActiveTask = Boolean(browserUseTaskId)
+      && computerUseRunId === trace.runId
+      && ['running', 'waiting_confirmation'].includes(trace.status);
     const emptyFinished = trace.status === 'finished' && (!trace.entries.length || !trace.steps?.length) && !tableSummary;
 
     return (
@@ -2442,6 +2256,10 @@ const Chat: React.FC = () => {
   };
 
   const hasUploadingFiles = attachedFiles.some(file => file.nativeUploadStatus === 'uploading');
+  const visibleMessages = messages.filter(hasRenderableChatMessage);
+  const hasVisibleStreamingMessage = visibleMessages.some((chatMessage) => (
+    chatMessage.delivery === 'streaming' && Boolean(chatMessage.content?.trim())
+  ));
 
   return (
     <div className={styles.chatContainer}>
@@ -2486,7 +2304,22 @@ const Chat: React.FC = () => {
 
      
       <div ref={messagesContainerRef} className={styles.messagesContainer} onScroll={handleMessagesScroll}>
-        {messages.length === 0 ? (
+        {isSessionLoading ? (
+          <div className={styles.sessionLoadingState} role="status" aria-live="polite">
+            <Spin size="small" />
+            <Text>正在恢复会话...</Text>
+            <div className={styles.sessionLoadingLines} aria-hidden="true">
+              <span />
+              <span />
+              <span />
+            </div>
+          </div>
+        ) : sessionLoadError ? (
+          <div className={styles.sessionLoadingState} role="alert">
+            <Text type="danger">{sessionLoadError}</Text>
+            <Button size="small" icon={<ReloadOutlined />} onClick={() => window.location.reload()}>重试</Button>
+          </div>
+        ) : visibleMessages.length === 0 ? (
           <div className={styles.emptyState}>
             <div className={styles.emptyIconWrapper}>
               <RobotOutlined style={{ fontSize: '48px', color: '#fff' }} />
@@ -2500,13 +2333,12 @@ const Chat: React.FC = () => {
           </div>
         ) : (
           <>
-            {messages.map((msg, index) => {
+            {visibleMessages.map((msg) => {
               if (msg.kind === 'computer_use_task') {
                 return (
                   <div
                     key={msg.id}
                     className={`${styles.messageItem} ${styles.messageItemLeft}`}
-                    style={{ animationDelay: `${index * 0.05}s` }}
                   >
                     <div className={`${styles.messageContent} ${styles.messageContentLeft}`}>
                       <Avatar
@@ -2530,7 +2362,6 @@ const Chat: React.FC = () => {
                   <div
                     key={msg.id}
                     className={`${styles.messageItem} ${styles.messageItemLeft}`}
-                    style={{ animationDelay: `${index * 0.05}s` }}
                   >
                     <div className={`${styles.messageContent} ${styles.messageContentLeft} ${styles.structuredMessageContent}`}>
                       <Avatar
@@ -2602,7 +2433,6 @@ const Chat: React.FC = () => {
                 <div
                   key={msg.id}
                   className={`${styles.messageItem} ${msg.type === 'assistant' ? styles.messageItemLeft : ''}`}
-                  style={{ animationDelay: `${index * 0.05}s` }}
                 >
                   <div className={`${styles.messageContent} ${msg.type === 'assistant' ? styles.messageContentLeft : ''}`}>
                     <Avatar
@@ -2647,6 +2477,7 @@ const Chat: React.FC = () => {
                           onSave={msg.type === 'assistant' ? saveTextMessageToDocuments : undefined}
                         />
                       )}
+                      {msg.delivery === 'streaming' && <span className={styles.streamingCursor} aria-label="正在生成" />}
                       {textContent && (
                         <Space size={6} className={styles.messageActions}>
                           <Button style={{ color: 'red' }} size="small" type="link" onClick={() => handleRememberMessage(msg)}>
@@ -2663,7 +2494,7 @@ const Chat: React.FC = () => {
                 </div>
               );
             })}
-            {isTyping && (
+            {isTyping && !hasVisibleStreamingMessage && (
               <div className={styles.typingIndicator}>
                 <div className={styles.typingContent}>
                   <Avatar

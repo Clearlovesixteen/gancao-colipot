@@ -1,6 +1,7 @@
-import { checkDocumentRepositoryHealth } from './documentStore';
-import { getPaddleOcrRuntimeOptions } from './ocrEngine';
+import { checkDocumentRepositoryHealth } from '../../shared/documentRepository';
+import { getPaddleOcrRuntimeOptions } from '../../shared/paddleOcrRuntime';
 import { isAuthenticated } from './auth';
+import { RUNTIME_BUILD_ID } from '../../shared/runtimeVersion';
 
 export type HealthCheckStatus = 'pass' | 'warn' | 'fail';
 
@@ -65,8 +66,14 @@ async function sendTabMessage<T = any>(tabId: number, payload: any): Promise<T> 
 
 async function checkBackground(): Promise<HealthCheckItem> {
   try {
-    const response = await sendRuntimeMessage<{ status?: string }>({ type: 'GET_STATUS' });
-    return ok('background', '后台服务', `后台可响应，LLM 状态：${response?.status || 'unknown'}`);
+    const response = await sendRuntimeMessage<{ status?: string; buildId?: string; compatible?: boolean }>({
+      type: 'GET_STATUS',
+      clientBuildId: RUNTIME_BUILD_ID,
+    });
+    if (!response?.compatible) {
+      return fail('background', '后台服务', 'SidePanel 与后台运行版本不一致', `SidePanel ${RUNTIME_BUILD_ID} / background ${response?.buildId || '未知'}`);
+    }
+    return ok('background', '后台服务', `后台可响应，LLM 状态：${response?.status || 'unknown'}`, `build ${response.buildId}`);
   } catch (error: any) {
     return fail('background', '后台服务', '后台消息通道不可用', error?.message);
   }
@@ -103,13 +110,17 @@ async function checkContentScript(): Promise<HealthCheckItem> {
     if (tab.url && /^(chrome|edge|about|devtools):/i.test(tab.url)) {
       return warn('content', '页面注入', '当前是浏览器内置页，content script 无法注入', tab.url);
     }
+    const version = await sendTabMessage<any>(tab.id, { type: 'GET_CONTENT_RUNTIME_INFO' });
+    if (version?.buildId !== RUNTIME_BUILD_ID) {
+      return fail('content', '页面注入', '页面仍在运行旧版 content script', `SidePanel ${RUNTIME_BUILD_ID} / content ${version?.buildId || '未知'}`);
+    }
     const response = await sendTabMessage(tab.id, {
       type: 'EXECUTE_BROWSER_TOOL',
       toolName: 'get_page_info',
       arguments: { include_html: false },
     });
     if (response?.success) {
-      return ok('content', '页面注入', 'content script 可响应页面工具', response.result?.url || tab.url);
+      return ok('content', '页面注入', 'content script 可响应页面工具', `${response.result?.url || tab.url} · build ${version.buildId}`);
     }
     return fail('content', '页面注入', 'content script 响应失败', response?.error);
   } catch (error: any) {

@@ -1,4 +1,4 @@
-import type { Message } from '../sidePanel/utils/glm-client';
+import type { ModelMessage as Message } from '../shared/modelRuntimeTypes';
 import { ModelGateway, ModelGatewayError } from './modelGateway';
 import {
   deleteModelProfile,
@@ -11,6 +11,8 @@ import {
 import { AutomationRunner } from './automation';
 import { ComputerUseRunner } from './computerUseRunner';
 import { BrowserUseSession } from './browserUseSession';
+import { purgeRemovedLegacyData } from './removedLegacyData';
+import { createComputerUseResumeCheckpoint } from './computerUseCheckpoint';
 import { understandComputerUseIntent as understandComputerUseIntentCore } from './computerUseIntent';
 import { createComputerUsePlan as createComputerUsePlanCore } from './computerUsePlanner';
 import { parseComputerUseTask } from './computerUseTaskParser';
@@ -41,9 +43,14 @@ import type {
 } from '../shared/automationTypes';
 import { getAutomationRun, listAutomationRuns, patchAutomationRun } from '../shared/automationRunStore';
 import { handleAutomationTaskMessage } from './handlers/automationTaskHandlers';
+import { handleAuthBridgeMessage } from './handlers/authBridgeHandlers';
+import { handleModelChatMessage } from './handlers/modelChatHandlers';
+import { handlePageToolMessage } from './handlers/pageToolHandlers';
+import { handleSelectedTextMessage } from './handlers/selectedTextHandler';
 import { handleModelProfileMessage } from './handlers/modelProfileHandlers';
 import { TaskExecutorRegistry, type TaskResult } from './taskExecutorRegistry';
-import { getAutomationWorkflow } from '../sidePanel/utils/automationStorage';
+import { TaskRuntimeService } from './taskRuntimeService';
+import { getAutomationWorkflow } from '../shared/automationWorkflowStore';
 import { runOcrTask, stopOcrTask } from './ocrJobService';
 import { BUSINESS_TOOL_NAMES } from '../shared/businessTools';
 import type { PageAuthSnapshot } from '../shared/authBridge';
@@ -61,15 +68,17 @@ import {
   getDocumentContent,
   listDocumentAssets,
   makeDocumentId,
-  migrateLegacyUploadedFiles,
   rebuildDocumentChunks,
   saveDocumentContent,
   searchDocuments,
   upsertDocumentAsset,
   upsertDocumentResult,
-} from './documentDb';
-import { sanitizeForPersistence, toAppErrorPayload } from '../shared/appErrors';
+} from '../shared/documentRepository';
+import { AppError, toAppErrorPayload } from '../shared/appErrors';
 import { resolveBrowserContextTabId } from './browserTabContext';
+import { RUNTIME_BUILD_ID, isRuntimeVersionCurrent, runtimeMismatchMessage, type RuntimeVersionInfo } from '../shared/runtimeVersion';
+import { collectPageContextHub } from '../shared/pageContextHub';
+import { collectDocumentContextHub } from '../shared/documentContextHub';
 
 const modelGateway = new ModelGateway();
 let modelGatewayEventsInitialized = false;
@@ -77,11 +86,10 @@ let modelGatewayEventsInitialized = false;
 // 存储 sidePanel 的打开状态
 const sidePanelOpenState = new Map<number, boolean>();
 
-const automationRunners = new Map<string, AutomationRunner>();
 const computerUseRunners = new Map<string, AbortController>();
 const computerUseConfirmations = new Map<string, (allowed: boolean) => void>();
-const taskExecutionControllers = new Map<string, AbortController>();
 let taskExecutorRegistry: TaskExecutorRegistry | null = null;
+let taskRuntimeService: TaskRuntimeService | null = null;
 
 const dingTalkAuthTabs = new Set<number>();
 
@@ -665,23 +673,8 @@ async function requestPageAuthSync(): Promise<any> {
     return { success: false, error: '当前活动页不在可信登录态同步范围内' };
   }
 
-  const request = { type: 'READ_PAGE_AUTH_STATE' };
-
-  try {
-    return await chrome.tabs.sendMessage(tabId, request);
-  } catch (error: any) {
-    if (!error?.message?.includes('Could not establish connection')) {
-      throw error;
-    }
-
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      files: ['content.js'],
-    });
-
-    await new Promise((resolve) => setTimeout(resolve, 150));
-    return await chrome.tabs.sendMessage(tabId, request);
-  }
+  await ensureCurrentContentRuntime(tabId);
+  return await chrome.tabs.sendMessage(tabId, { type: 'READ_PAGE_AUTH_STATE' });
 }
 
 async function captureVisibleTab(tabId: number, format: 'png' | 'jpeg', quality?: number): Promise<string> {
@@ -722,33 +715,51 @@ function normalizeContentToolResult(result: any): any {
 
 async function executeContentTool(tabId: number, toolName: string, args: any): Promise<any> {
   await assertCanAccessTabContent(tabId);
+  await ensureCurrentContentRuntime(tabId);
+  return await chrome.tabs.sendMessage(tabId, {
+    type: 'EXECUTE_BROWSER_TOOL',
+    toolName,
+    arguments: args,
+  });
+}
 
+async function readContentRuntimeInfo(tabId: number): Promise<RuntimeVersionInfo | null> {
   try {
-    return await chrome.tabs.sendMessage(tabId, {
-      type: 'EXECUTE_BROWSER_TOOL',
-      toolName,
-      arguments: args,
-    });
-  } catch (error: any) {
-    if (!error?.message?.includes('Could not establish connection')) throw error;
-
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      files: ['content.js'],
-    });
-
-    await new Promise((resolve) => setTimeout(resolve, 100));
-
-    return await chrome.tabs.sendMessage(tabId, {
-      type: 'EXECUTE_BROWSER_TOOL',
-      toolName,
-      arguments: args,
-    });
+    const response = await chrome.tabs.sendMessage(tabId, { type: 'GET_CONTENT_RUNTIME_INFO' });
+    if (!response?.buildId) return null;
+    return response as RuntimeVersionInfo;
+  } catch {
+    return null;
   }
+}
+
+async function waitForCurrentContentRuntime(tabId: number, timeoutMs = 15_000): Promise<RuntimeVersionInfo> {
+  const deadline = Date.now() + timeoutMs;
+  let latestInfo: RuntimeVersionInfo | null = null;
+  while (Date.now() < deadline) {
+    latestInfo = await readContentRuntimeInfo(tabId);
+    if (latestInfo && isRuntimeVersionCurrent(latestInfo)) return latestInfo;
+    await new Promise(resolve => setTimeout(resolve, 150));
+  }
+
+  const error = new Error(runtimeMismatchMessage(latestInfo?.buildId)) as Error & { code?: string };
+  error.code = 'EXTENSION_RUNTIME_MISMATCH';
+  throw error;
+}
+
+async function ensureCurrentContentRuntime(tabId: number): Promise<RuntimeVersionInfo> {
+  const current = await readContentRuntimeInfo(tabId);
+  if (isRuntimeVersionCurrent(current)) return current!;
+
+  // Do not inject over an old listener. Reloading guarantees the tab receives only
+  // the content script bundled with the currently running service worker.
+  await chrome.tabs.reload(tabId);
+  return await waitForCurrentContentRuntime(tabId);
 }
 
 async function runComputerUseOnTab(options: {
   tabId: number;
+  automationTaskId?: string;
   goal: string;
   intent?: ComputerUseTaskIntent;
   runId?: string;
@@ -782,7 +793,24 @@ async function runComputerUseOnTab(options: {
   await tabSession.initialize();
 
   return await new Promise((resolve, reject) => {
-    const emit = (msg: any) => {
+    let latestTaskPlan = options.resumeCheckpoint?.taskPlan;
+    const emit = (message: any) => {
+      latestTaskPlan = message?.result?.taskPlan || message?.intent?.taskPlan || latestTaskPlan;
+      const resumeCheckpoint = message?.type === 'COMPUTER_USE_ERROR'
+        ? createComputerUseResumeCheckpoint({
+          goal: options.goal,
+          taskPlan: latestTaskPlan,
+          runState: message.runState,
+          phaseIndex: message.phaseIndex,
+          lastPageUrl: message.lastObservation?.url || message.afterObservation?.url || message.observation?.url,
+        })
+        : undefined;
+      const eventWithTask = options.automationTaskId
+        ? { ...message, automationTaskId: options.automationTaskId }
+        : message;
+      const msg = resumeCheckpoint && !eventWithTask.resumeCheckpoint
+        ? { ...eventWithTask, resumeCheckpoint }
+        : eventWithTask;
       if (typeof msg?.runId === 'string' && msg.type?.startsWith?.('COMPUTER_USE_')) {
         recordComputerUseTraceEvent(msg);
       }
@@ -925,16 +953,17 @@ async function executeComputerUseTask(run: AutomationRun, signal: AbortSignal): 
   await patchAutomationRun(run.id, { metadata: { ...(run.metadata || {}), computerUseRunId } });
   try {
     const result: any = await runComputerUseOnTab({
-    tabId,
-    runId: computerUseRunId,
-    goal,
-    intent,
-    maxSteps: Number(run.metadata?.maxSteps || 12),
-    startUrl: startUrl || undefined,
-    allowHighRisk: run.metadata?.allowHighRisk === true,
-    externalSignal: signal,
-    resumeCheckpoint,
-    modelProfileId: typeof run.metadata?.modelProfileId === 'string' ? run.metadata.modelProfileId : undefined,
+      tabId,
+      automationTaskId: run.id,
+      runId: computerUseRunId,
+      goal,
+      intent,
+      maxSteps: Number(run.metadata?.maxSteps || 12),
+      startUrl: startUrl || undefined,
+      allowHighRisk: run.metadata?.allowHighRisk === true,
+      externalSignal: signal,
+      resumeCheckpoint,
+      modelProfileId: typeof run.metadata?.modelProfileId === 'string' ? run.metadata.modelProfileId : undefined,
     });
     const { traceSummary, traceSnapshot } = summarizeComputerUseTrace(computerUseRunId);
     await patchAutomationRun(run.id, {
@@ -961,13 +990,29 @@ async function executeComputerUseTask(run: AutomationRun, signal: AbortSignal): 
 }
 
 async function executePageDiagnosisTask(run: AutomationRun): Promise<TaskResult> {
-  const [pageInfo, errors, observation, structured] = await Promise.all([
-    handleBusinessTool('get_current_page_info', { include_html: false }),
-    handleBusinessTool('get_console_errors', { limit: 50, useDebugger: run.metadata?.useDebugger === true }),
-    handleBusinessTool('observe_page', { limit: 160 }),
-    handleBusinessTool('extract_page_structured_data', {}),
-  ]);
-  const context = { pageInfo, errors, observation, structured };
+  const tabId = await getCurrentActiveTab();
+  if (!tabId) return { status: 'failed', summary: '无法获取活动标签页', error: '无法获取活动标签页' };
+  const tab = await chrome.tabs.get(tabId).catch(() => undefined);
+  const contentAccessError = getTabContentAccessError(tab);
+  if (contentAccessError) return { status: 'failed', summary: contentAccessError, error: contentAccessError };
+
+  const context = await collectPageContextHub({
+    executeTool: async (toolName, args = {}) => {
+      const browserToolName = toolName === 'get_current_page_info' ? 'get_page_info' : toolName;
+      return executeBrowserTool(tabId, browserToolName, args);
+    },
+    collectConsoleErrors: () => run.metadata?.useDebugger === true
+      ? collectConsoleDiagnosticsWithFallback(tabId, {
+        limit: 50,
+        durationMs: Number(run.metadata?.durationMs || 3500),
+        reload: run.metadata?.reload === true,
+        includeContentFallback: true,
+      })
+      : executeBrowserTool(tabId, 'get_console_errors', { limit: 50 }),
+    includeStructuredData: true,
+    includeTables: true,
+    observeLimit: 180,
+  });
   const answer = await modelGateway.completeText({
     system: '你是页面诊断助手。请按“问题摘要、风险等级、可能原因、定位步骤、修复建议、需要补充的信息”输出，禁止编造未采集到的错误。',
     user: { goal: run.goal || '诊断当前页面', context },
@@ -980,28 +1025,25 @@ async function executeDocumentQaTask(run: AutomationRun): Promise<TaskResult> {
   const question = String(run.goal || run.metadata?.question || '').trim();
   if (!question) return { status: 'failed', summary: '请输入资料问题', error: '请输入资料问题' };
   const documentIds = Array.isArray(run.metadata?.documentIds) ? run.metadata?.documentIds.map(String) : undefined;
-  const matches = await searchDocuments(question, documentIds, 8);
-  const fallbackIds = documentIds?.length ? documentIds : (await listDocumentAssets()).slice(0, 3).map((asset) => asset.id);
-  const sources = matches.length
-    ? matches.map((match) => ({
-      documentId: match.asset.id,
-      documentTitle: match.asset.title,
-      chunkId: match.chunk.id,
-      pageNumber: match.chunk.pageNumber,
-      sectionTitle: match.chunk.sectionTitle,
-      text: match.chunk.text.slice(0, 2400),
-    }))
-    : (await Promise.all(fallbackIds.map(async (id) => {
-      const [asset, content] = await Promise.all([getDocumentAsset(id), getDocumentContent(id)]);
-      return asset ? { documentId: id, documentTitle: asset.title, text: (content?.text || '').slice(0, 6000) } : null;
-    }))).filter(Boolean);
-  if (!sources.length) return { status: 'failed', summary: '资料中心没有可读取内容', error: '资料中心没有可读取内容' };
+  const context = await collectDocumentContextHub({
+    question,
+    documentIds,
+    limit: 8,
+    fallbackDocumentLimit: 3,
+  });
+  if (!context.sources.length) {
+    return { status: 'failed', summary: '资料中心没有可读取内容', error: '资料中心没有可读取内容' };
+  }
   const answer = await modelGateway.completeText({
     system: '你是资料问答助手。先给结论，再标注引用来源（文件名、页码、章节或 chunk），明确不确定和缺失信息。只依据给定资料回答。',
-    user: { question, sources },
+    user: { question, sources: context.sources, warnings: context.warnings },
     profileId: typeof run.metadata?.modelProfileId === 'string' ? run.metadata.modelProfileId : undefined,
   });
-  return { status: matches.length ? 'success' : 'partial', summary: '资料问答完成', output: { answer, sources } };
+  return {
+    status: context.matchedBySearch ? 'success' : 'partial',
+    summary: context.matchedBySearch ? '资料问答完成' : '资料问答完成（使用全文兜底）',
+    output: { answer, sources: context.sources, warnings: context.warnings },
+  };
 }
 
 async function executeExtractTask(run: AutomationRun): Promise<TaskResult> {
@@ -1018,7 +1060,11 @@ async function executeExtractTask(run: AutomationRun): Promise<TaskResult> {
   return { status: 'success', summary: `已提取 ${count} 组结构化数据`, output: result };
 }
 
-async function executeWorkflowTask(run: AutomationRun, signal: AbortSignal): Promise<TaskResult> {
+async function executeWorkflowTask(
+  run: AutomationRun,
+  context: { signal: AbortSignal; progress(stage: string, message: string, data?: unknown): void },
+): Promise<TaskResult> {
+  const { signal } = context;
   const workflowId = String(run.workflowId || run.metadata?.workflowId || '');
   const stored = workflowId ? await getAutomationWorkflow(workflowId) : null;
   const sourceWorkflow = stored?.workflow || run.metadata?.workflow as AutomationWorkflow | undefined;
@@ -1038,14 +1084,19 @@ async function executeWorkflowTask(run: AutomationRun, signal: AbortSignal): Pro
       tabId: tab.id!, runId: workflowRunId, workflow, navigate: navigateTab, executeBrowserTool, captureVisibleTab,
       runComputerUse: (goal, options) => runComputerUseOnTab({ ...options, goal, externalSignal: signal }),
       emit: (event: any) => {
-        chrome.runtime.sendMessage(event).catch(() => {});
-        if (event.type === 'AUTOMATION_FINISHED') resolve({ status: 'success', summary: '工作流执行完成', output: event.result, trace: event.result?.steps });
-        if (event.type === 'AUTOMATION_ERROR') resolve({ status: signal.aborted ? 'stopped' : 'failed', summary: event.error, error: event.error });
+        if (event.type === 'WORKFLOW_RUN_PROGRESS') {
+          context.progress(
+            'workflow_step',
+            `步骤 ${event.stepIndex + 1} ${event.state === 'done' ? '完成' : '执行中'}：${event.step.type}`,
+            { event },
+          );
+        }
+        if (event.type === 'WORKFLOW_RUN_FINISHED') resolve({ status: 'success', summary: '工作流执行完成', output: event.result, trace: event.result?.steps });
+        if (event.type === 'WORKFLOW_RUN_ERROR') resolve({ status: signal.aborted ? 'stopped' : 'failed', summary: event.error, error: event.error });
       },
     });
-    automationRunners.set(workflowRunId, runner);
     signal.addEventListener('abort', () => runner.stop(), { once: true });
-    runner.run().finally(() => automationRunners.delete(workflowRunId));
+    runner.run();
   });
 }
 
@@ -1065,7 +1116,7 @@ function getTaskExecutorRegistry(): TaskExecutorRegistry {
         if (!(run.metadata as any)?.monitor?.url) throw new Error('监控配置缺少 URL');
       },
       async run(run) {
-        const result = await runPageMonitorNow(run.id, { executeBrowserTool });
+        const result = await runPageMonitorNow(run.id, { executeBrowserTool }, { manageTaskLifecycle: false });
         const latest = await getAutomationRun(run.id);
         return {
           status: result.success ? (latest?.status === 'success' ? 'success' : 'partial') : 'failed',
@@ -1092,95 +1143,32 @@ function getTaskExecutorRegistry(): TaskExecutorRegistry {
     .register({
       kind: 'workflow',
       async validate(run) { if (!run.workflowId && !run.metadata?.workflowId && !run.metadata?.workflow) throw new Error('请选择工作流'); },
-      run: (run, context) => executeWorkflowTask(run, context.signal),
+      run: (run, context) => executeWorkflowTask(run, context),
     });
   return taskExecutorRegistry;
 }
 
-async function finalizeAutomationTask(run: AutomationRun, result: TaskResult): Promise<void> {
-  const secrets = (await listModelProfiles()).map((profile) => profile.apiKey).filter(Boolean);
-  const safeResult = sanitizeForPersistence(result, secrets);
-  const trace: any = safeResult.trace;
-  const latest = await getAutomationRun(run.id);
-  await patchAutomationRun(run.id, {
-    status: safeResult.status,
-    endedAt: Date.now(),
-    resultSummary: safeResult.summary,
-    error: safeResult.error,
-    traceSummary: trace?.traceSummary || run.traceSummary,
-    metadata: {
-      ...(latest?.metadata || run.metadata || {}),
-      ...(trace?.computerUseRunId ? { computerUseRunId: trace.computerUseRunId } : {}),
-      ...(trace?.traceSnapshot ? { traceSnapshot: trace.traceSnapshot } : {}),
-      taskOutput: safeResult.output,
+function getTaskRuntimeService(): TaskRuntimeService {
+  if (taskRuntimeService) return taskRuntimeService;
+  taskRuntimeService = new TaskRuntimeService({
+    registry: getTaskExecutorRegistry(),
+    repository: {
+      get: getAutomationRun,
+      list: listAutomationRuns,
+      patch: patchAutomationRun,
     },
+    authorize: async () => {
+      const authError = await requireBusinessAuth();
+      if (authError) {
+        throw new AppError('UNAUTHENTICATED', authError.error || '未登录');
+      }
+    },
+    emit: (event) => {
+      chrome.runtime.sendMessage(event).catch(() => {});
+    },
+    getSecrets: async () => (await listModelProfiles()).map((profile) => profile.apiKey).filter(Boolean),
   });
-  const eventType = safeResult.status === 'success' || safeResult.status === 'partial'
-    ? 'AUTOMATION_TASK_FINISHED'
-    : 'AUTOMATION_TASK_ERROR';
-  chrome.runtime.sendMessage({ type: eventType, taskId: run.id, kind: run.kind, result: safeResult }).catch(() => {});
-}
-
-async function runAutomationTaskRecord(taskId: string): Promise<{ success: boolean; runId?: string; error?: string }> {
-  const run = await getAutomationRun(taskId);
-  if (!run) return toAppErrorPayload(new Error('未找到自动化任务'), '未找到自动化任务');
-  const authError = await requireBusinessAuth();
-  if (authError) return toAppErrorPayload(Object.assign(new Error(authError.error || '未登录'), { code: 'UNAUTHENTICATED' }));
-  let executor;
-  try {
-    executor = getTaskExecutorRegistry().get(run.kind);
-    await executor.validate(run);
-  } catch (error: any) {
-    return toAppErrorPayload(Object.assign(error instanceof Error ? error : new Error(String(error)), {
-      code: error?.code || 'VALIDATION_ERROR',
-    }), '任务校验失败');
-  }
-
-  const controller = new AbortController();
-  taskExecutionControllers.get(taskId)?.abort();
-  taskExecutionControllers.set(taskId, controller);
-  await patchAutomationRun(taskId, { status: 'running', startedAt: Date.now(), endedAt: undefined, error: undefined, resultSummary: undefined });
-
-  const progress = (stage: string, summary: string, data?: unknown) => {
-    chrome.runtime.sendMessage({ type: 'AUTOMATION_TASK_PROGRESS', taskId, kind: run.kind, stage, summary, data }).catch(() => {});
-  };
-  progress('started', '任务已开始');
-  executor.run(run, { signal: controller.signal, progress })
-    .then((result) => finalizeAutomationTask(run, result))
-    .catch((error: any) => finalizeAutomationTask(run, {
-      status: controller.signal.aborted ? 'stopped' : 'failed',
-      summary: error?.message || '任务执行失败',
-      error: error?.message || '任务执行失败',
-    }))
-    .finally(() => taskExecutionControllers.delete(taskId));
-
-  return { success: true, runId: taskId };
-}
-
-async function getUploadedFiles(): Promise<any[]> {
-  const result = await chrome.storage.local.get('uploadedFiles');
-  return Array.isArray(result.uploadedFiles) ? result.uploadedFiles : [];
-}
-
-function summarizeUploadedFile(file: any, index: number) {
-  const content = typeof file?.content === 'string' ? file.content : '';
-  const isDataUrl = content.startsWith('data:');
-  const parsed = file?.parsed;
-
-  return {
-    index,
-    id: file?.id || null,
-    name: file?.name || `file_${index}`,
-    type: file?.type || 'unknown',
-    size: file?.size || 0,
-    uploadTime: file?.uploadTime || null,
-    contentKind: parsed?.kind || (isDataUrl ? 'data-url' : 'text'),
-    parseStatus: parsed?.status || 'legacy',
-    nativeFileId: file?.nativeFile?.id || null,
-    nativeFileStatus: file?.nativeFile?.status || null,
-    warning: parsed?.warning,
-    error: parsed?.error,
-  };
+  return taskRuntimeService;
 }
 
 async function generateRequirementTasksWithLLM(
@@ -1219,73 +1207,6 @@ async function handleBusinessTool(toolName: string, args: any, contextTabId?: nu
 
   const authError = await requireBusinessAuth();
   if (authError) return authError;
-
-  await migrateLegacyUploadedFiles();
-
-  if (toolName === 'list_uploaded_files') {
-    const files = await getUploadedFiles();
-    return {
-      success: true,
-      files: files.map(summarizeUploadedFile),
-      count: files.length,
-    };
-  }
-
-  if (toolName === 'read_uploaded_file') {
-    const files = await getUploadedFiles();
-    const requestedId = typeof args?.id === 'string' ? args.id : '';
-    const requestedIndex = Number.isFinite(Number(args?.index)) ? Number(args.index) : -1;
-    const requestedName = typeof args?.name === 'string' ? args.name : '';
-    const file = requestedId
-      ? files.find((item) => item?.id === requestedId)
-      : requestedName
-      ? files.find((item) => item?.name === requestedName)
-      : files[requestedIndex];
-
-    if (!file) {
-      return { success: false, error: '未找到上传文件', files: files.map(summarizeUploadedFile) };
-    }
-
-    const content = typeof file.content === 'string' ? file.content : '';
-    const isDataUrl = content.startsWith('data:');
-    const maxTextLength = 20000;
-    const parsed = file.parsed;
-
-    if (parsed) {
-      const parsedText = typeof parsed.text === 'string' ? parsed.text : '';
-      return {
-        success: parsed.status !== 'error',
-        file: summarizeUploadedFile(file, files.indexOf(file)),
-        parsed: {
-          status: parsed.status,
-          kind: parsed.kind,
-          text: parsedText.slice(0, maxTextLength),
-          sheets: parsed.sheets,
-          metadata: parsed.metadata,
-          nativeFile: file.nativeFile
-            ? {
-                id: file.nativeFile.id,
-                name: file.nativeFile.name,
-                type: file.nativeFile.type,
-                size: file.nativeFile.size,
-                status: file.nativeFile.status,
-                purpose: file.nativeFile.purpose,
-              }
-            : undefined,
-          warning: parsed.warning,
-          error: parsed.error,
-          truncated: parsedText.length > maxTextLength,
-        },
-      };
-    }
-
-    return {
-      success: true,
-      file: summarizeUploadedFile(file, files.indexOf(file)),
-      content: isDataUrl ? content.slice(0, 500) : content.slice(0, maxTextLength),
-      truncated: isDataUrl ? content.length > 500 : content.length > maxTextLength,
-    };
-  }
 
   if (toolName === 'create_business_workflow_draft') {
     const draft = {
@@ -1898,297 +1819,78 @@ chrome.runtime.onInstalled.addListener(() => {
   syncPageMonitorAlarms().catch((error) => console.warn('同步页面监控 alarm 失败:', error));
 });
 
-async function recoverInterruptedAutomationTasks(): Promise<void> {
-  const runs = await listAutomationRuns();
-  await Promise.all(runs
-    .filter((run) => run.status === 'running')
-    .map(async (run) => {
-      await patchAutomationRun(run.id, {
-        status: 'stopped',
-        endedAt: Date.now(),
-        resultSummary: '扩展后台已重启，任务已安全停止',
-        error: '扩展后台已重启',
-        metadata: {
-          ...(run.metadata || {}),
-          interruption: {
-            code: 'TASK_RUNTIME_RESTARTED',
-            at: Date.now(),
-            recovery: '请从任务中心重新执行该任务。',
-          },
-        },
-      });
-      chrome.runtime.sendMessage({
-        type: 'AUTOMATION_TASK_ERROR',
-        taskId: run.id,
-        kind: run.kind,
-        result: {
-          status: 'stopped',
-          summary: '扩展后台已重启，任务已安全停止',
-          ...toAppErrorPayload(Object.assign(new Error('扩展后台已重启'), { code: 'TASK_RUNTIME_RESTARTED' })),
-        },
-      }).catch(() => {});
-    }));
-}
-
-recoverInterruptedAutomationTasks().catch((error) => console.warn('收口遗留任务失败:', error));
+getTaskRuntimeService().recoverInterrupted().catch((error) => console.warn('收口遗留任务失败:', error));
+purgeRemovedLegacyData().catch((error) => console.warn('清理已删除的旧上传文件数据失败:', error));
 
 chrome.runtime.onStartup?.addListener(() => {
   syncPageMonitorAlarms().catch((error) => console.warn('启动时同步页面监控 alarm 失败:', error));
 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
-  handlePageMonitorAlarm(alarm.name, { executeBrowserTool, runTask: runAutomationTaskRecord }).catch((error) => {
+  handlePageMonitorAlarm(alarm.name, { executeBrowserTool, runTask: (taskId) => getTaskRuntimeService().start(taskId) }).catch((error) => {
     console.warn('页面监控执行失败:', error);
   });
 });
 
 // 监听 sidePanel , content script 的消息
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (['SEND_MESSAGE', 'RUN_AUTOMATION_TASK', 'STOP_AUTOMATION_TASK', 'RETRY_AUTOMATION_TASK'].includes(message.type)
+    && !isRuntimeVersionCurrent({ buildId: String(message.clientBuildId || '') })) {
+    sendResponse({
+      success: false,
+      code: 'EXTENSION_RUNTIME_MISMATCH',
+      error: runtimeMismatchMessage(message.clientBuildId),
+      buildId: RUNTIME_BUILD_ID,
+    });
+    return false;
+  }
+
   if (handleModelProfileMessage(message, sendResponse, modelGateway)) return true;
 
   const automationTaskHandled = handleAutomationTaskMessage(message, sendResponse, {
-    runAutomationTaskRecord,
+    startTask: (taskId) => getTaskRuntimeService().start(taskId),
+    stopTask: (taskId) => getTaskRuntimeService().stop(taskId),
+    retryTask: (taskId) => getTaskRuntimeService().retry(taskId),
     getAutomationRun,
-    patchAutomationRun: (taskId, patch) => patchAutomationRun(taskId, patch),
-    stopAutomationTask: async (taskId, run) => {
-      taskExecutionControllers.get(taskId)?.abort();
-      taskExecutionControllers.delete(taskId);
-      const computerUseRunId = String(run.metadata?.computerUseRunId || '');
-      if (computerUseRunId) {
-        computerUseRunners.get(computerUseRunId)?.abort();
-        computerUseRunners.delete(computerUseRunId);
-      }
-      await getTaskExecutorRegistry().get(run.kind).stop?.(taskId);
-    },
-    runPageMonitorNow: (runId) => runPageMonitorNow(runId, { executeBrowserTool }),
     upsertPageMonitorAlarm,
     clearPageMonitorAlarm,
   });
   if (automationTaskHandled) return true;
 
-  // 截图功能
-  if (message.type === 'CAPTURE_VISIBLE_TAB') {
-    (async () => {
-      try {
-        const { format = 'png', quality = 90, fullPage = false } = message;
-        // 获取当前活动标签页
-        const tabId = sender.tab?.id || await getCurrentActiveTab();
-        if (!tabId) {
-          sendResponse({ success: false, error: '无法获取活动标签页' });
-          return;
-        }
-        
-        const tab = await chrome.tabs.get(tabId);
+  if (handleAuthBridgeMessage(message, sender, sendResponse, {
+    dingTalkAuthTabs,
+    sidePanelOpenState,
+    savePageAuthState,
+    requestPageAuthSync,
+  })) return true;
 
-        // 如果需要全页截图，这里暂时只返回可见区域，因为 chrome.tabs.captureVisibleTab 只能截可见区域
-        // 全页截图通常需要 content script 配合滚动拼接，或者使用 debugger API
-        // 这里我们先支持基本参数，如果 fullPage=true，未来可以扩展
-        
-        const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
-          format,
-          quality
-        });
+  if (handleModelChatMessage(message, sendResponse, {
+    modelGateway,
+    requireBusinessAuth,
+    initModelGatewayEvents,
+    resolveContextTabId: (requestedTabId) => resolveBrowserContextTabId(requestedTabId, {
+      getTab: (id) => chrome.tabs.get(id),
+      getCurrentActiveTab,
+    }),
+    buildId: RUNTIME_BUILD_ID,
+    isRuntimeVersionCurrent,
+  })) return true;
 
-        sendResponse({ success: true, dataUrl });
-      } catch (err: any) {
-        console.error('Screenshot failed:', err);
-        sendResponse({ success: false, error: err?.message || '截图失败' });
-      }
-    })();
-    return true;
-  }
+  if (handlePageToolMessage(message, sender, sendResponse, {
+    requireBusinessAuth,
+    getCurrentActiveTab,
+    resolveContextTabId: (requestedTabId) => resolveBrowserContextTabId(requestedTabId, {
+      getTab: (id) => chrome.tabs.get(id),
+      getCurrentActiveTab,
+    }),
+    collectConsoleDiagnostics: collectConsoleDiagnosticsWithFallback,
+    handleBusinessTool,
+    executeBrowserTool,
+  })) return true;
 
-  if (message.type === 'TRACK_DINGTALK_AUTH_TAB') {
-    const tabId = Number(message.tabId);
-    if (Number.isFinite(tabId)) {
-      dingTalkAuthTabs.add(tabId);
-    }
-    sendResponse({ success: true });
-    return true;
-  }
+  if (handleSelectedTextMessage(message, sender, sendResponse)) return true;
 
-  if (message.type === 'SYNC_PAGE_AUTH_STATE') {
-    (async () => {
-      try {
-        const snapshot = message.snapshot as PageAuthSnapshot | undefined;
-        if (!snapshot || typeof snapshot !== 'object') {
-          sendResponse({ success: false, error: '无效的页面登录态数据' });
-          return;
-        }
-
-        const result = await savePageAuthState(snapshot, sender.tab?.url);
-        sendResponse(result);
-      } catch (error: any) {
-        sendResponse({ success: false, error: error?.message || '同步页面登录态失败' });
-      }
-    })();
-    return true;
-  }
-
-  if (message.type === 'REQUEST_PAGE_AUTH_SYNC') {
-    (async () => {
-      try {
-        const result = await requestPageAuthSync();
-        sendResponse(result);
-      } catch (error: any) {
-        sendResponse({ success: false, error: error?.message || '请求页面登录态失败' });
-      }
-    })();
-    return true;
-  }
-
-  //给sidePanel打标
-  if (message.type === 'SIDE_PANEL_OPENED') {
-    
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      if (tabs[0]?.windowId) {
-        sidePanelOpenState.set(tabs[0].windowId, true);
-      }
-    });
-    sendResponse({ success: true });
-    return true;
-  }
-  
-  if (message.type === 'SEND_MESSAGE') {
-    (async () => {
-      try {
-        const authError = await requireBusinessAuth();
-        if (authError) {
-          sendResponse(authError);
-          return;
-        }
-
-        await initModelGatewayEvents();
-        const messageHistory = message.messageHistory || [];
-        const contextTabId = await resolveBrowserContextTabId(message.contextTabId, {
-          getTab: (id) => chrome.tabs.get(id),
-          getCurrentActiveTab,
-        });
-        const result = await modelGateway.send(
-          messageHistory,
-          message.requestId,
-          message.memoryContext,
-          message.modelProfileId,
-          contextTabId || undefined,
-        );
-        sendResponse({
-          ...result,
-          error: result.success ? undefined : result.error || 'AI 请求失败',
-        });
-      } catch (error: any) {
-        sendResponse({ success: false, code: error?.code, error: error?.message || 'AI 请求失败' });
-      }
-    })();
-    return true; 
-  } else if (message.type === 'STOP_AI_MESSAGE') {
-    sendResponse(modelGateway.cancel());
-    return true;
-  } else if (message.type === 'GET_STATUS') {
-    sendResponse({ status: modelGateway.getStatus() });
-  } else if (message.type === 'COLLECT_CONSOLE_ERRORS') {
-    (async () => {
-      try {
-        const authError = await requireBusinessAuth();
-        if (authError) {
-          sendResponse(authError);
-          return;
-        }
-
-        const tabId = await getCurrentActiveTab();
-        if (!tabId) {
-          sendResponse({ success: false, error: '无法获取活动标签页' });
-          return;
-        }
-
-        const result = await collectConsoleDiagnosticsWithFallback(tabId, {
-          limit: message.limit ?? 50,
-          since: message.since,
-          durationMs: message.durationMs ?? 3500,
-          reload: message.reload === true,
-          includeContentFallback: message.includeContentFallback !== false,
-        });
-        sendResponse(result);
-      } catch (error: any) {
-        sendResponse({ success: false, error: error?.message || '控制台诊断失败' });
-      }
-    })();
-    return true;
-  } else if (message.type === 'GET_ACTIVE_TAB_ID') {
-    // 获取当前活动标签页 ID
-    getCurrentActiveTab().then((tabId) => {
-      sendResponse({ tabId });
-    }).catch((error) => {
-      sendResponse({ tabId: null });
-    });
-    return true;
-  } else if (message.type === 'RUN_COMPUTER_USE') {
-    (async () => {
-      try {
-        const authError = await requireBusinessAuth();
-        if (authError) {
-          sendResponse(authError);
-          return;
-        }
-
-        const goal = String(message.goal || '').trim();
-        if (!goal) {
-          sendResponse({ success: false, error: '缺少自动操作目标' });
-          return;
-        }
-
-        const explicitStartUrl = typeof message.startUrl === 'string' ? message.startUrl.trim() : '';
-        const intent = parseComputerUseTask(goal, explicitStartUrl);
-        const startUrl = intent.startUrl || '';
-        if (startUrl) {
-          const startUrlAccessError = getTabContentAccessError({ url: startUrl } as chrome.tabs.Tab);
-          if (startUrlAccessError) {
-            sendResponse({ success: false, error: `起始页面不可自动操作：${startUrlAccessError}` });
-            return;
-          }
-        }
-
-        const tabId = await getCurrentActiveTab();
-        if (!tabId) {
-          sendResponse({ success: false, error: '无法获取活动标签页' });
-          return;
-        }
-
-        if (!startUrl) {
-          const tabCheck = await getCurrentAutomatableTab();
-          if ('error' in tabCheck) {
-            sendResponse({ success: false, error: tabCheck.error });
-            return;
-          }
-        }
-
-        const runId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-        sendResponse({ success: true, runId });
-        runComputerUseOnTab({
-          tabId,
-          runId,
-          goal,
-          intent,
-          maxSteps: message.maxSteps ?? 8,
-          startUrl: startUrl || undefined,
-          allowHighRisk: message.allowHighRisk === true,
-        }).catch(() => {});
-      } catch (error: any) {
-        sendResponse({ success: false, error: error?.message || '启动自动操作失败' });
-      }
-    })();
-    return true;
-  } else if (message.type === 'STOP_COMPUTER_USE') {
-    const runId = String(message.runId || '');
-    const controller = computerUseRunners.get(runId);
-    if (controller) {
-      controller.abort();
-      computerUseRunners.delete(runId);
-      sendResponse({ success: true });
-      return true;
-    }
-    sendResponse({ success: false, error: '未找到正在运行的自动操作' });
-    return true;
-  } else if (message.type === 'CONFIRM_COMPUTER_USE_ACTION') {
+  if (message.type === 'CONFIRM_COMPUTER_USE_ACTION') {
     const key = `${String(message.runId || '')}:${Number(message.stepIndex || 0)}`;
     const resolver = computerUseConfirmations.get(key);
     if (resolver) {
@@ -2198,182 +1900,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     sendResponse({ success: false, error: '确认请求已过期' });
     return true;
-  } else if (message.type === 'EXECUTE_TOOL') {
-    // 执行浏览器工具
-    (async () => {
-      try {
-        const authError = await requireBusinessAuth();
-        if (authError) {
-          sendResponse(authError);
-          return;
-        }
-
-        const contextTabId = await resolveBrowserContextTabId(message.tabId, {
-          getTab: (id) => chrome.tabs.get(id),
-          getCurrentActiveTab,
-        });
-        const businessResult = await handleBusinessTool(
-          message.toolName,
-          message.arguments || {},
-          contextTabId || undefined,
-        );
-        if (businessResult) {
-          sendResponse(businessResult);
-          return;
-        }
-
-        const tabId = contextTabId;
-        if (!tabId) {
-          sendResponse({ error: '无法获取活动标签页' });
-          return;
-        }
-
-        try {
-          const result = await executeBrowserTool(tabId, message.toolName, message.arguments);
-          sendResponse({ success: true, result });
-        } catch (error: any) {
-          sendResponse({ success: false, error: error.message || '工具执行失败' });
-        }
-      } catch (error: any) {
-        sendResponse({ 
-          success: false, 
-          error: error.message || '工具执行失败' 
-        });
-      }
-    })();
-    return true; // 保持消息通道打开
-  } else if (message.type === 'RUN_AUTOMATION') {
-    (async () => {
-      try {
-        const workflow = message.workflow as AutomationWorkflow;
-        
-        // 校验工作流有效性
-        if (!workflow || typeof workflow !== 'object') {
-          sendResponse({ success: false, error: '无效的工作流数据' });
-          return;
-        }
-        
-        if (!Array.isArray(workflow.steps) || workflow.steps.length === 0) {
-           sendResponse({ success: false, error: '工作流步骤为空' });
-           return;
-        }
-
-        // 创建新标签页来运行任务
-        // 我们先打开 about:blank，让 Runner 自己去 navigate
-        const tab = await chrome.tabs.create({ url: 'about:blank', active: true });
-        const tabId = tab.id;
-
-        if (!tabId) {
-          sendResponse({ success: false, error: '无法创建新标签页' });
-          return;
-        }
-
-        const runId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-
-        const runner = new AutomationRunner({
-          tabId,
-          runId,
-          workflow,
-          navigate: navigateTab,
-          executeBrowserTool,
-          captureVisibleTab,
-          runComputerUse: async (goal, options) => await runComputerUseOnTab({
-            tabId: options.tabId,
-            goal,
-            maxSteps: options.maxSteps,
-            startUrl: options.startUrl,
-            allowHighRisk: options.allowHighRisk,
-          }),
-          emit: (msg) => {
-            chrome.runtime.sendMessage(msg).catch(() => {});
-          },
-        });
-
-        automationRunners.set(runId, runner);
-        sendResponse({ success: true, runId });
-
-        // 延迟启动，确保前端有足够时间接收 runId 并建立日志监听
-        setTimeout(() => {
-          runner
-            .run()
-            .finally(() => {
-              automationRunners.delete(runId);
-            });
-        }, 200);
-      } catch (err: any) {
-        console.error('Automation failed:', err);
-        sendResponse({ success: false, error: err?.message || '启动失败' });
-      }
-    })();
-    return true;
-  } else if (message.type === 'STOP_AUTOMATION') {
-    const runId = String(message.runId || '');
-    const runner = automationRunners.get(runId);
-    if (runner) {
-      runner.stop();
-      automationRunners.delete(runId);
-      sendResponse({ success: true });
-      return true;
-    }
-    sendResponse({ success: false, error: '未找到运行中的任务' });
-    return true;
-  } else if (message.type === 'SELECTED_TEXT') {
-    const tabId = sender.tab?.id;
-    const windowId = sender.tab?.windowId;
-    
-    const openSidePanel = () => {
-      if (windowId) {
-        return chrome.sidePanel.open({ windowId });
-      } else if (tabId) {
-
-        return chrome.tabs.get(tabId).then((tab) => {
-          if (tab.windowId) {
-            return chrome.sidePanel.open({ windowId: tab.windowId });
-          }
-        });
-      } else {
-        
-        return chrome.tabs.query({ active: true, currentWindow: true }).then((tabs) => {
-          if (tabs[0]?.windowId) {
-            return chrome.sidePanel.open({ windowId: tabs[0].windowId });
-          }
-        });
-      }
-    };
-    
-    // 发送消息到 sidePanel 的函数
-    const sendToSidePanel = () => {
-      setTimeout(() => {
-        chrome.runtime.sendMessage({
-          type: 'SELECTED_TEXT_RECEIVED',
-          text: message.text,
-        }).catch((err) => {
-          setTimeout(() => {
-            chrome.runtime.sendMessage({
-              type: 'SELECTED_TEXT_RECEIVED',
-              text: message.text,
-            }).catch((retryErr) => {
-              console.error('发送失败:', retryErr);
-            });
-          }, 500);
-        });
-      }, 300);
-    };
-    
-    openSidePanel()
-      .then(() => {
-        sendToSidePanel();
-      })
-      .catch((err) => {
-        console.error('打开失败:', err);
-        
-        sendToSidePanel();
-      });
-    
-    sendResponse({ success: true });
-    return true; // 保持消息通道打开
   }
-  return true; 
+  return false;
 });
 
 async function configureSidePanelOpenBehavior() {

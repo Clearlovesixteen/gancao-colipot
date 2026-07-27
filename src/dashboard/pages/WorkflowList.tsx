@@ -14,7 +14,8 @@ import {
   StopOutlined
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
-import { listAutomationWorkflows, deleteAutomationWorkflow, upsertAutomationWorkflow, type StoredAutomationWorkflow } from '../../sidePanel/utils/automationStorage';
+import { listAutomationWorkflows, deleteAutomationWorkflow, upsertAutomationWorkflow, type StoredAutomationWorkflow } from '../../shared/automationWorkflowStore';
+import { createAndRunAutomationTask, stopAutomationTask } from '../../shared/automationTaskClient';
 import type { AutomationWorkflow } from '../../shared/automationTypes';
 import moment from 'moment';
 
@@ -61,11 +62,11 @@ const WorkflowList: React.FC = () => {
     
     // 监听运行状态消息
     const listener = (msg: any) => {
-      if (msg.type === 'AUTOMATION_FINISHED' || msg.type === 'AUTOMATION_ERROR') {
-        if (msg.runId === runningId) {
+      if (msg.type === 'AUTOMATION_TASK_FINISHED' || msg.type === 'AUTOMATION_TASK_ERROR') {
+        if (msg.taskId === runningId) {
           setRunningId(null);
-          if (msg.type === 'AUTOMATION_FINISHED') message.success('执行完成');
-          else message.error(`执行出错: ${msg.error}`);
+          if (msg.type === 'AUTOMATION_TASK_FINISHED') message.success('执行完成');
+          else message.error(`执行出错: ${msg.result?.error || '工作流执行失败'}`);
         }
       }
     };
@@ -121,30 +122,33 @@ const WorkflowList: React.FC = () => {
     refresh();
   };
 
-  const handleRun = (item: StoredAutomationWorkflow, e: React.MouseEvent) => {
+  const handleRun = async (item: StoredAutomationWorkflow, e: React.MouseEvent) => {
     e.stopPropagation();
     if (runningId) return;
 
     message.loading({ content: '启动中...', key: 'run_start' });
     
-    chrome.runtime.sendMessage({ 
-      type: 'RUN_AUTOMATION', 
-      workflow: item.workflow 
-    }, (resp) => {
+    try {
+      const run = await createAndRunAutomationTask({
+        kind: 'workflow',
+        title: `运行工作流：${item.name}`,
+        goal: `运行工作流：${item.name}`,
+        source: 'dashboard',
+        workflowId: item.id,
+      });
       message.destroy('run_start');
-      if (chrome.runtime.lastError || !resp?.success) {
-        message.error(chrome.runtime.lastError?.message || resp?.error || '启动失败');
-        return;
-      }
-      setRunningId(resp.runId);
+      setRunningId(run.id);
       message.success('已开始运行');
-    });
+    } catch (error: any) {
+      message.destroy('run_start');
+      message.error(error?.message || '启动失败');
+    }
   };
 
   const handleStop = (e: React.MouseEvent) => {
     e.stopPropagation();
     if (!runningId) return;
-    chrome.runtime.sendMessage({ type: 'STOP_AUTOMATION', runId: runningId });
+    stopAutomationTask(runningId).catch((error) => message.error(error.message));
     setRunningId(null);
     message.info('已请求停止');
   };

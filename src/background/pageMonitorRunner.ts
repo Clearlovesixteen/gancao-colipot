@@ -89,7 +89,11 @@ async function captureMonitorSnapshot(tabId: number, monitor: PageMonitorMetadat
   });
 }
 
-export async function runPageMonitorNow(runId: string, deps: PageMonitorDeps): Promise<{ success: boolean; changed?: boolean; error?: string }> {
+export async function runPageMonitorNow(
+  runId: string,
+  deps: PageMonitorDeps,
+  options: { manageTaskLifecycle?: boolean } = {},
+): Promise<{ success: boolean; changed?: boolean; error?: string }> {
   const run = await getAutomationRun(runId);
   if (!run) return { success: false, error: '未找到监控任务' };
   const monitor = getMonitorMetadata(run);
@@ -97,11 +101,13 @@ export async function runPageMonitorNow(runId: string, deps: PageMonitorDeps): P
 
   let tabId: number | undefined;
   try {
-    await patchAutomationRun(run.id, {
-      status: 'running',
-      startedAt: Date.now(),
-      error: undefined,
-    });
+    if (options.manageTaskLifecycle !== false) {
+      await patchAutomationRun(run.id, {
+        status: 'running',
+        startedAt: Date.now(),
+        error: undefined,
+      });
+    }
     const tab = await chrome.tabs.create({ url: monitor.url, active: false });
     tabId = tab.id;
     if (!tabId) throw new Error('无法创建监控标签页');
@@ -146,10 +152,12 @@ export async function runPageMonitorNow(runId: string, deps: PageMonitorDeps): P
       diffPreview: compare.diffPreview,
     });
     await patchAutomationRun(run.id, {
-      status: compare.matched ? 'success' : 'idle',
-      endedAt: Date.now(),
-      resultSummary: notificationError ? `${compare.summary}；通知发送失败：${notificationError}` : compare.summary,
-      error: undefined,
+      ...(options.manageTaskLifecycle === false ? {} : {
+        status: compare.matched ? 'success' : 'idle',
+        endedAt: Date.now(),
+        resultSummary: notificationError ? `${compare.summary}；通知发送失败：${notificationError}` : compare.summary,
+        error: undefined,
+      }),
       traceSummary: {
         snapshotHash: nextSnapshot.hash,
         lastPageTitle: nextSnapshot.title,
@@ -176,9 +184,11 @@ export async function runPageMonitorNow(runId: string, deps: PageMonitorDeps): P
       error: message,
     });
     await patchAutomationRun(run.id, {
-      status: 'failed',
-      endedAt: Date.now(),
-      error: message,
+      ...(options.manageTaskLifecycle === false ? {} : {
+        status: 'failed',
+        endedAt: Date.now(),
+        error: message,
+      }),
       schedule: shouldPause ? { ...(run.schedule || { enabled: false }), enabled: false } : run.schedule,
       metadata: {
         ...(run.metadata || {}),

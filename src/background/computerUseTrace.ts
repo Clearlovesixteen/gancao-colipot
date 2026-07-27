@@ -77,6 +77,7 @@ function entryFromEvent(event: ComputerUseEvent): ComputerUseTraceEntry {
   return {
     ...base,
     error: event.error,
+    errorCode: event.errorCode,
     observation: event.lastObservation,
     intent: event.intent,
     navigationPath: event.intent?.navigationPath,
@@ -93,10 +94,12 @@ function entryFromEvent(event: ComputerUseEvent): ComputerUseTraceEntry {
     phaseGoal: event.phaseGoal,
     phase: event.phase,
     runState: event.runState,
+    resumeCheckpoint: event.resumeCheckpoint,
     result: {
       steps: event.steps,
       verification: event.verification,
       runState: event.runState,
+      resumeCheckpoint: event.resumeCheckpoint,
     },
   };
 }

@@ -884,7 +884,7 @@
         <section id="browser-use">
           <div class="section-head">
             <h2>Browser Use 闭环</h2>
-            <p>Browser Use 是自动化能力的产品名称。内部仍保留 <code>computer_use</code>、<code>ComputerUse*</code> 和 <code>RUN_COMPUTER_USE</code> 作为兼容协议。它的关键原则是：LLM 负责语义目标和短期计划，TargetResolver 负责把目标落到真实页面元素。</p>
+            <p>Browser Use 是自动化能力的产品名称。所有长任务统一通过 <code>TaskExecutorRegistry</code> 运行，<code>computer_use</code> 和 <code>ComputerUse*</code> 仅作为执行器内部类型。它的关键原则是：LLM 负责语义目标和短期计划，TargetResolver 负责把目标落到真实页面元素。</p>
           </div>
           <div class="flow">
             <div class="flow-step"><strong>目标解析</strong><span>从自然语言目标提取站点、动作、查询、风险级别和成功标准。</span></div>
@@ -903,7 +903,7 @@
         <section id="messages">
           <div class="section-head">
             <h2>消息协议</h2>
-            <p>Side Panel、Dashboard、Content Script 和 Background 通过 <code>chrome.runtime.sendMessage</code> / <code>onMessage</code> 通信。后台优先把任务类消息交给 handler，再按模型、页面工具、自动化和兼容协议分发。</p>
+            <p>Side Panel、Dashboard、Content Script 和 Background 通过 <code>chrome.runtime.sendMessage</code> / <code>onMessage</code> 通信。任务类消息统一由 TaskExecutorRegistry 分发，不再保留旧的直达执行链。</p>
           </div>
           <div class="grid cols-3">
             <article class="card">
@@ -911,15 +911,14 @@
               <ul>
                 <li><code>RUN_AUTOMATION_TASK</code> 启动任务中心记录。</li>
                 <li><code>STOP_AUTOMATION_TASK</code> 停止并标记任务。</li>
-                <li><code>RUN_PAGE_MONITOR_NOW</code> 立即执行监控。</li>
                 <li><code>UPSERT_PAGE_MONITOR_ALARM</code> 同步定时计划。</li>
               </ul>
             </article>
             <article class="card">
-              <h3>Browser Use 兼容消息</h3>
+              <h3>Browser Use 运行消息</h3>
               <ul>
-                <li><code>RUN_COMPUTER_USE</code> 从聊天入口启动动态浏览器任务。</li>
-                <li><code>STOP_COMPUTER_USE</code> 中止当前 runId。</li>
+                <li><code>RUN_AUTOMATION_TASK</code> 通过统一任务注册表启动 Browser Use。</li>
+                <li><code>STOP_AUTOMATION_TASK</code> 通过任务 ID 停止执行器。</li>
                 <li><code>CONFIRM_COMPUTER_USE_ACTION</code> 响应高风险动作确认。</li>
                 <li><code>COMPUTER_USE_TRACE</code> 记录观察、计划、动作和结果。</li>
               </ul>
@@ -968,7 +967,7 @@
               </article>
               <article class="card">
                 <h3>数据升级原则</h3>
-                <p>不清空已有资料、Memory、任务记录和工作流；旧 <code>documentDb/documentStore</code> 保留兼容 re-export，统一落到 <code>DocumentRepository</code>。</p>
+                <p><code>DocumentRepository</code> 是唯一资料访问层；旧 <code>documentDb/documentStore</code> 和 <code>uploadedFiles</code> 数据链已删除，不再迁移或读取。</p>
               </article>
             </div>
           </div>

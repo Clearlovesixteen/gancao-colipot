@@ -54,6 +54,28 @@ const intent: ComputerUseIntent = {
 };
 
 describe('computerUsePlanner', () => {
+  it('returns a typed blocked decision when a required form field is missing', async () => {
+    const plan = await createComputerUsePlan({
+      intent: {
+        ...intent,
+        taskType: 'form',
+        rawGoal: '输入用户花名：秋枫',
+        objective: '输入用户花名：秋枫',
+      },
+      phase: {
+        id: 'fill_alias',
+        type: 'fill_form',
+        goal: '输入用户花名：秋枫',
+        formValues: [{ label: '用户花名', value: '秋枫', control: 'input' }],
+      },
+      history: [],
+      context: context({ observation: { elements: [] } as any }),
+    });
+
+    expect(plan.decision).toBe('blocked');
+    expect(plan.blockedReason).toContain('用户花名');
+  });
+
   it('fills a named text field by label instead of the first input on the page', async () => {
     const fileNameInput = element({
       elementId: 'file_name',
@@ -98,7 +120,7 @@ describe('computerUsePlanner', () => {
     expect(plan.steps[0]).toEqual(expect.objectContaining({
       action: 'type',
       value: '秋枫',
-      target: expect.objectContaining({ elementId: 'user_alias' }),
+      target: expect.objectContaining({ collectionType: 'form_group', text: '用户花名' }),
     }));
   });
 
@@ -136,7 +158,7 @@ describe('computerUsePlanner', () => {
     expect(plan.steps[0]).toEqual(expect.objectContaining({
       action: 'select_option',
       value: '智慧药房WMS仓储',
-      target: expect.objectContaining({ elementId: 'subsystem' }),
+      target: expect.objectContaining({ collectionType: 'form_group', text: '子系统' }),
     }));
   });
 
@@ -192,7 +214,7 @@ describe('computerUsePlanner', () => {
     expect(plan.steps[0]).toEqual(expect.objectContaining({
       action: 'type',
       value: '秋枫',
-      target: expect.objectContaining({ elementId: 'alias_input' }),
+      target: expect.objectContaining({ collectionType: 'form_group', text: '用户花名' }),
     }));
   });
 
@@ -222,7 +244,7 @@ describe('computerUsePlanner', () => {
 
     expect(plan.steps[0]).toEqual(expect.objectContaining({
       action: 'click',
-      target: expect.objectContaining({ elementId: 'query', purpose: 'search_button' }),
+      target: expect.objectContaining({ collectionType: 'action_group', text: '查询', purpose: 'search_button' }),
     }));
   });
 
@@ -296,9 +318,9 @@ describe('computerUsePlanner', () => {
     expect(plan.steps[0]).toEqual(expect.objectContaining({
       action: 'download_file',
       target: expect.objectContaining({
-        elementId: 'row_download_1',
         collectionType: 'table_row_group',
         ordinal: 1,
+        purpose: 'download_button',
       }),
     }));
   });
@@ -318,7 +340,7 @@ describe('computerUsePlanner', () => {
 
     expect(plan.steps[0]).toEqual(expect.objectContaining({
       action: 'download_file',
-      target: expect.objectContaining({ elementId: 'export_1', purpose: 'download_button', collectionType: 'action_group' }),
+      target: expect.objectContaining({ text: '导出', purpose: 'download_button', collectionType: 'action_group' }),
     }));
   });
 
@@ -353,7 +375,7 @@ describe('computerUsePlanner', () => {
 
     expect(plan.steps[0]).toEqual(expect.objectContaining({
       action: 'click',
-      target: expect.objectContaining({ elementId: 'menu_1', collectionType: 'menu_group' }),
+      target: expect.objectContaining({ text: '库存预警', collectionType: 'menu_group' }),
     }));
   });
 
@@ -372,7 +394,7 @@ describe('computerUsePlanner', () => {
 
     expect(plan.steps[0]).toEqual(expect.objectContaining({
       action: 'click',
-      target: expect.objectContaining({ elementId: 'menu_warning', collectionType: 'menu_group' }),
+      target: expect.objectContaining({ text: '库存预警', collectionType: 'menu_group' }),
     }));
   });
 
@@ -391,7 +413,7 @@ describe('computerUsePlanner', () => {
 
     expect(plan.steps[0]).toEqual(expect.objectContaining({
       action: 'click',
-      target: expect.objectContaining({ elementId: 'menu_module' }),
+      target: expect.objectContaining({ text: '颗粒剂管理', collectionType: 'menu_group' }),
     }));
   });
 
@@ -424,7 +446,6 @@ describe('computerUsePlanner', () => {
     expect(plan.steps[0]).toEqual(expect.objectContaining({
       action: 'click',
       target: expect.objectContaining({
-        elementId: 'drink_parent',
         text: '饮片管理',
         parentPath: [],
       }),
@@ -474,7 +495,7 @@ describe('computerUsePlanner', () => {
 
     expect(plan.steps[0]).toEqual(expect.objectContaining({
       action: 'click',
-      target: expect.objectContaining({ elementId: 'menu_warning' }),
+      target: expect.objectContaining({ text: '库存预警', collectionType: 'menu_group' }),
     }));
   });
 
@@ -515,7 +536,7 @@ describe('computerUsePlanner', () => {
 
     expect(plan.steps[0]).toEqual(expect.objectContaining({
       action: 'click',
-      target: expect.objectContaining({ elementId: 'menu_drink' }),
+      target: expect.objectContaining({ text: '饮片管理', collectionType: 'menu_group' }),
     }));
   });
 
@@ -572,7 +593,7 @@ describe('computerUsePlanner', () => {
 
     expect(plan.steps[0]).toEqual(expect.objectContaining({
       action: 'click',
-      target: expect.objectContaining({ elementId: 'el_drink_warning_164' }),
+      target: expect.objectContaining({ text: '库存预警', parentPath: ['饮片管理'], collectionType: 'menu_group' }),
     }));
   });
 
@@ -609,7 +630,7 @@ describe('computerUsePlanner', () => {
 
     expect(plan.steps[0]).toEqual(expect.objectContaining({
       action: 'click',
-      target: expect.objectContaining({ elementId: 'drink_warning_from_collection', collectionType: 'menu_group' }),
+      target: expect.objectContaining({ text: '库存预警', parentPath: ['饮片管理'], collectionType: 'menu_group' }),
     }));
   });
 
@@ -744,7 +765,7 @@ describe('computerUsePlanner', () => {
 
     expect(plan.steps[0]).toEqual(expect.objectContaining({
       action: 'download_file',
-      target: expect.objectContaining({ elementId: 'export_drink_warning', purpose: 'download_button', collectionType: 'action_group' }),
+      target: expect.objectContaining({ text: '导 出', purpose: 'download_button', collectionType: 'action_group' }),
     }));
   });
 
@@ -763,7 +784,7 @@ describe('computerUsePlanner', () => {
 
     expect(plan.steps[0]).toEqual(expect.objectContaining({
       action: 'click',
-      target: expect.objectContaining({ elementId: 'file_center', collectionType: 'menu_group' }),
+      target: expect.objectContaining({ text: '文件中心', collectionType: 'menu_group' }),
     }));
   });
 
@@ -798,7 +819,7 @@ describe('computerUsePlanner', () => {
 
     expect(plan.steps[0]).toEqual(expect.objectContaining({
       action: 'click',
-      target: expect.objectContaining({ elementId: 'downloaded_file', collectionType: 'file_list' }),
+      target: expect.objectContaining({ text: '库存预警_20260630.xlsx', collectionType: 'file_list' }),
     }));
   });
 
@@ -843,8 +864,8 @@ describe('computerUsePlanner', () => {
     expect(plan.steps[0]).toEqual(expect.objectContaining({
       action: 'click',
       target: expect.objectContaining({
-        elementId: 'file_download_link',
         collectionType: 'file_list',
+        text: '下载',
       }),
     }));
   });
@@ -870,7 +891,7 @@ describe('computerUsePlanner', () => {
 
     expect(plan.steps[0]).toEqual(expect.objectContaining({
       action: 'download_file',
-      target: expect.objectContaining({ elementId: 'export_after_nav', purpose: 'download_button', collectionType: 'action_group' }),
+      target: expect.objectContaining({ text: '导出', purpose: 'download_button', collectionType: 'action_group' }),
     }));
   });
 
@@ -905,6 +926,7 @@ describe('computerUsePlanner', () => {
       }),
       callLLM: async () => ({
         summary: 'finish',
+        decision: 'complete',
         confidence: 0.9,
         steps: [{
           id: 'finish',
@@ -918,7 +940,7 @@ describe('computerUsePlanner', () => {
 
     expect(plan.steps[0]).toEqual(expect.objectContaining({
       action: 'click',
-      target: expect.objectContaining({ elementId: 'menu_warning' }),
+      target: expect.objectContaining({ text: '库存预警', collectionType: 'menu_group' }),
     }));
   });
 
@@ -940,6 +962,7 @@ describe('computerUsePlanner', () => {
       context: context({}),
       callLLM: async () => ({
         summary: '填写输入框',
+        decision: 'act',
         confidence: 0.8,
         steps: [{
           id: 'fill_keyword',

@@ -341,7 +341,7 @@ flowchart LR
   Verify["步骤校验<br/>verifyComputerUseStep.ts<br/>动作级校验"]
   Download["下载入库<br/>downloadManager.ts"]
   Trace["任务轨迹<br/>computerUseTrace.ts"]
-  DB["资料库<br/>documentDb.ts"]
+  DB["资料库<br/>DocumentRepository"]
   Content["内容脚本工具<br/>content/tools.ts"]
 
   BG --> GLM
@@ -374,11 +374,11 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-  Start["侧边栏或工作流发起<br/>RUN_COMPUTER_USE / computerTask"]
-  Router["后台 runComputerUseOnTab<br/>创建 runId / AbortController / 初始轨迹"]
-  Parser["快速任务解析<br/>computerUseTaskParser.ts<br/>识别搜索起始 URL 等"]
-  SearchSkill["搜索引擎专项技能<br/>computerUseSkills/searchEngineSkill.ts"]
-  Intent["意图与任务计划<br/>computerUseIntent.ts<br/>任务类型 / navigationPath / taskPlan"]
+  Start["侧边栏、任务中心或工作流发起<br/>RUN_AUTOMATION_TASK"]
+  Registry["TaskExecutorRegistry<br/>选择 computer_use 执行器"]
+  Router["后台 runComputerUseOnTab<br/>创建内部 runId / AbortController / 初始轨迹"]
+  Parser["候选任务解析<br/>computerUseTaskParser.ts<br/>只提供低风险确定性信号"]
+  Intent["统一意图与任务编译<br/>computerUseIntent.ts / taskPlanCompiler.ts<br/>所有任务生成同一 phase queue"]
   PhaseLoop["阶段循环<br/>ComputerUsePhase<br/>按阶段推进"]
   Context["页面上下文构建<br/>pageContextBuilder.ts<br/>观察页面 / 候选元素 / 结构化数据"]
   Collections["语义集合<br/>collectionBuilder.ts<br/>菜单组 / 搜索结果 / 文件列表 / 表格"]
@@ -391,10 +391,10 @@ flowchart LR
   Trace["轨迹记录<br/>computerUseTrace.ts<br/>观察 / 计划 / 动作 / 结果 / 错误"]
   UI["侧边栏任务卡片<br/>日志 / 复制 / 重试 / 高风险确认"]
 
-  Start --> Router
+  Start --> Registry
+  Registry --> Router
   Router --> Parser
-  Parser -->|"搜索型任务"| SearchSkill
-  Parser -->|"普通任务"| Intent
+  Parser --> Intent
   Intent --> PhaseLoop
   PhaseLoop --> Context
   PhaseLoop --> Memory
@@ -411,7 +411,6 @@ flowchart LR
   Resolver -->|"目标缺失或候选失败"| Memory
   Memory --> Planner
   Verify -->|"阻塞或连续失败"| Trace
-  SearchSkill --> Trace
   Act --> Trace
   Router --> Trace
   Trace --> UI
@@ -463,7 +462,7 @@ flowchart TB
   OCRStruct["OCR 结构化<br/>shared/ocrStructurer.ts<br/>字段 / 表格 / 正文区块 / 摘要"]
   WebCapture["网页结构化采集<br/>extract_page_structured_data"]
   Download["浏览器导出下载<br/>downloadManager.ts<br/>chrome.downloads 监听"]
-  Store["资料库访问层<br/>documentStore.ts / documentDb.ts<br/>同一套 IndexedDB 结构"]
+  Store["资料库访问层<br/>DocumentRepository<br/>唯一 IndexedDB 入口"]
   Chunk["文档分块与评分<br/>shared/documentChunker.ts"]
   Tools["资料工具<br/>list/read/search/summarize/compare/generate tasks/export"]
   Results["资料结果<br/>需求任务清单 / 网页结构化数据 / 表格结果"]
@@ -489,11 +488,11 @@ flowchart TB
 flowchart LR
   Editor["工作台编辑器<br/>WorkflowEditor / WorkflowGraph"]
   Storage["chrome.storage.local<br/>automationWorkflows"]
-  BG["后台服务<br/>RUN_AUTOMATION"]
+  BG["统一任务执行器<br/>RUN_AUTOMATION_TASK"]
   Runner["AutomationRunner<br/>顺序执行固定步骤"]
   Browser["页面工具集<br/>导航 / 点击 / 输入 / 等待 / 提取 / 截图"]
   ComputerTask["computerTask 步骤<br/>复用智能浏览器操作子系统"]
-  Events["运行事件<br/>AUTOMATION_PROGRESS / FINISHED / ERROR"]
+  Events["任务事件<br/>AUTOMATION_TASK_PROGRESS / FINISHED / ERROR"]
   UI["工作台或侧边栏日志"]
 
   Editor -->|"保存 / 加载"| Storage
@@ -520,7 +519,7 @@ flowchart LR
 | `src/background/downloadManager.ts` | 真实导出/下载动作：监听 `chrome.downloads`，尝试读取下载内容，解析后保存到资料中心。 |
 | `src/content` | 页面侧执行层：DOM 观察、元素语义识别、搜索结果提取、点击/双击/右键/坐标点击/快捷键等浏览器动作、页面结构化提取、控制台错误缓存、登录态读取。 |
 | `src/shared` | 跨入口共享类型、业务工具声明、文件解析、文档分块、OCR 结构化、Computer Use 结果汇总、导出器。 |
-| `src/sidePanel/utils/documentStore.ts` 与 `src/background/documentDb.ts` | 两套入口各自访问同一个 `gancao_document_center` IndexedDB，用于资料、内容、分块、结果和原始文件。 |
+| `src/shared/documentRepository.ts` | 资料、内容、分块、结果和原始文件的唯一 IndexedDB 访问层。 |
 | `public` | Manifest、HTML 壳、钉钉登录脚本、页面控制台桥接脚本。 |
 
 ## 架构备注

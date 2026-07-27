@@ -7,12 +7,34 @@ import type {
   ObservedElement,
 } from '../shared/automationTypes';
 import { buildObservedCollections } from './collectionBuilder';
+import { evaluateObservationQuality } from './observationQuality';
 
 type ExecuteBrowserTool = (tabId: number, toolName: string, args: any) => Promise<any>;
 
 function normalizeToolResult(result: any): any {
   if (result?.success === true && result?.result && typeof result.result === 'object') return result.result;
   return result;
+}
+
+function requireUsableObservation(result: any): BrowserObservation {
+  const observation = normalizeToolResult(result);
+  if (!observation || observation.success === false || !Array.isArray(observation.elements)) {
+    const detail = observation?.error || observation?.message || '页面尚未形成可观察 DOM';
+    throw new Error(`PAGE_OBSERVATION_NOT_READY: ${detail}`);
+  }
+  return {
+    ...observation,
+    elements: observation.elements,
+    // Older content scripts and a document mid-navigation can expose a partial
+    // collection shell. Ignore those shells and rebuild semantics from elements.
+    collections: Array.isArray(observation.collections)
+      ? observation.collections.filter((collection: any) => (
+        collection
+        && typeof collection.type === 'string'
+        && Array.isArray(collection.items)
+      ))
+      : [],
+  } as BrowserObservation;
 }
 
 function isDataIntent(intent: ComputerUseIntent): boolean {
@@ -39,6 +61,7 @@ function shouldCollectSearchResults(intent: ComputerUseIntent, phase?: ComputerU
 }
 
 function buildSearchResultsCollection(result: any): ObservedCollection | null {
+  if (result?.reliable === false) return null;
   const results = Array.isArray(result?.results) ? result.results : [];
   const items = results
     .filter((item: any) => item?.elementId || item?.selector || item?.href)
@@ -69,14 +92,31 @@ function buildSearchResultsCollection(result: any): ObservedCollection | null {
     metadata: {
       source: 'get_search_results',
       count: result?.count,
+      verifiedNaturalResults: true,
+      query: result?.query,
+      url: result?.url,
     },
   };
+}
+
+function hasSearchResultRouteEvidence(observation: BrowserObservation, query?: string): boolean {
+  let decodedUrl = observation.url || '';
+  try {
+    decodedUrl = decodeURIComponent(decodedUrl);
+  } catch {
+    // Keep the undecoded URL.
+  }
+  const normalizedQuery = String(query || '').trim().toLowerCase();
+  const hasQueryParameter = /[?&](wd|word|q|query|keyword|search_query)=/i.test(decodedUrl);
+  if (!hasQueryParameter) return observation.pageState?.kind === 'result_page';
+  return !normalizedQuery || decodedUrl.toLowerCase().includes(normalizedQuery);
 }
 
 function mergeCollections(collections: ObservedCollection[]): ObservedCollection[] {
   const merged: ObservedCollection[] = [];
   const seenCollections = new Set<string>();
   for (const collection of collections) {
+    if (!collection || !Array.isArray(collection.items)) continue;
     const collectionKey = `${collection.type}:${collection.id}`;
     if (seenCollections.has(collectionKey)) continue;
     seenCollections.add(collectionKey);
@@ -145,10 +185,10 @@ export async function buildComputerUsePageContext(input: {
   phase?: ComputerUsePhase;
   executeBrowserTool: ExecuteBrowserTool;
 }): Promise<ComputerUsePageContext> {
-  const observation = normalizeToolResult(await input.executeBrowserTool(input.tabId, 'observe_page', {
+  const observation = requireUsableObservation(await input.executeBrowserTool(input.tabId, 'observe_page', {
     includeScreenshot: false,
     limit: 520,
-  })) as BrowserObservation;
+  }));
 
   let structuredData: ComputerUsePageContext['structuredData'] | undefined;
   let pageTextPreview = '';
@@ -183,14 +223,23 @@ export async function buildComputerUsePageContext(input: {
     searchResultsCollection = buildSearchResultsCollection(searchResults);
   }
 
+  const rawObservationCollections = Array.isArray(observation.collections) ? observation.collections : [];
+  const verifiedSearchContext = Boolean(searchResultsCollection)
+    || hasSearchResultRouteEvidence(observation, input.phase?.query || input.intent.query);
   const collections = mergeCollections([
-    ...(Array.isArray(observation.collections) ? observation.collections : []),
+    ...rawObservationCollections.filter((collection) => collection.type !== 'search_results' || verifiedSearchContext),
     ...(searchResultsCollection ? [searchResultsCollection] : []),
-    ...buildObservedCollections({ observation, tableCandidates, phase: input.phase }),
+    ...buildObservedCollections({ observation, tableCandidates, phase: input.phase })
+      .filter((collection) => collection.type !== 'search_results' || verifiedSearchContext),
   ]);
+  const observationQuality = evaluateObservationQuality({ observation, collections });
+  const enrichedObservation: BrowserObservation = {
+    ...observation,
+    qualityReport: observationQuality,
+  };
 
   return {
-    observation,
+    observation: enrichedObservation,
     structuredData,
     pageTextPreview,
     navigationCandidates: getNavigationCandidates(observation.elements, [
@@ -200,5 +249,6 @@ export async function buildComputerUsePageContext(input: {
     tableCandidates,
     actionCandidates: getActionCandidates(observation.elements),
     collections,
+    observationQuality,
   };
 }

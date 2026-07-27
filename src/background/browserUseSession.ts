@@ -15,6 +15,11 @@ export type BrowserUseSessionDeps = {
   now?: () => number;
 };
 
+export type BrowserUseSessionSyncHint = {
+  expectedUrl?: string;
+  allowActiveNewTab?: boolean;
+};
+
 export class BrowserUseSession {
   private currentTabId: number;
   private readonly knownTabIds = new Set<number>();
@@ -49,9 +54,9 @@ export class BrowserUseSession {
     return this.snapshot();
   }
 
-  async syncAfterAction(): Promise<{ switched: boolean; previousTabId: number; currentTabId: number; snapshot: BrowserUseSessionSnapshot }> {
+  async syncAfterAction(hint: BrowserUseSessionSyncHint = {}): Promise<{ switched: boolean; previousTabId: number; currentTabId: number; snapshot: BrowserUseSessionSnapshot }> {
     const previousTabId = this.currentTabId;
-    await this.refresh(true);
+    await this.refresh(true, hint);
     return {
       switched: previousTabId !== this.currentTabId,
       previousTabId,
@@ -70,14 +75,26 @@ export class BrowserUseSession {
     };
   }
 
-  private async refresh(followNewChild: boolean): Promise<void> {
+  private async refresh(followNewChild: boolean, hint: BrowserUseSessionSyncHint = {}): Promise<void> {
     const listed = (await this.deps.listTabs()).filter((tab) => Number.isFinite(tab.id));
     const newTabs = listed.filter((tab) => !this.knownTabIds.has(tab.id));
     if (followNewChild) {
       const directChildren = newTabs
         .filter((tab) => tab.openerTabId === this.currentTabId)
         .sort((a, b) => Number(b.active) - Number(a.active) || b.id - a.id);
-      if (directChildren[0]) this.currentTabId = directChildren[0].id;
+      const expectedUrl = normalizeComparableUrl(hint.expectedUrl);
+      const expectedMatches = expectedUrl
+        ? newTabs
+          .filter((tab) => urlMatchesExpectation(tab.url, expectedUrl))
+          .sort((a, b) => Number(b.active) - Number(a.active) || b.id - a.id)
+        : [];
+      const activeNewTabs = hint.allowActiveNewTab === false
+        ? []
+        : newTabs.filter((tab) => tab.active).sort((a, b) => b.id - a.id);
+      const nextTab = directChildren[0]
+        || (expectedMatches.length === 1 ? expectedMatches[0] : undefined)
+        || (activeNewTabs.length === 1 ? activeNewTabs[0] : undefined);
+      if (nextTab) this.currentTabId = nextTab.id;
     }
 
     if (!listed.some((tab) => tab.id === this.currentTabId)) {
@@ -98,5 +115,32 @@ export class BrowserUseSession {
       current: tab.id === this.currentTabId,
     }));
     this.updatedAt = (this.deps.now || Date.now)();
+  }
+}
+
+function normalizeComparableUrl(value?: string): string {
+  if (!value) return '';
+  try {
+    const url = new URL(value);
+    url.hash = '';
+    return url.toString();
+  } catch {
+    return value.trim();
+  }
+}
+
+function urlMatchesExpectation(actualValue: string | undefined, expectedValue: string): boolean {
+  if (!actualValue || !expectedValue) return false;
+  const actual = normalizeComparableUrl(actualValue);
+  if (actual === expectedValue || actual.startsWith(expectedValue) || expectedValue.startsWith(actual)) return true;
+  try {
+    const actualUrl = new URL(actual);
+    const expectedUrl = new URL(expectedValue);
+    return actualUrl.origin === expectedUrl.origin
+      && (actualUrl.pathname === expectedUrl.pathname
+        || actualUrl.pathname.startsWith(expectedUrl.pathname)
+        || expectedUrl.pathname.startsWith(actualUrl.pathname));
+  } catch {
+    return false;
   }
 }

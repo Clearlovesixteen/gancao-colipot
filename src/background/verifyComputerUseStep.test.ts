@@ -210,4 +210,33 @@ describe('verifyComputerUseStep', () => {
 
     expect(verifyComputerUseStep({ step, result: { success: true }, before: context(), after }).success).toBe(true);
   });
+
+  it('fails closed for unsupported actions instead of reporting success', () => {
+    const step = {
+      id: 'unknown',
+      action: 'unknown_action',
+      rationale: '未知动作',
+    } as unknown as PlannedStep;
+
+    expect(verifyComputerUseStep({
+      step,
+      result: { success: true },
+      before: context(),
+      after: context(),
+    })).toEqual(expect.objectContaining({
+      success: false,
+      blocking: true,
+    }));
+  });
+
+  it('does not treat finish as an executable successful action', () => {
+    const step: PlannedStep = { id: 'finish', action: 'finish', rationale: '结束' };
+
+    expect(verifyComputerUseStep({
+      step,
+      result: { success: true },
+      before: context(),
+      after: context(),
+    })).toEqual(expect.objectContaining({ success: false }));
+  });
 });

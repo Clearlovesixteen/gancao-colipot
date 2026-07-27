@@ -437,8 +437,8 @@ function isNavigationCandidateElement(element: Element): boolean {
   if (!text || text.length > 80) return false;
   if (['script', 'style', 'svg', 'path'].includes(tag)) return false;
   if (['menuitem', 'tab', 'treeitem', 'link'].includes(role)) return true;
-  const className = String((element as HTMLElement).className || '').toLowerCase();
-  const parentClassName = String((element.parentElement as HTMLElement | null)?.className || '').toLowerCase();
+  const className = getElementClassName(element).toLowerCase();
+  const parentClassName = getElementClassName(element.parentElement).toLowerCase();
   const context = `${className} ${parentClassName}`;
   if (/(menu|nav|sidebar|sider|aside|tabs?|breadcrumb|submenu|ant-menu|el-menu)/.test(context)) return true;
   return Boolean(element.closest('aside,nav,[role="menu"],[role="navigation"],[class*="menu"],[class*="sidebar"],[class*="sider"],[class*="layout-sider"],.ant-menu,.el-menu'));
@@ -453,7 +453,7 @@ function getElementValue(element: Element): string | undefined {
   const el = element as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
   if (typeof el.value === 'string') return el.value;
   const role = element.getAttribute('role');
-  const className = String((element as HTMLElement).className || '');
+  const className = getElementClassName(element);
   if (role === 'combobox' || /(ant-select|el-select|select)/i.test(className)) {
     const selected = element.querySelector(
       '.ant-select-selection-item,.el-select__selected-item,[aria-selected="true"],[role="option"][aria-selected="true"]',
@@ -472,7 +472,7 @@ function getElementDescriptor(element: Element): string {
     element.getAttribute('name'),
     element.getAttribute('type'),
     element.getAttribute('role'),
-    (element as HTMLElement).className,
+    getElementClassName(element),
     element.getAttribute('aria-label'),
     element.getAttribute('title'),
     element.getAttribute('data-testid'),
@@ -498,7 +498,47 @@ function getNavigationParentText(element: Element): string | undefined {
   const parentMenu = element.parentElement?.closest?.('li,[role="menuitem"],.ant-menu-submenu,.el-sub-menu,.menu-item,[class*="submenu"]');
   const parent = parentMenu?.parentElement?.closest?.('li,[role="menuitem"],.ant-menu-submenu,.el-sub-menu,.menu-item,[class*="submenu"]');
   const text = getCleanText(parent).slice(0, 80);
-  return text && text !== getCleanText(element).slice(0, 80) ? text : undefined;
+  const ownText = getCleanText(element).slice(0, 80);
+  if (text && text !== ownText) return text;
+
+  // Navigation groups are not always list-based. Business systems commonly use
+  // section/div wrappers with a direct title button followed by child actions.
+  const navigationRoot = element.closest('aside,nav,[role="navigation"],.ant-menu,.el-menu');
+  let container = element.parentElement;
+  while (container && container !== navigationRoot?.parentElement && container !== document.body) {
+    const isGroup = container.matches([
+      'section',
+      'li',
+      '[role="group"]',
+      '[role="menu"]',
+      '[data-module]',
+      '[data-menu-group]',
+      '.ant-menu-submenu',
+      '.el-sub-menu',
+      '[class*="submenu"]',
+      '[class*="menu-group"]',
+    ].join(','));
+    if (isGroup) {
+      const attributeLabel = [
+        container.getAttribute('aria-label'),
+        container.getAttribute('data-module'),
+        container.getAttribute('data-menu-group'),
+        container.getAttribute('data-title'),
+        container.getAttribute('title'),
+      ].map((value) => String(value || '').trim()).find((value) => value && value !== ownText);
+      if (attributeLabel) return attributeLabel.slice(0, 80);
+
+      const directLabel = Array.from(container.children).find((candidate) => {
+        if (candidate === element || candidate.contains(element)) return false;
+        return candidate.matches('button,a,[role="button"],[role="menuitem"],.ant-menu-submenu-title,.el-sub-menu__title,[class*="menu-title"]');
+      });
+      const directText = getCleanText(directLabel).slice(0, 80);
+      if (directText && directText !== ownText) return directText;
+    }
+    if (container === navigationRoot) break;
+    container = container.parentElement;
+  }
+  return undefined;
 }
 
 function getNavigationLevel(element: Element): number | undefined {
@@ -518,7 +558,7 @@ function isElementExpanded(element: Element): boolean | undefined {
   const expanded = element.getAttribute('aria-expanded');
   if (expanded === 'true') return true;
   if (expanded === 'false') return false;
-  const className = String((element as HTMLElement).className || '');
+  const className = getElementClassName(element);
   if (/(open|opened|expanded|active|selected|ant-menu-submenu-open|el-sub-menu.is-open)/i.test(className)) return true;
   return undefined;
 }
@@ -527,7 +567,7 @@ function isElementActive(element: Element): boolean | undefined {
   const current = element.getAttribute('aria-current');
   if (current && current !== 'false') return true;
   if (element.getAttribute('aria-selected') === 'true') return true;
-  const className = String((element as HTMLElement).className || '');
+  const className = getElementClassName(element);
   if (/(active|selected|current|ant-menu-item-selected|router-link-active|is-active)/i.test(className)) return true;
   return undefined;
 }
@@ -1001,7 +1041,7 @@ async function selectOption(args: any): Promise<any> {
       .filter((item) => isVisibleElement(item))
       .filter((item) => {
         const role = getElementRole(item);
-        const context = `${generateSelector(item)} ${String((item as HTMLElement).className || '')}`;
+        const context = `${generateSelector(item)} ${getElementClassName(item)}`;
         return role === 'option'
           || item.getAttribute('aria-selected') !== null
           || /(ant-select-item-option|el-select-dropdown__item|dropdown|option)/i.test(context);
@@ -1223,10 +1263,6 @@ function collectFirstSearchResultCandidates(): HTMLAnchorElement[] {
       if (anchor) anchors.add(anchor);
     });
   });
-  if (!anchors.size) {
-    document.querySelectorAll<HTMLAnchorElement>('a[href]').forEach((anchor) => anchors.add(anchor));
-  }
-
   const minY = getSearchResultMinY();
   return Array.from(anchors)
     .filter((anchor) => isVisibleElement(anchor) && !isBadSearchResultAnchor(anchor))
@@ -1240,15 +1276,49 @@ function collectFirstSearchResultCandidates(): HTMLAnchorElement[] {
     });
 }
 
+function getCurrentSearchQuery(): string {
+  try {
+    const url = new URL(window.location.href);
+    for (const key of ['q', 'query', 'wd', 'word', 'keyword', 'search_query']) {
+      const value = url.searchParams.get(key);
+      if (value?.trim()) return value.trim();
+    }
+  } catch {
+    // Fall through to the visible search control.
+  }
+  const input = document.querySelector('#kw,#sb_form_q,input[name="wd"],input[name="q"],input[type="search"],textarea[name="q"]') as HTMLInputElement | HTMLTextAreaElement | null;
+  return String(input?.value || '').trim();
+}
+
+function hasNaturalSearchResultStructure(): boolean {
+  return Boolean(document.querySelector([
+    '#content_left > .result',
+    '#content_left > .c-container',
+    '#b_results > .b_algo',
+    '#rso .g',
+    '#search .g',
+    'ytd-search ytd-video-renderer',
+    'ytd-search ytd-rich-item-renderer',
+    'ytd-item-section-renderer ytd-video-renderer',
+    'ytd-video-renderer',
+    'ytd-rich-item-renderer',
+    'ytd-compact-video-renderer',
+    'ytd-grid-video-renderer',
+  ].join(',')));
+}
+
 function getSearchResults(args: any = {}): any {
   const candidates = collectFirstSearchResultCandidates();
   const limit = Math.max(1, Math.min(Number(args?.limit || 10), 30));
+  const reliable = hasNaturalSearchResultStructure() && candidates.length > 0;
   return {
     success: true,
     url: window.location.href,
     title: document.title,
-    count: candidates.length,
-    results: candidates.slice(0, limit).map((anchor, index) => ({
+    query: getCurrentSearchQuery(),
+    reliable,
+    count: reliable ? candidates.length : 0,
+    results: (reliable ? candidates : []).slice(0, limit).map((anchor, index) => ({
       index: index + 1,
       title: getSearchResultAnchorText(anchor),
       text: getSearchResultAnchorText(anchor),
@@ -1265,6 +1335,15 @@ function getSearchResults(args: any = {}): any {
 
 async function clickSearchResult(args: any): Promise<any> {
   const candidates = collectFirstSearchResultCandidates();
+  if (!hasNaturalSearchResultStructure()) {
+    return {
+      success: false,
+      error: '当前页面尚未形成稳定的自然搜索结果列表',
+      url: window.location.href,
+      title: document.title,
+      candidateCount: 0,
+    };
+  }
   const index = Math.max(0, Number(args?.index || 1) - 1);
   const anchor = candidates[index];
   if (!anchor) {
@@ -1564,12 +1643,39 @@ async function queryElements(args: any): Promise<any> {
  * 生成选择器
  */
 function generateSelector(element: Element): string {
-  if (element.id) return `#${element.id}`;
-  if (element.className) {
-    const classes = element.className.split(' ').filter(c => c).join('.');
-    if (classes) return `${element.tagName.toLowerCase()}.${classes}`;
+  if (element.id) return `#${escapeCssIdentifier(element.id)}`;
+  const classes = getElementClassNames(element)
+    .map(escapeCssIdentifier)
+    .filter(Boolean)
+    .join('.');
+  if (classes) {
+    return `${element.tagName.toLowerCase()}.${classes}`;
   }
   return element.tagName.toLowerCase();
+}
+
+function getElementClassName(element: Element | null | undefined): string {
+  return getElementClassNames(element).join(' ');
+}
+
+function getElementClassNames(element: Element | null | undefined): string[] {
+  if (!element) return [];
+  const classList = Array.from(element.classList || [])
+    .map(value => String(value).trim())
+    .filter(Boolean);
+  if (classList.length > 0) return classList;
+
+  return String(element.getAttribute('class') || '')
+    .split(/\s+/)
+    .map(value => value.trim())
+    .filter(Boolean);
+}
+
+function escapeCssIdentifier(value: string): string {
+  if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
+    return CSS.escape(value);
+  }
+  return value.replace(/([^a-zA-Z0-9_-])/g, '\\$1');
 }
 
 /**

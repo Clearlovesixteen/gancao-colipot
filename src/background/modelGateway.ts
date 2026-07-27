@@ -1,4 +1,4 @@
-import { GLMClient, type GLMSendResult } from '../sidePanel/utils/glm-client';
+import { GLMClient, type GLMSendResult } from './modelClient';
 import {
   getModelProfile,
   validateModelProfile,

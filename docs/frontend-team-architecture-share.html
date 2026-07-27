@@ -1,0 +1,683 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="甘草 Copilot 当前项目架构与技术栈——前端团队内部分享" />
+  <title>甘草 Copilot · 架构与技术栈</title>
+  <style>
+    :root {
+      --ink: #17211d;
+      --ink-soft: #425048;
+      --paper: #efe9da;
+      --paper-deep: #e3dbc8;
+      --acid: #d5ff3f;
+      --orange: #ff5c35;
+      --blue: #316bff;
+      --line: rgba(23, 33, 29, .22);
+      --panel: rgba(255, 253, 246, .58);
+      --shadow: 8px 8px 0 rgba(23, 33, 29, .92);
+      --serif: "Songti SC", "STSong", "Noto Serif CJK SC", Georgia, serif;
+      --mono: "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; scroll-snap-type: y proximity; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        linear-gradient(rgba(23,33,29,.045) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(23,33,29,.045) 1px, transparent 1px),
+        var(--paper);
+      background-size: 24px 24px;
+      font-family: var(--serif);
+      font-size: 16px;
+      line-height: 1.65;
+    }
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      z-index: 20;
+      pointer-events: none;
+      opacity: .15;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 160 160' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.22'/%3E%3C/svg%3E");
+    }
+
+    a { color: inherit; }
+    button { font: inherit; }
+    .mono, code, .eyebrow, .section-no, .chip, .metric-label, .crumb, .key, .nav-label { font-family: var(--mono); }
+
+    .progress {
+      position: fixed;
+      top: 0;
+      left: 0;
+      z-index: 50;
+      width: 100%;
+      height: 5px;
+      background: transparent;
+    }
+    .progress > span {
+      display: block;
+      width: 0;
+      height: 100%;
+      background: var(--orange);
+      box-shadow: 0 0 0 1px var(--ink);
+      transition: width .12s linear;
+    }
+    .rail {
+      position: fixed;
+      right: 18px;
+      top: 50%;
+      z-index: 40;
+      display: flex;
+      flex-direction: column;
+      gap: 9px;
+      transform: translateY(-50%);
+    }
+    .rail a {
+      width: 11px;
+      height: 11px;
+      border: 1px solid var(--ink);
+      background: var(--paper);
+      transform: rotate(45deg);
+      transition: .18s ease;
+    }
+    .rail a.active { background: var(--orange); transform: rotate(45deg) scale(1.45); }
+
+    .slide {
+      position: relative;
+      min-height: 100vh;
+      padding: clamp(72px, 8vw, 118px) clamp(28px, 7vw, 116px) 72px;
+      overflow: hidden;
+      scroll-snap-align: start;
+      border-bottom: 1px solid var(--line);
+    }
+    .slide-inner { width: min(1180px, 100%); margin: 0 auto; }
+    .section-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      margin-bottom: clamp(36px, 5vw, 72px);
+      border-top: 2px solid var(--ink);
+      padding-top: 11px;
+    }
+    .section-no { font-size: 13px; letter-spacing: .12em; }
+    .crumb { color: var(--ink-soft); font-size: 12px; text-transform: uppercase; letter-spacing: .12em; }
+
+    h1, h2, h3, p { margin-top: 0; }
+    h1 {
+      max-width: 980px;
+      margin-bottom: 28px;
+      font-size: clamp(54px, 9.3vw, 132px);
+      line-height: .87;
+      font-weight: 900;
+      letter-spacing: -.075em;
+    }
+    h2 {
+      max-width: 980px;
+      margin-bottom: 34px;
+      font-size: clamp(38px, 5.7vw, 76px);
+      line-height: 1.02;
+      letter-spacing: -.05em;
+    }
+    h3 { margin-bottom: 10px; font-size: 22px; line-height: 1.25; }
+    .lead { max-width: 800px; font-size: clamp(20px, 2.2vw, 29px); line-height: 1.48; }
+    .muted { color: var(--ink-soft); }
+    .accent { position: relative; z-index: 1; white-space: nowrap; }
+    .accent::after {
+      content: "";
+      position: absolute;
+      left: -.04em;
+      right: -.08em;
+      bottom: .04em;
+      z-index: -1;
+      height: .32em;
+      background: var(--acid);
+      transform: rotate(-1.2deg);
+    }
+
+    .hero { display: grid; align-items: center; }
+    .hero .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 30px;
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: .15em;
+      text-transform: uppercase;
+    }
+    .eyebrow::before { content: ""; width: 38px; height: 3px; background: var(--orange); }
+    .hero-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px 24px;
+      margin-top: 46px;
+      font-family: var(--mono);
+      font-size: 13px;
+    }
+    .hero-stamp {
+      position: absolute;
+      right: clamp(42px, 8vw, 130px);
+      top: 92px;
+      display: grid;
+      width: 142px;
+      height: 142px;
+      place-items: center;
+      border: 2px solid var(--ink);
+      border-radius: 50%;
+      color: var(--ink);
+      font-family: var(--mono);
+      font-size: 12px;
+      text-align: center;
+      transform: rotate(9deg);
+      animation: float 5s ease-in-out infinite;
+    }
+    .hero-stamp::after { content: ""; position: absolute; inset: 7px; border: 1px dashed var(--ink); border-radius: inherit; }
+    .hero-block {
+      position: absolute;
+      right: -60px;
+      bottom: -80px;
+      width: 36vw;
+      height: 33vh;
+      min-width: 330px;
+      background: var(--blue);
+      border: 2px solid var(--ink);
+      transform: rotate(-7deg);
+      opacity: .96;
+    }
+    @keyframes float { 50% { transform: rotate(4deg) translateY(9px); } }
+
+    .metric-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-top: 56px; }
+    .metric {
+      min-height: 170px;
+      padding: 22px;
+      border: 1.5px solid var(--ink);
+      background: var(--panel);
+      backdrop-filter: blur(5px);
+    }
+    .metric:nth-child(2) { background: var(--acid); }
+    .metric:nth-child(4) { background: var(--orange); color: #fff9ea; }
+    .metric strong { display: block; font-family: var(--mono); font-size: clamp(42px, 5vw, 66px); line-height: 1; letter-spacing: -.07em; }
+    .metric-label { display: block; margin-top: 26px; font-size: 12px; letter-spacing: .08em; }
+
+    .split { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(330px, .95fr); gap: clamp(32px, 6vw, 84px); align-items: start; }
+    .quote {
+      padding: 28px 30px;
+      border: 2px solid var(--ink);
+      background: var(--acid);
+      box-shadow: var(--shadow);
+      font-size: clamp(21px, 2.4vw, 30px);
+      line-height: 1.42;
+      transform: rotate(-1deg);
+    }
+    .reason-list { counter-reset: reason; margin: 0; padding: 0; list-style: none; }
+    .reason-list li { position: relative; padding: 21px 0 21px 54px; border-bottom: 1px solid var(--line); }
+    .reason-list li::before {
+      counter-increment: reason;
+      content: "0" counter(reason);
+      position: absolute;
+      left: 0;
+      top: 22px;
+      font-family: var(--mono);
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .reason-list b { display: block; margin-bottom: 3px; font-size: 19px; }
+
+    .runtime-map {
+      display: grid;
+      grid-template-columns: repeat(12, 1fr);
+      gap: 14px;
+      margin-top: 40px;
+    }
+    .runtime {
+      position: relative;
+      min-height: 160px;
+      padding: 22px;
+      border: 1.5px solid var(--ink);
+      background: rgba(255,253,246,.68);
+      overflow: hidden;
+    }
+    .runtime:nth-child(1), .runtime:nth-child(2) { grid-column: span 6; }
+    .runtime:nth-child(n+3) { grid-column: span 3; }
+    .runtime .chip { position: absolute; right: 12px; top: 10px; color: var(--ink-soft); font-size: 10px; }
+    .runtime h3 { margin-top: 22px; }
+    .runtime p { margin-bottom: 0; color: var(--ink-soft); font-size: 14px; }
+    .runtime.core { background: var(--ink); color: var(--paper); }
+    .runtime.core p, .runtime.core .chip { color: #c6d0c8; }
+    .runtime.ocr { background: var(--blue); color: white; }
+    .runtime.ocr p, .runtime.ocr .chip { color: #dfe6ff; }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 0;
+      margin-top: 54px;
+      border: 2px solid var(--ink);
+      box-shadow: var(--shadow);
+    }
+    .flow-step { position: relative; min-height: 220px; padding: 24px 19px; background: rgba(255,253,246,.72); border-right: 1px solid var(--ink); }
+    .flow-step:last-child { border-right: 0; background: var(--acid); }
+    .flow-step::after {
+      content: "→";
+      position: absolute;
+      right: -15px;
+      top: 50%;
+      z-index: 2;
+      display: grid;
+      width: 29px;
+      height: 29px;
+      place-items: center;
+      border: 1px solid var(--ink);
+      border-radius: 50%;
+      background: var(--paper);
+      font-family: var(--mono);
+      transform: translateY(-50%);
+    }
+    .flow-step:last-child::after { display: none; }
+    .flow-step .num { font-family: var(--mono); font-size: 12px; }
+    .flow-step h3 { margin-top: 46px; }
+    .flow-step p { font-size: 14px; line-height: 1.5; }
+    .loop-note { margin-top: 26px; padding-left: 18px; border-left: 4px solid var(--orange); font-size: 18px; }
+
+    .stack-grid { display: grid; grid-template-columns: 1.35fr 1fr 1fr; gap: 14px; }
+    .stack-card { min-height: 210px; padding: 24px; border: 1.5px solid var(--ink); background: var(--panel); }
+    .stack-card:first-child { grid-row: span 2; background: var(--ink); color: var(--paper); }
+    .stack-card:nth-child(4) { background: var(--acid); }
+    .stack-card h3 { margin-top: 34px; }
+    .chips { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 22px; }
+    .chip { display: inline-block; padding: 5px 8px; border: 1px solid currentColor; font-size: 10px; line-height: 1.2; letter-spacing: .04em; }
+    .stack-card p { color: inherit; opacity: .78; }
+
+    .layers { position: relative; margin: 30px auto 0; width: min(900px, 100%); }
+    .layer {
+      display: grid;
+      grid-template-columns: 160px 1fr;
+      gap: 20px;
+      margin-top: -1px;
+      padding: 19px 22px;
+      border: 1.5px solid var(--ink);
+      background: rgba(255,253,246,.74);
+      transition: transform .18s ease, background .18s ease;
+    }
+    .layer:hover { position: relative; z-index: 2; background: var(--acid); transform: translateX(10px); }
+    .layer-name { font-family: var(--mono); font-weight: 800; }
+    .layer-files { color: var(--ink-soft); }
+    .layer:nth-child(3) { background: var(--ink); color: var(--paper); }
+    .layer:nth-child(3) .layer-files { color: #c6d0c8; }
+
+    .data-diagram { display: grid; grid-template-columns: 1fr 100px 1fr; align-items: center; gap: 24px; margin-top: 45px; }
+    .data-side { display: grid; gap: 12px; }
+    .data-node { padding: 21px 23px; border: 1.5px solid var(--ink); background: var(--panel); }
+    .data-node strong { display: block; font-size: 18px; }
+    .data-node span { color: var(--ink-soft); font-size: 13px; }
+    .data-core { display: grid; place-items: center; width: 100px; height: 100px; border: 2px solid var(--ink); border-radius: 50%; background: var(--orange); color: white; font-family: var(--mono); font-size: 12px; text-align: center; box-shadow: 5px 5px 0 var(--ink); }
+    .data-side:last-child .data-node:last-child { background: var(--acid); }
+
+    .tradeoffs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 42px; }
+    .tradeoff { min-height: 260px; padding: 25px; border: 1.5px solid var(--ink); background: var(--panel); }
+    .tradeoff:nth-child(2) { background: var(--blue); color: white; }
+    .tradeoff:nth-child(3) { background: var(--orange); color: white; }
+    .tradeoff .symbol { font-family: var(--mono); font-size: 42px; line-height: 1; }
+    .tradeoff h3 { margin-top: 52px; }
+
+    .quality-path { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 46px; }
+    .quality-step { position: relative; padding: 24px; min-height: 176px; border: 1.5px solid var(--ink); background: var(--panel); }
+    .quality-step::before { content: attr(data-command); display: block; margin-bottom: 34px; color: var(--orange); font-family: var(--mono); font-size: 12px; }
+    .quality-step:last-child { background: var(--acid); }
+    .quality-step:last-child::before { color: var(--ink); }
+    .risk-note { display: grid; grid-template-columns: auto 1fr; gap: 18px; align-items: center; margin-top: 30px; padding: 18px 22px; border: 1px dashed var(--ink); }
+    .risk-note b { font-family: var(--mono); font-size: 13px; }
+
+    .onboarding { display: grid; grid-template-columns: .8fr 1.2fr; gap: 54px; align-items: start; }
+    .route { border-left: 2px solid var(--ink); margin-left: 15px; }
+    .route-item { position: relative; padding: 0 0 28px 35px; }
+    .route-item::before { content: ""; position: absolute; left: -8px; top: 5px; width: 13px; height: 13px; border: 1px solid var(--ink); background: var(--paper); transform: rotate(45deg); }
+    .route-item:last-child::before { background: var(--acid); }
+    .route-item b { display: block; }
+    .route-item code { color: var(--blue); font-size: 13px; }
+    .rule-card { padding: 30px; border: 2px solid var(--ink); background: var(--ink); color: var(--paper); box-shadow: var(--shadow); }
+    .rule { display: grid; grid-template-columns: 36px 1fr; gap: 16px; padding: 16px 0; border-bottom: 1px solid rgba(239,233,218,.25); }
+    .rule:last-child { border-bottom: 0; }
+    .rule span { color: var(--acid); font-family: var(--mono); }
+
+    .end { display: grid; place-items: center; text-align: center; }
+    .end h2 { margin-inline: auto; font-size: clamp(64px, 12vw, 150px); }
+    .end .summary { max-width: 720px; font-size: 23px; }
+    .end-links { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin-top: 38px; }
+    .end-links a { padding: 10px 15px; border: 1.5px solid var(--ink); background: var(--panel); font-family: var(--mono); font-size: 12px; text-decoration: none; }
+    .end-links a:hover { background: var(--acid); }
+
+    .speaker-note {
+      position: fixed;
+      left: 18px;
+      bottom: 18px;
+      z-index: 45;
+      max-width: min(540px, calc(100vw - 36px));
+      padding: 15px 18px;
+      border: 1px solid var(--ink);
+      background: #fffdf6;
+      box-shadow: 4px 4px 0 var(--ink);
+      font-size: 13px;
+      opacity: 0;
+      pointer-events: none;
+      transform: translateY(12px);
+      transition: .2s ease;
+    }
+    body.notes-on .speaker-note { opacity: 1; pointer-events: auto; transform: none; }
+    .controls {
+      position: fixed;
+      left: 18px;
+      top: 18px;
+      z-index: 45;
+      display: flex;
+      gap: 7px;
+    }
+    .key { padding: 6px 8px; border: 1px solid var(--ink); background: var(--paper); font-size: 10px; cursor: pointer; }
+    .key:hover { background: var(--acid); }
+
+    .reveal { opacity: 0; transform: translateY(18px); transition: opacity .55s ease, transform .55s ease; }
+    .slide.visible .reveal { opacity: 1; transform: none; }
+    .slide.visible .reveal:nth-child(2) { transition-delay: .06s; }
+    .slide.visible .reveal:nth-child(3) { transition-delay: .12s; }
+    .slide.visible .reveal:nth-child(4) { transition-delay: .18s; }
+
+    @media (max-width: 850px) {
+      .hero-stamp, .rail { display: none; }
+      .hero-block { opacity: .12; }
+      .metric-grid, .tradeoffs, .quality-path { grid-template-columns: repeat(2, 1fr); }
+      .split, .onboarding { grid-template-columns: 1fr; }
+      .runtime:nth-child(n) { grid-column: span 6; }
+      .flow { grid-template-columns: 1fr; }
+      .flow-step { min-height: auto; border-right: 0; border-bottom: 1px solid var(--ink); }
+      .flow-step::after { right: 50%; top: auto; bottom: -15px; transform: translateX(50%) rotate(90deg); }
+      .stack-grid { grid-template-columns: 1fr 1fr; }
+      .stack-card:first-child { grid-column: span 2; grid-row: auto; }
+      .data-diagram { grid-template-columns: 1fr; }
+      .data-core { margin: 0 auto; transform: rotate(90deg); }
+    }
+    @media (max-width: 560px) {
+      .slide { padding-inline: 20px; }
+      .metric-grid, .tradeoffs, .quality-path, .stack-grid { grid-template-columns: 1fr; }
+      .stack-card:first-child { grid-column: auto; }
+      .runtime:nth-child(n) { grid-column: span 12; }
+      .layer { grid-template-columns: 1fr; gap: 5px; }
+      .controls { display: none; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+      .reveal { opacity: 1; transform: none; }
+    }
+    @media print {
+      @page { size: A4 landscape; margin: 0; }
+      body { background: var(--paper); }
+      body::before, .rail, .progress, .controls, .speaker-note { display: none !important; }
+      .slide { min-height: 100vh; height: 100vh; page-break-after: always; break-after: page; padding: 52px; }
+      .reveal { opacity: 1; transform: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="progress" aria-hidden="true"><span id="progressBar"></span></div>
+  <div class="controls" aria-label="演示控制">
+    <button class="key" id="notesButton" title="切换讲者提示">N · 讲者提示</button>
+    <button class="key" id="printButton" title="打印或导出 PDF">P · 打印</button>
+  </div>
+  <nav class="rail" id="rail" aria-label="章节导航"></nav>
+  <aside class="speaker-note" id="speakerNote" aria-live="polite"></aside>
+
+  <main>
+    <section class="slide hero" id="s1" data-title="封面" data-note="开场先统一一个判断：这不是一个普通 React SPA，而是一套运行在 Chrome 内部的多运行时应用。今天不逐个读文件，重点建立系统心智模型。">
+      <div class="hero-block" aria-hidden="true"></div>
+      <div class="hero-stamp">FRONTEND TEAM<br>ARCHITECTURE<br>2026.07</div>
+      <div class="slide-inner">
+        <div class="eyebrow reveal">Gancao Copilot / Internal Sharing</div>
+        <h1 class="reveal">从页面<br>到<span class="accent">智能体</span></h1>
+        <p class="lead reveal">甘草 Copilot 当前项目架构与技术栈：一套运行在 Chrome 里的本地优先 AI 业务助手。</p>
+        <div class="hero-meta reveal">
+          <span>Manifest V3</span><span>React 18</span><span>TypeScript</span><span>Vite</span><span>Browser Use</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide" id="s2" data-title="系统画像" data-note="这些数字来自当前仓库静态统计，重点不是规模本身，而是说明项目已经跨过“单页面小插件”的阶段。依赖和模块增长后，清晰边界比新增框架更重要。">
+      <div class="slide-inner">
+        <div class="section-head"><span class="section-no">01 / SNAPSHOT</span><span class="crumb">先看全貌，不急着看目录</span></div>
+        <h2 class="reveal">它不是“一个侧边栏”，<br>而是浏览器里的<span class="accent">小型操作系统</span></h2>
+        <p class="lead muted reveal">UI、后台调度、页面执行、模型访问、OCR 与本地资料库，运行在彼此隔离的上下文中。</p>
+        <div class="metric-grid reveal">
+          <div class="metric"><strong>6</strong><span class="metric-label">VITE RUNTIME ENTRIES</span></div>
+          <div class="metric"><strong>7</strong><span class="metric-label">UNIFIED TASK KINDS</span></div>
+          <div class="metric"><strong>45</strong><span class="metric-label">UNIT TEST FILES</span></div>
+          <div class="metric"><strong>36k</strong><span class="metric-label">LINES OF TS / TSX</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide" id="s3" data-title="架构约束" data-note="Chrome 扩展的架构首先由平台约束塑造：Service Worker 会休眠、Content Script 与页面隔离、敏感权限集中、侧边栏随时可能关闭。我们的拆分不是为了形式上的分层。">
+      <div class="slide-inner">
+        <div class="section-head"><span class="section-no">02 / CONSTRAINTS</span><span class="crumb">为什么要拆成这么多运行时？</span></div>
+        <div class="split">
+          <div>
+            <h2 class="reveal">架构不是画出来的，<br>是被<span class="accent">约束</span>塑造的</h2>
+            <div class="quote reveal">“页面能做什么、后台能活多久、密钥放在哪里”，比“选哪种状态管理”更先决定设计。</div>
+          </div>
+          <ol class="reason-list reveal">
+            <li><b>隔离</b>Content Script 与业务页面处于不同世界，必须用消息协议协作。</li>
+            <li><b>生命周期</b>Side Panel 会关闭，Service Worker 会休眠，长任务需要可恢复状态。</li>
+            <li><b>权限</b>标签页、下载、定时器、通知等高权限能力应集中在后台。</li>
+            <li><b>安全</b>API Key 只在后台模型网关读取，不进入 UI、Trace 与导出结果。</li>
+          </ol>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide" id="s4" data-title="六个运行时" data-note="逐一说明六个 Vite 入口。Side Panel 与 Dashboard 都是 React UI，但面向不同频率的任务；Background 是真正中枢；Content 是页面手脚；Offscreen 与 Sandbox 共同解决 OCR 生命周期和 CSP 冲突。">
+      <div class="slide-inner">
+        <div class="section-head"><span class="section-no">03 / RUNTIMES</span><span class="crumb">vite.config.ts → rollupOptions.input</span></div>
+        <h2 class="reveal">六个入口，六种职责</h2>
+        <div class="runtime-map reveal">
+          <article class="runtime"><span class="chip">REACT UI</span><h3>Side Panel</h3><p>高频入口：聊天、附件、OCR、资料、工具与任务卡片。</p></article>
+          <article class="runtime"><span class="chip">REACT UI</span><h3>Dashboard</h3><p>复杂工作台：任务中心、模型设置、工作流编辑与 React Flow 图。</p></article>
+          <article class="runtime core"><span class="chip">SERVICE WORKER</span><h3>Background</h3><p>消息路由、AI 编排、任务执行、标签页与下载。</p></article>
+          <article class="runtime"><span class="chip">PAGE BRIDGE</span><h3>Content</h3><p>观察 DOM、执行动作、采集页面信号与结构化数据。</p></article>
+          <article class="runtime ocr"><span class="chip">OFFSCREEN</span><h3>OCR Host</h3><p>侧边栏关闭后，仍可托管本地 OCR 任务。</p></article>
+          <article class="runtime"><span class="chip">SANDBOX</span><h3>PaddleOCR</h3><p>隔离 ONNX / WASM 所需的特殊执行环境。</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide" id="s5" data-title="核心链路" data-note="用一个 Browser Use 请求把全系统串起来。关键点是它不是一次 LLM 请求，而是持续 observe-plan-act-verify 的闭环；每一步都要留下 Trace，每个阶段都要有正向验收证据。">
+      <div class="slide-inner">
+        <div class="section-head"><span class="section-no">04 / GOLDEN PATH</span><span class="crumb">以一次 Browser Use 任务为线索</span></div>
+        <h2 class="reveal">一条请求，穿过整个系统</h2>
+        <div class="flow reveal">
+          <article class="flow-step"><span class="num">01</span><h3>发起</h3><p>Side Panel / Workflow 发送 runtime message 与任务目标。</p></article>
+          <article class="flow-step"><span class="num">02</span><h3>观察</h3><p>Background 让 Content Script 收集页面、候选元素与语义集合。</p></article>
+          <article class="flow-step"><span class="num">03</span><h3>规划</h3><p>规则优先，LLM 兜底；每次只生成可验证的原子动作。</p></article>
+          <article class="flow-step"><span class="num">04</span><h3>执行</h3><p>点击、输入、切页、下载或提取；高风险动作先请求确认。</p></article>
+          <article class="flow-step"><span class="num">05</span><h3>验收</h3><p>用 URL、文本、元素、表格或下载结果证明真的完成。</p></article>
+        </div>
+        <p class="loop-note reveal"><b>核心循环：</b>Observe → Plan → Act → Verify。未完成就重新观察；失败则保存 phase checkpoint，支持断点续跑。</p>
+      </div>
+    </section>
+
+    <section class="slide" id="s6" data-title="技术栈" data-note="技术栈按职责讲，不按 package.json 排序。React 和 AntD 只是表现层；真正有区分度的是 MV3 运行时、浏览器 API、本地文档处理和 AI 编排。也提醒团队当前 React Router 7 与 AntD 4 的代际差异。">
+      <div class="slide-inner">
+        <div class="section-head"><span class="section-no">05 / STACK</span><span class="crumb">不是依赖清单，是能力分工</span></div>
+        <h2 class="reveal">技术选型，服务于运行时边界</h2>
+        <div class="stack-grid reveal">
+          <article class="stack-card"><span class="chip">PLATFORM</span><h3>Chrome Extension MV3</h3><p>Side Panel + Service Worker + Content Script + Offscreen + Sandbox，提供 tabs、storage、downloads、alarms、notifications 等浏览器原生能力。</p><div class="chips"><span class="chip">Manifest V3</span><span class="chip">Runtime Message</span><span class="chip">Chrome APIs</span></div></article>
+          <article class="stack-card"><span class="chip">UI</span><h3>React 18</h3><p>Ant Design 4、React Router 7、React Flow、Sass Modules。</p></article>
+          <article class="stack-card"><span class="chip">BUILD</span><h3>TypeScript + Vite</h3><p>严格类型、六入口构建、自定义静态资源复制与 chunk 命名。</p></article>
+          <article class="stack-card"><span class="chip">LOCAL AI</span><h3>OCR / Document</h3><p>PaddleOCR.js、ONNX Runtime Web、PDF.js、Mammoth、XLSX。</p></article>
+          <article class="stack-card"><span class="chip">AI / DATA</span><h3>Model + Storage</h3><p>OpenAI-compatible API、LangChain、Zod、IndexedDB 与 chrome.storage.local。</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide" id="s7" data-title="代码地图" data-note="新同学最需要的是“改哪里”的路由表。入口层不承载核心业务；background 是编排；content 是页面适配；shared 是跨运行时契约和本地领域能力。尤其不要在 UI 中绕过后台直连模型。">
+      <div class="slide-inner">
+        <div class="section-head"><span class="section-no">06 / CODE MAP</span><span class="crumb">src/ 下的职责边界</span></div>
+        <h2 class="reveal">新增能力，应该落在哪一层？</h2>
+        <div class="layers reveal">
+          <div class="layer"><span class="layer-name">sidePanel/</span><span class="layer-files">对话与高频工具入口；只维护交互状态，不持有模型密钥。</span></div>
+          <div class="layer"><span class="layer-name">dashboard/</span><span class="layer-files">任务、设置、工作流等复杂管理界面。</span></div>
+          <div class="layer"><span class="layer-name">background/</span><span class="layer-files">ModelGateway、TaskExecutorRegistry、Browser Use、下载与监控编排。</span></div>
+          <div class="layer"><span class="layer-name">content/</span><span class="layer-files">页面观察与 DOM 原子动作；不承担业务流程决策。</span></div>
+          <div class="layer"><span class="layer-name">shared/</span><span class="layer-files">类型协议、Repository、Memory、文档分块、OCR 结构化与错误模型。</span></div>
+          <div class="layer"><span class="layer-name">offscreen/</span><span class="layer-files">不依赖可见 UI 生命周期的 OCR 宿主。</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide" id="s8" data-title="数据与安全" data-note="本地优先不等于完全离线。要讲清楚边界：资料、任务和配置默认落本地；只有使用 AI 能力时相关上下文才会发给活动模型。API Key 放 chrome.storage.local，由后台读取，并在持久化与错误中脱敏。">
+      <div class="slide-inner">
+        <div class="section-head"><span class="section-no">07 / DATA BOUNDARY</span><span class="crumb">本地优先 ≠ 完全离线</span></div>
+        <h2 class="reveal">数据去哪，取决于它要做什么</h2>
+        <div class="data-diagram reveal">
+          <div class="data-side">
+            <div class="data-node"><strong>chrome.storage.local</strong><span>模型配置、工作流、草稿、命令、轻量状态</span></div>
+            <div class="data-node"><strong>IndexedDB</strong><span>资料、原文件、内容、chunks、OCR 与结构化结果</span></div>
+            <div class="data-node"><strong>Task Trace</strong><span>观察、计划、动作、验收证据与失败原因</span></div>
+          </div>
+          <div class="data-core">BACKGROUND<br>GATEWAY</div>
+          <div class="data-side">
+            <div class="data-node"><strong>业务网页</strong><span>Content Script 只在授权页面观察与执行动作</span></div>
+            <div class="data-node"><strong>模型服务</strong><span>仅 AI 功能发送必要上下文；密钥由用户自行配置</span></div>
+            <div class="data-node"><strong>安全原则</strong><span>高风险动作确认、密钥脱敏、失败不伪装成功</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide" id="s9" data-title="关键权衡" data-note="这页不要只讲优点。MV3 架构的成本是真实存在的：消息协议复杂、Service Worker 生命周期不可靠、本地模型让构建变重。选择这些方案，是因为它们换来了隔离、恢复能力、隐私和前端团队可控性。">
+      <div class="slide-inner">
+        <div class="section-head"><span class="section-no">08 / TRADE-OFFS</span><span class="crumb">我们得到什么，又付出什么？</span></div>
+        <h2 class="reveal">没有免费架构，只有<span class="accent">明确取舍</span></h2>
+        <div class="tradeoffs reveal">
+          <article class="tradeoff"><div class="symbol">↔</div><h3>多运行时隔离</h3><p><b>得到：</b>权限、安全与职责边界。<br><b>代价：</b>消息协议、序列化和跨上下文调试更复杂。</p></article>
+          <article class="tradeoff"><div class="symbol">⟳</div><h3>可恢复任务</h3><p><b>得到：</b>Service Worker 重启后可收口，失败阶段可续跑。<br><b>代价：</b>状态机、Trace 和幂等设计成本上升。</p></article>
+          <article class="tradeoff"><div class="symbol">⌂</div><h3>本地优先</h3><p><b>得到：</b>资料与 OCR 不必默认上云。<br><b>代价：</b>WASM / 模型资源变重，IndexedDB 升级必须谨慎。</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide" id="s10" data-title="质量门禁" data-note="verify 是团队交付协议：类型、单测、构建、扩展 E2E。单测用 jsdom 和 fake-indexeddb 覆盖纯逻辑；真正跨上下文能力必须靠 Playwright 加载构建后的 Chrome 扩展验证。">
+      <div class="slide-inner">
+        <div class="section-head"><span class="section-no">09 / QUALITY GATE</span><span class="crumb">pnpm verify</span></div>
+        <h2 class="reveal">一次提交，要穿过四道门</h2>
+        <div class="quality-path reveal">
+          <article class="quality-step" data-command="tsc --noEmit"><h3>类型检查</h3><p>跨运行时协议先在编译期对齐。</p></article>
+          <article class="quality-step" data-command="vitest run"><h3>单元测试</h3><p>jsdom + fake-indexeddb，验证规划、存储与工具逻辑。</p></article>
+          <article class="quality-step" data-command="vite build"><h3>生产构建</h3><p>校验六入口与 OCR / WASM 静态资源完整性。</p></article>
+          <article class="quality-step" data-command="playwright test"><h3>扩展 E2E</h3><p>在 Chromium 中验证真实消息与页面动作链路。</p></article>
+        </div>
+        <div class="risk-note reveal"><b>TEST STRATEGY</b><span>越靠近纯函数，越适合 Vitest；越跨 Chrome runtime 边界，越需要扩展 E2E。</span></div>
+      </div>
+    </section>
+
+    <section class="slide" id="s11" data-title="协作指南" data-note="最后落到协作。建议新同学先沿一次消息链阅读，不要从最大的 Chat 组件硬啃。开发原则是避免写死业务选择器、每阶段必须有正向证据、高风险动作确认、数据升级不清库。">
+      <div class="slide-inner">
+        <div class="section-head"><span class="section-no">10 / TEAM PLAYBOOK</span><span class="crumb">读代码与改代码的最短路径</span></div>
+        <div class="onboarding">
+          <div>
+            <h2 class="reveal">从一条链路开始，<br>不要从文件数量开始</h2>
+            <div class="route reveal">
+              <div class="route-item"><b>01 · 看入口</b><code>sidePanel/App.tsx</code></div>
+              <div class="route-item"><b>02 · 追消息</b><code>background/index.ts</code></div>
+              <div class="route-item"><b>03 · 看执行</b><code>computerUseRunner.ts</code></div>
+              <div class="route-item"><b>04 · 看页面动作</b><code>content/tools.ts</code></div>
+              <div class="route-item"><b>05 · 用测试验证理解</b><code>*.test.ts + tests/e2e/</code></div>
+            </div>
+          </div>
+          <div class="rule-card reveal">
+            <h3>四条开发红线</h3>
+            <div class="rule"><span>01</span><div>通用自动化内核不写死业务 URL、菜单路径或 selector。</div></div>
+            <div class="rule"><span>02</span><div>任务必须有正向验收证据，禁止“没执行但显示成功”。</div></div>
+            <div class="rule"><span>03</span><div>保存、提交、删除、发送、支付等动作必须用户确认。</div></div>
+            <div class="rule"><span>04</span><div>数据升级不得清空资料、Memory、任务记录与工作流。</div></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide end" id="s12" data-title="总结" data-note="收尾只保留三个词：边界、闭环、证据。然后进入提问，或者现场从 Side Panel 发起一个低风险 Browser Use 任务，打开 Trace 对照第 5 页讲解。">
+      <div class="slide-inner">
+        <span class="eyebrow reveal">THE TAKEAWAY</span>
+        <h2 class="reveal">边界 · 闭环 · 证据</h2>
+        <p class="summary reveal">用运行时边界约束复杂度，用 Observe–Plan–Act–Verify 驱动智能任务，用可检查的证据定义“真正完成”。</p>
+        <div class="end-links reveal">
+          <a href="./architecture.md">ARCHITECTURE.MD</a>
+          <a href="../README.md">README.MD</a>
+          <a href="./browser-use-goal.md">BROWSER USE GOAL</a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    (() => {
+      const slides = [...document.querySelectorAll('.slide')];
+      const rail = document.getElementById('rail');
+      const progressBar = document.getElementById('progressBar');
+      const note = document.getElementById('speakerNote');
+      let activeIndex = 0;
+
+      slides.forEach((slide, index) => {
+        const link = document.createElement('a');
+        link.href = `#${slide.id}`;
+        link.title = `${String(index + 1).padStart(2, '0')} · ${slide.dataset.title}`;
+        link.setAttribute('aria-label', link.title);
+        rail.appendChild(link);
+      });
+      const dots = [...rail.querySelectorAll('a')];
+
+      function setActive(index) {
+        activeIndex = Math.max(0, Math.min(slides.length - 1, index));
+        dots.forEach((dot, i) => dot.classList.toggle('active', i === activeIndex));
+        note.textContent = slides[activeIndex].dataset.note || '';
+        document.title = `${String(activeIndex + 1).padStart(2, '0')} · ${slides[activeIndex].dataset.title} — 甘草 Copilot`;
+      }
+
+      const observer = new IntersectionObserver((entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            entry.target.classList.add('visible');
+            if (entry.intersectionRatio >= .45) setActive(slides.indexOf(entry.target));
+          }
+        });
+      }, { threshold: [.15, .45, .75] });
+      slides.forEach((slide) => observer.observe(slide));
+
+      function updateProgress() {
+        const max = document.documentElement.scrollHeight - window.innerHeight;
+        progressBar.style.width = `${max > 0 ? (window.scrollY / max) * 100 : 0}%`;
+      }
+      window.addEventListener('scroll', updateProgress, { passive: true });
+      updateProgress();
+
+      function go(delta) {
+        const target = Math.max(0, Math.min(slides.length - 1, activeIndex + delta));
+        slides[target].scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+      document.addEventListener('keydown', (event) => {
+        if (['ArrowDown', 'ArrowRight', 'PageDown', ' '].includes(event.key)) { event.preventDefault(); go(1); }
+        if (['ArrowUp', 'ArrowLeft', 'PageUp'].includes(event.key)) { event.preventDefault(); go(-1); }
+        if (event.key.toLowerCase() === 'n') document.body.classList.toggle('notes-on');
+        if (event.key.toLowerCase() === 'p') window.print();
+        if (event.key === 'Home') slides[0].scrollIntoView({ behavior: 'smooth' });
+        if (event.key === 'End') slides.at(-1).scrollIntoView({ behavior: 'smooth' });
+      });
+      document.getElementById('notesButton').addEventListener('click', () => document.body.classList.toggle('notes-on'));
+      document.getElementById('printButton').addEventListener('click', () => window.print());
+      setActive(0);
+    })();
+  </script>
+</body>
+</html>

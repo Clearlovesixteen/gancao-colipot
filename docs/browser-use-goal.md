@@ -47,16 +47,17 @@ Browser Use 不是系统级 Computer Use。它不控制桌面应用，也不以�
 - 动态任务优先重新观察和重新规划，不固化临时 selector 或坐标。
 - 浏览器权限、用户登录态和数据边界始终优先于自动完成任务。
 
-## 兼容策略
+## 运行协议
 
-现有内部类型和协议继续保留：
+Browser Use 与其他长任务共用唯一任务入口：
 
-- `computer_use` 任务类型
-- `ComputerUse*` TypeScript 类型
-- `RUN_COMPUTER_USE`、`STOP_COMPUTER_USE` 和相关事件
-- `computerTask` 工作流步骤
+- `RUN_AUTOMATION_TASK` 创建并启动任务
+- `STOP_AUTOMATION_TASK` 按任务 ID 停止任务
+- `computer_use` 任务类型选择 Browser Use 执行器
+- `ComputerUse*` 类型和 `COMPUTER_USE_*` 事件只描述执行器内部状态
+- `computerTask` 工作流步骤通过任务执行器调用 Browser Use
 
-这些名称仅作为兼容层，避免破坏历史任务、IndexedDB、工作流和扩展消息。用户可见名称、新文档和新增模块统一使用 Browser Use。后续如需迁移内部协议，应增加版本化适配器，而不是直接批量重命名。
+聊天、任务中心和工作流不允许绕过 `TaskExecutorRegistry` 直接启动 Browser Use。任务状态、停止、后台重启收口和结果持久化均以 `AutomationRun` 为准。
 
 ## 当前内核
 

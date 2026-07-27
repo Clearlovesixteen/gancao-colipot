@@ -131,9 +131,7 @@ function getNavigationContextText(element: any): string {
 
 function getSemanticNavigationCandidates(context: ComputerUsePageContext): any[] {
   const seen = new Set<string>();
-  const candidates = [
-    ...context.navigationCandidates,
-    ...(context.collections || [])
+  const collectionCandidates = (context.collections || [])
       .filter((collection) => collection.type === 'menu_group')
       .flatMap((collection) => collection.items.map((item) => ({
         elementId: item.elementId,
@@ -148,7 +146,17 @@ function getSemanticNavigationCandidates(context: ComputerUsePageContext): any[]
         expanded: item.expanded ?? item.metadata?.expanded,
         clickable: item.clickable,
         score: (item.confidence || 0) * 10,
-      }))),
+      })));
+  const observedCandidates = context.navigationCandidates.filter((candidate) => (
+    candidate.clickable
+    || ['button', 'link', 'menuitem', 'tab'].includes(String(candidate.role || ''))
+    || /(sidebar-handle|sidebar-text|nav-item\.leaf|nav-item-text|ant-menu-item|ant-menu-submenu-title|el-sub-menu)/.test(String(candidate.selector || ''))
+  ));
+  const candidates = [
+    // Collections have already removed aggregate wrappers, so prefer them over
+    // the raw observation list when the same element appears in both sources.
+    ...collectionCandidates,
+    ...observedCandidates,
   ];
   return candidates.filter((candidate) => {
     const key = candidate.elementId || candidate.selector || `${candidate.text}:${candidate.parentText}:${candidate.context}`;
@@ -164,7 +172,8 @@ function isAggregateNavigationCandidate(element: any, target: string): boolean {
   if (!text || !targetText || text === targetText) return false;
   const tooLongForLeaf = text.includes(targetText) && text.length > targetText.length + 16;
   const zeroHeightContainer = Number(element?.bbox?.height || 0) <= 4;
-  const nonInteractiveContainer = !element?.clickable && ['div', 'list', 'group'].includes(String(element?.role || 'div'));
+  const nonInteractiveContainer = !element?.clickable
+    && !['button', 'link', 'menuitem', 'tab'].includes(String(element?.role || ''));
   return tooLongForLeaf && (zeroHeightContainer || nonInteractiveContainer);
 }
 
@@ -814,26 +823,67 @@ function normalizePlan(raw: unknown): ComputerUsePlan | null {
       .filter((step): step is PlannedStep => Boolean(step))
     : [];
   if (!steps.length) return null;
+  const rawDecision = typeof (data as any).decision === 'string' ? String((data as any).decision) : '';
+  if (!['act', 'complete', 'blocked', 'needs_confirmation'].includes(rawDecision)) return null;
+  const decision = rawDecision as ComputerUsePlan['decision'];
   return {
+    decision,
     summary: typeof data.summary === 'string' ? data.summary : steps[0].rationale,
     confidence: typeof data.confidence === 'number' ? data.confidence : 0.5,
     steps,
     successCriteria: Array.isArray(data.successCriteria) ? data.successCriteria.map(String).slice(0, 5) : [],
     needsUserInput: typeof data.needsUserInput === 'string' ? data.needsUserInput : undefined,
+    blockedReason: decision === 'blocked'
+      ? (typeof (data as any).blockedReason === 'string' ? String((data as any).blockedReason) : (typeof data.summary === 'string' ? data.summary : steps[0].rationale))
+      : undefined,
   };
 }
 
-function makeFinishPlan(summary: string): ComputerUsePlan {
+function makeTerminalPlan(summary: string, decision: 'complete' | 'blocked'): ComputerUsePlan {
   return {
+    decision,
     summary,
     confidence: 0.9,
     steps: [{ id: 'finish', action: 'finish', rationale: summary, summary }],
     successCriteria: [],
+    blockedReason: decision === 'blocked' ? summary : undefined,
+  };
+}
+
+function makeCompletePlan(summary: string): ComputerUsePlan {
+  return makeTerminalPlan(summary, 'complete');
+}
+
+function makeBlockedPlan(summary: string): ComputerUsePlan {
+  return makeTerminalPlan(summary, 'blocked');
+}
+
+function ensurePlanDecision(plan: ComputerUsePlan): ComputerUsePlan {
+  const decision = plan.decision;
+  return {
+    ...plan,
+    decision,
+    blockedReason: decision === 'blocked' ? (plan.blockedReason || plan.summary) : undefined,
+    steps: plan.steps.map((step) => {
+      if (!step.target) return step;
+      const semantic = Boolean(
+        step.target.collectionType
+        || step.target.collectionId
+        || step.target.text
+        || step.target.purpose
+        || step.target.ordinal
+        || step.target.parentPath?.length
+      );
+      if (!semantic) return step;
+      const { elementId: _elementId, selector: _selector, ...semanticTarget } = step.target;
+      return { ...step, target: semanticTarget };
+    }),
   };
 }
 
 function makeWaitPlan(ms: number): ComputerUsePlan {
   return {
+    decision: 'act',
     summary: `等待 ${ms}ms`,
     confidence: 0.95,
     steps: [{
@@ -925,13 +975,15 @@ function buildRulePlan(
 
   if (phase?.type === 'fill_form') {
     const formValue = phase.formValues?.[0];
-    if (!formValue) return makeFinishPlan(`阶段「${phase.goal}」缺少要填写的字段和值。`);
+    if (!formValue) return makeBlockedPlan(`阶段「${phase.goal}」缺少要填写的字段和值。`);
     const target = findFormFieldCandidate(context, formValue, phaseMemory);
     if (!target) {
-      return makeFinishPlan(`未找到表单字段：${formValue.label}。请确认字段在当前页面可见，或补充字段位置。`);
+      return makeBlockedPlan(`未找到表单字段：${formValue.label}。请确认字段在当前页面可见，或补充字段位置。`);
     }
     const isSelect = formValue.control === 'select';
+    const targetPurpose = String((target as any).purpose || (target as any).metadata?.fieldPurpose || '');
     return {
+      decision: 'act',
       summary: `${isSelect ? '选择' : '输入'}${formValue.label}`,
       confidence: 0.88,
       steps: [{
@@ -941,6 +993,8 @@ function buildRulePlan(
           elementId: target.elementId,
           selector: target.selector,
           text: target.text || formValue.label,
+          purpose: targetPurpose && targetPurpose !== 'generic' ? targetPurpose : undefined,
+          collectionType: 'form_group',
         },
         value: formValue.value,
         rationale: `${isSelect ? '选择' : '输入'}字段「${formValue.label}」为「${formValue.value}」`,
@@ -955,9 +1009,10 @@ function buildRulePlan(
     const target = findTableRowActionCandidate(context, targets, phase.ordinal, phaseMemory)
       || findActionButtonCandidate(context, targets, phaseMemory);
     if (!target) {
-      return makeFinishPlan(`未找到动作按钮：${targets.join('、')}。请确认按钮在当前页面可见。`);
+      return makeBlockedPlan(`未找到动作按钮：${targets.join('、')}。请确认按钮在当前页面可见。`);
     }
     return {
+      decision: 'act',
       summary: `点击${targets[0]}`,
       confidence: 0.84,
       steps: [{
@@ -985,11 +1040,12 @@ function buildRulePlan(
       context.structuredData?.headings?.join(' '),
     ].join(' ');
     if (includesAnyTarget(currentText, targets)) {
-      return makeFinishPlan(`已打开${targets[0] || '目标页面'}`);
+      return makeCompletePlan(`已打开${targets[0] || '目标页面'}`);
     }
     const target = findTextActionCandidate(context, targets, history, phaseMemory);
     if (target) {
       return {
+        decision: 'act',
         summary: `打开${targets[0]}`,
         confidence: 0.86,
         steps: [{
@@ -1009,7 +1065,7 @@ function buildRulePlan(
         successCriteria: [`进入 ${targets[0]}`],
       };
     }
-    return makeFinishPlan(`未找到入口：${targets.join('、')}。请确认顶部导航或菜单中存在该入口。`);
+    return makeBlockedPlan(`未找到入口：${targets.join('、')}。请确认顶部导航或菜单中存在该入口。`);
   }
 
   if (phase?.type === 'click_latest_download') {
@@ -1017,6 +1073,7 @@ function buildRulePlan(
     const target = findLatestDownloadCandidate(context, runState, phaseMemory);
     if (target) {
       return {
+        decision: 'act',
         summary: filename ? `点击刚刚下载的文件：${filename}` : `点击最新可见下载文件：${target.text}`,
         confidence: filename ? 0.86 : 0.7,
         steps: [{
@@ -1038,26 +1095,26 @@ function buildRulePlan(
         successCriteria: ['打开刚刚下载的文件'],
       };
     }
-    return makeFinishPlan(filename
+    return makeBlockedPlan(filename
       ? `文件中心未找到刚刚下载的文件：${filename}。请确认文件列表已刷新或手动搜索该文件。`
       : '文件中心未找到可点击的下载文件条目。请确认下载已完成并刷新文件中心。');
   }
 
   const completedDownload = getCompletedDownloadSummary(history);
   if (completedDownload && !phase) {
-    return makeFinishPlan(completedDownload);
+    return makeCompletePlan(completedDownload);
   }
 
   const completedExtract = getCompletedExtractTableSummary(history);
   if (completedExtract && !isDownloadTask(intent) && !phase) {
-    return makeFinishPlan(completedExtract);
+    return makeCompletePlan(completedExtract);
   }
 
   if (context.observation.pageState?.hasCaptcha) {
-    return makeFinishPlan('当前页面出现验证码/安全验证，需要用户先手动处理。');
+    return makeBlockedPlan('当前页面出现验证码/安全验证，需要用户先手动处理。');
   }
   if (context.observation.pageState?.kind === 'login_page') {
-    return makeFinishPlan('当前页面疑似登录页，需要用户先完成登录。');
+    return makeBlockedPlan('当前页面疑似登录页，需要用户先完成登录。');
   }
 
   const entities = intent.entities || [];
@@ -1089,10 +1146,11 @@ function buildRulePlan(
 
   const nextPathTarget = dataTask ? getNextNavigationPathTarget(intent, context, history, phaseMemory) : null;
   if (nextPathTarget?.missing) {
-    return makeFinishPlan(`未找到目标菜单路径节点：${nextPathTarget.target}。请确认菜单已展开、账号有权限，或补充目标页面位置。`);
+    return makeBlockedPlan(`未找到目标菜单路径节点：${nextPathTarget.target}。请确认菜单已展开、账号有权限，或补充目标页面位置。`);
   }
   if (nextPathTarget?.element && !hasClickedNavigation(history, nextPathTarget.element)) {
     return {
+      decision: 'act',
       summary: `点击目标路径节点：${nextPathTarget.target}`,
       confidence: 0.82,
       steps: [{
@@ -1115,6 +1173,7 @@ function buildRulePlan(
 
   if (dataTask && targetNavigation && !hasClickedNavigation(history, targetNavigation) && !(downloadTask && targetReadyForExport && findBestDownloadAction(context, phaseMemory))) {
     return {
+      decision: 'act',
       summary: `点击匹配的导航项：${targetNavigation.text}`,
       confidence: 0.78,
       steps: [{
@@ -1140,6 +1199,7 @@ function buildRulePlan(
       || findBestDownloadAction(context, phaseMemory);
     if (downloadAction) {
       return {
+        decision: 'act',
         summary: phase?.ordinal
           ? `点击第${phase.ordinal}条数据的下载按钮：${downloadAction.text || downloadAction.selector}`
           : `点击真实导出/下载按钮：${downloadAction.text || downloadAction.selector}`,
@@ -1168,6 +1228,7 @@ function buildRulePlan(
     const expandable = findExpandableAction(context, history, phaseMemory);
     if (expandable) {
       return {
+        decision: 'act',
         summary: `展开可能包含导出的操作入口：${expandable.text}`,
         confidence: 0.68,
         steps: [{
@@ -1187,11 +1248,12 @@ function buildRulePlan(
       };
     }
 
-    return makeFinishPlan('当前页面未找到真实导出/下载按钮。请确认已进入目标列表页，或展开更多操作后重试。');
+    return makeBlockedPlan('当前页面未找到真实导出/下载按钮。请确认已进入目标列表页，或展开更多操作后重试。');
   }
 
   if (!downloadTask && dataTask && (isOnTarget || hasClickedNavigation(history, targetNavigation)) && context.tableCandidates.length > 0) {
     return {
+      decision: 'act',
       summary: '当前页面已有目标数据迹象，优先提取表格。',
       confidence: 0.82,
       steps: [{
@@ -1206,6 +1268,7 @@ function buildRulePlan(
 
   if (targetNavigation && !hasClickedNavigation(history, targetNavigation)) {
     return {
+      decision: 'act',
       summary: `点击匹配的导航项：${targetNavigation.text}`,
       confidence: 0.76,
       steps: [{
@@ -1228,10 +1291,10 @@ function buildRulePlan(
 
   if (dataTask) {
     const entityText = currentStageTargets.length ? `目标关键词：${currentStageTargets.join('、')}` : '目标关键词不足';
-    return makeFinishPlan(`未找到可点击的目标菜单/导航，且当前页没有可提取表格。${entityText}。请确认菜单已展开或补充目标页面位置。`);
+    return makeBlockedPlan(`未找到可点击的目标菜单/导航，且当前页没有可提取表格。${entityText}。请确认菜单已展开或补充目标页面位置。`);
   }
 
-  return makeFinishPlan('当前页面上下文不足，无法安全生成下一步操作。请补充目标元素或页面位置。');
+  return makeBlockedPlan('当前页面上下文不足，无法安全生成下一步操作。请补充目标元素或页面位置。');
 }
 
 export async function createComputerUsePlan(input: {
@@ -1244,20 +1307,21 @@ export async function createComputerUsePlan(input: {
   phaseMemory?: ComputerUsePhaseMemory;
 }): Promise<ComputerUsePlan> {
   const completedDownload = getCompletedDownloadSummary(input.history);
-  if (completedDownload && !input.phase) return makeFinishPlan(completedDownload);
+  if (completedDownload && !input.phase) return makeCompletePlan(completedDownload);
 
   const completedExtract = getCompletedExtractTableSummary(input.history);
-  if (completedExtract && !isDownloadTask(input.intent) && !input.phase) return makeFinishPlan(completedExtract);
+  if (completedExtract && !isDownloadTask(input.intent) && !input.phase) return makeCompletePlan(completedExtract);
 
   const rulePlan = buildRulePlan(input.intent, input.context, input.history, input.phase, input.runState, input.phaseMemory);
-  if (isExecutableRulePlan(rulePlan)) return rulePlan;
+  if (isExecutableRulePlan(rulePlan)) return ensurePlanDecision(rulePlan);
 
-  if (!input.callLLM) return rulePlan;
+  if (!input.callLLM) return ensurePlanDecision(rulePlan);
 
   try {
     const raw = await input.callLLM({
       system: [
         '你是 Browser Use 动态规划器，只输出 JSON。',
+        '必须输出 decision，值只能是 act、complete、blocked、needs_confirmation。找不到目标或上下文不足时用 blocked；只有已有明确完成证据时才能用 complete。',
         '生成 1-3 步短计划，不要写死业务系统路径。',
         '如果页面上下文不足，必须用 finish 说明缺少什么，不要输出无意义 press_key。',
         '涉及导出/下载时，优先导航到目标页面，找到 purpose=download_button 的真实按钮后输出 download_file，不要用 extract_table 代替导出。',
@@ -1294,10 +1358,10 @@ export async function createComputerUsePlan(input: {
     });
     const normalized = normalizePlan(raw);
     if (normalized && !shouldRejectPlan(normalized, input.intent, input.context, input.history)) {
-      return normalized;
+      return ensurePlanDecision(normalized);
     }
-    return rulePlan;
+    return ensurePlanDecision(rulePlan);
   } catch {
-    return rulePlan;
+    return ensurePlanDecision(rulePlan);
   }
 }

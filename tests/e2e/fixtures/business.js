@@ -31,6 +31,7 @@ document.querySelector('#file-center-link').addEventListener('click', () => {
 });
 
 function download(filename) {
+  window.localStorage.setItem('browser-use-last-download', filename);
   const anchor = document.createElement('a');
   anchor.href = `/download/${encodeURIComponent(filename)}`;
   anchor.download = filename;
@@ -55,8 +56,13 @@ function renderWarningList(moduleName) {
 }
 
 function renderFileCenter() {
+  const recentFilename = window.localStorage.getItem('browser-use-last-download');
+  const recentFile = recentFilename && fixtureOptions.get('hideRecent') !== '1'
+    ? `<section aria-label="最近下载文件"><h2>最近下载</h2><button id="recent-downloaded-file" data-filename="${recentFilename}">${recentFilename}</button></section>`
+    : '';
   main.innerHTML = `
     <h1>文件中心</h1>
+    ${recentFile}
     <div class="form" role="form">
       <label>子系统<select id="subsystem" required><option value="">请选择</option><option>智慧药房WMS仓储</option><option>其他系统</option></select></label>
       <label>用户花名<input id="user-alias" placeholder="请输入用户花名" required /></label>
@@ -66,6 +72,12 @@ function renderFileCenter() {
       <thead><tr><th>文件名</th><th>状态</th><th>用户花名</th><th>操作</th></tr></thead>
       <tbody id="file-rows"><tr><td colspan="4">请输入条件查询</td></tr></tbody>
     </table>`;
+  document.querySelector('#recent-downloaded-file')?.addEventListener('click', (event) => {
+    const filename = event.currentTarget.getAttribute('data-filename');
+    history.replaceState({}, '', `#/file-center/detail?filename=${encodeURIComponent(filename)}`);
+    routeLabel.textContent = `文件中心 / ${filename}`;
+    main.innerHTML = `<h1>文件详情</h1><p id="opened-file-name">${filename}</p>`;
+  });
   document.querySelector('#search-button').addEventListener('click', () => {
     const subsystem = document.querySelector('#subsystem').value;
     const alias = document.querySelector('#user-alias').value;

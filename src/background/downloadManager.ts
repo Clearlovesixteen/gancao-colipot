@@ -7,7 +7,7 @@ import {
   saveDocumentContent,
   saveRawFile,
   upsertDocumentAsset,
-} from './documentDb';
+} from '../shared/documentRepository';
 
 type DownloadActionInput = {
   runId: string;
@@ -25,6 +25,27 @@ type DownloadWatcher = {
 function basename(filename?: string): string {
   const name = String(filename || '').split(/[\\/]/).filter(Boolean).pop();
   return name || `download_${Date.now()}`;
+}
+
+function hasKnownFileExtension(filename: string): boolean {
+  return /\.(?:csv|txt|json|xlsx?|pdf|docx?|pptx?|zip|png|jpe?g)$/i.test(filename);
+}
+
+function filenameFromUrl(url?: string): string | undefined {
+  if (!url || /^(?:blob|data):/i.test(url)) return undefined;
+  try {
+    const pathname = new URL(url).pathname;
+    const candidate = decodeURIComponent(pathname.split('/').filter(Boolean).pop() || '');
+    return hasKnownFileExtension(candidate) ? candidate : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function resolveDownloadFilename(item: Pick<chrome.downloads.DownloadItem, 'filename' | 'url' | 'finalUrl'>): string {
+  const browserFilename = basename(item.filename);
+  if (hasKnownFileExtension(browserFilename)) return browserFilename;
+  return filenameFromUrl(item.finalUrl) || filenameFromUrl(item.url) || browserFilename;
 }
 
 function extensionMime(filename: string): string {
@@ -144,11 +165,12 @@ async function fetchDownloadedBlob(item: chrome.downloads.DownloadItem): Promise
 
 async function saveDownloadedFileToDocuments(input: {
   item: chrome.downloads.DownloadItem;
+  filename: string;
   runId: string;
   tabId: number;
   pageUrl?: string;
 }): Promise<Pick<ComputerUseDownloadResult, 'assetId' | 'assetTitle' | 'localParseStatus' | 'parseError' | 'savedToDocumentCenter'>> {
-  const title = basename(input.item.filename);
+  const title = input.filename;
   const blob = await fetchDownloadedBlob(input.item);
   const mimeType = input.item.mime || blob.type || extensionMime(title);
   const file = new File([blob], title, { type: mimeType });
@@ -234,12 +256,13 @@ export async function performDownloadFileAction(input: DownloadActionInput): Pro
     };
   }
 
+  const resolvedFilename = resolveDownloadFilename(item);
   const baseResult: ComputerUseDownloadResult = {
     success: true,
     status: 'completed',
-    message: `已触发下载：${basename(item.filename)}`,
+    message: `已触发下载：${resolvedFilename}`,
     downloadId: item.id,
-    filename: basename(item.filename),
+    filename: resolvedFilename,
     url: item.url,
     finalUrl: item.finalUrl,
     mimeType: item.mime,
@@ -252,6 +275,7 @@ export async function performDownloadFileAction(input: DownloadActionInput): Pro
   try {
     const saved = await saveDownloadedFileToDocuments({
       item,
+      filename: resolvedFilename,
       runId: input.runId,
       tabId: input.tabId,
       pageUrl: input.pageUrl,

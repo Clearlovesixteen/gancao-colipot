@@ -1,4 +1,4 @@
-import { runOcr, getOcrErrorMessage } from '../sidePanel/utils/ocrEngine';
+import { runOcr, getOcrErrorMessage } from './ocrEngine';
 import { structureOcrText, structuredOcrToMarkdown } from '../shared/ocrStructurer';
 import {
   getDocumentAsset,

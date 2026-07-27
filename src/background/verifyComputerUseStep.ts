@@ -110,7 +110,9 @@ export function verifyComputerUseStep(input: {
     return { success: false, blocking: true, reason: '页面提示权限不足，当前账号可能没有目标功能权限。' };
   }
 
-  if (step.action === 'finish') return { success: true };
+  if (step.action === 'finish') {
+    return { success: false, blocking: true, reason: 'finish 是规划决策，不是可执行动作，必须由阶段验收器判断完成。' };
+  }
 
   if (step.action === 'extract_table') {
     return hasExtractedTable(result)
@@ -124,7 +126,7 @@ export function verifyComputerUseStep(input: {
 
   if (step.action === 'type') {
     const targetId = step.target?.elementId;
-    if (!targetId || !step.value) return { success: true };
+    if (!targetId || step.value === undefined) return { success: false, blocking: true, reason: '输入动作缺少已解析目标或输入值。' };
     const value = observedTargetValue(after, step);
     return value === step.value
       ? { success: true }
@@ -198,5 +200,12 @@ export function verifyComputerUseStep(input: {
       : { success: false, warning: '点击已执行，但页面变化不明显。', reason: '点击后未检测到 URL、标题、目标文本、active 菜单或候选元素变化。' };
   }
 
-  return { success: true };
+  const toolResult = normalizeToolResult(result);
+  if (['wait', 'scroll', 'hover', 'focus', 'clear_input', 'press_key', 'keyboard_shortcut', 'drag', 'upload_file', 'open_tab', 'switch_tab', 'close_tab', 'go_back', 'go_forward', 'reload'].includes(step.action)) {
+    return toolResult?.success === false
+      ? { success: false, reason: toolResult?.error || toolResult?.message || `${step.action} 执行失败。` }
+      : { success: true };
+  }
+
+  return { success: false, blocking: true, reason: `动作 ${String(step.action)} 没有定义验收规则，已按失败处理。` };
 }

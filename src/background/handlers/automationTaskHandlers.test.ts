@@ -4,7 +4,9 @@ import { handleAutomationTaskMessage, type AutomationTaskHandlerDeps } from './a
 
 function deps(): AutomationTaskHandlerDeps {
   return {
-    runAutomationTaskRecord: vi.fn(async (taskId) => ({ success: true, taskId })),
+    startTask: vi.fn(async (taskId) => ({ success: true, taskId })),
+    stopTask: vi.fn(async () => true),
+    retryTask: vi.fn(async (taskId) => ({ success: true, taskId })),
     getAutomationRun: vi.fn(async (taskId): Promise<AutomationRun> => ({
       id: taskId,
       title: '任务',
@@ -14,9 +16,6 @@ function deps(): AutomationTaskHandlerDeps {
       updatedAt: 1,
       metadata: { computerUseRunId: 'cu_1' },
     })),
-    patchAutomationRun: vi.fn(async () => ({})),
-    stopAutomationTask: vi.fn(),
-    runPageMonitorNow: vi.fn(async () => ({ success: true })),
     upsertPageMonitorAlarm: vi.fn(async () => undefined),
     clearPageMonitorAlarm: vi.fn(async () => undefined),
   };
@@ -32,7 +31,7 @@ describe('handleAutomationTaskMessage', () => {
     const sendResponse = vi.fn();
     expect(handleAutomationTaskMessage({ type: 'RUN_AUTOMATION_TASK', taskId: 'task_1' }, sendResponse, handlerDeps)).toBe(true);
     await flush();
-    expect(handlerDeps.runAutomationTaskRecord).toHaveBeenCalledWith('task_1');
+    expect(handlerDeps.startTask).toHaveBeenCalledWith('task_1');
     expect(sendResponse).toHaveBeenCalledWith({ success: true, taskId: 'task_1' });
   });
 
@@ -41,8 +40,16 @@ describe('handleAutomationTaskMessage', () => {
     const sendResponse = vi.fn();
     handleAutomationTaskMessage({ type: 'STOP_AUTOMATION_TASK', taskId: 'task_1' }, sendResponse, handlerDeps);
     await flush();
-    expect(handlerDeps.stopAutomationTask).toHaveBeenCalledWith('task_1', expect.objectContaining({ id: 'task_1' }));
-    expect(handlerDeps.patchAutomationRun).toHaveBeenCalledWith('task_1', expect.objectContaining({ status: 'stopped' }));
+    expect(handlerDeps.stopTask).toHaveBeenCalledWith('task_1');
+  });
+
+  it('routes task retries through the runtime', async () => {
+    const handlerDeps = deps();
+    const sendResponse = vi.fn();
+    handleAutomationTaskMessage({ type: 'RETRY_AUTOMATION_TASK', taskId: 'task_1' }, sendResponse, handlerDeps);
+    await flush();
+    expect(handlerDeps.retryTask).toHaveBeenCalledWith('task_1');
+    expect(sendResponse).toHaveBeenCalledWith({ success: true, taskId: 'task_1' });
   });
 
   it('creates or clears page monitor alarms from the saved schedule', async () => {

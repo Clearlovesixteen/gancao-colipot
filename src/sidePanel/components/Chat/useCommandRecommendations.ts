@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from 'react';
 import { recommendCommands } from '../../utils/copilotCommands';
-import { collectPageContextHub, type ContextHubExecuteTool } from '../../utils/pageContextHub';
+import { collectPageContextHub, type ContextHubExecuteTool } from '../../../shared/pageContextHub';
 
 export function useCommandRecommendations(input: {
   executeTool: ContextHubExecuteTool;

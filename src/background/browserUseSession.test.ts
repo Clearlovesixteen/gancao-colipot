@@ -29,6 +29,50 @@ describe('BrowserUseSession', () => {
     expect(result.switched).toBe(false);
   });
 
+  it('follows a unique active noopener tab created by the controlled action', async () => {
+    let tabs: BrowserUseTabInfo[] = [{ id: 1, active: true, url: 'https://search.test?q=beiye' }];
+    const session = new BrowserUseSession({ initialTabId: 1, listTabs: async () => tabs });
+    await session.initialize();
+    tabs = [
+      { id: 1, active: false, url: 'https://search.test?q=beiye' },
+      { id: 2, active: true, url: 'https://result.test/article', title: '目标结果' },
+    ];
+
+    const result = await session.syncAfterAction({ allowActiveNewTab: true });
+
+    expect(result).toMatchObject({ switched: true, previousTabId: 1, currentTabId: 2 });
+  });
+
+  it('follows a noopener tab by expected URL even when it is not active', async () => {
+    let tabs: BrowserUseTabInfo[] = [{ id: 1, active: true, url: 'https://search.test?q=beiye' }];
+    const session = new BrowserUseSession({ initialTabId: 1, listTabs: async () => tabs });
+    await session.initialize();
+    tabs = [
+      { id: 1, active: true, url: 'https://search.test?q=beiye' },
+      { id: 2, active: false, url: 'https://result.test/article?from=search' },
+      { id: 9, active: false, url: 'https://unrelated.test/' },
+    ];
+
+    const result = await session.syncAfterAction({ expectedUrl: 'https://result.test/article' });
+
+    expect(result.currentTabId).toBe(2);
+  });
+
+  it('does not take over when multiple unrelated new active tabs are ambiguous', async () => {
+    let tabs: BrowserUseTabInfo[] = [{ id: 1, active: true }];
+    const session = new BrowserUseSession({ initialTabId: 1, listTabs: async () => tabs });
+    await session.initialize();
+    tabs = [
+      { id: 1, active: false },
+      { id: 2, active: true, url: 'https://one.test/' },
+      { id: 3, active: true, url: 'https://two.test/' },
+    ];
+
+    const result = await session.syncAfterAction();
+
+    expect(result.currentTabId).toBe(1);
+  });
+
   it('recovers to an active tab when the controlled tab closes', async () => {
     let tabs: BrowserUseTabInfo[] = [{ id: 1, active: true }, { id: 2, openerTabId: 1 }];
     const session = new BrowserUseSession({ initialTabId: 1, listTabs: async () => tabs });

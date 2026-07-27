@@ -21,6 +21,10 @@ type ResolutionCandidate = {
   source?: 'collection' | 'element' | 'coordinate';
   matchedBy?: string;
   score?: number;
+  runnerUpScore?: number;
+  scoreMargin?: number;
+  ambiguous?: boolean;
+  ambiguityReason?: string;
   verificationHint?: string;
 };
 
@@ -40,9 +44,52 @@ export type TargetResolution = {
   reason?: string;
   matchedBy?: string;
   score?: number;
+  runnerUpScore?: number;
+  scoreMargin?: number;
+  ambiguous?: boolean;
   rejectedCandidates?: RejectedTargetCandidate[];
   verificationHint?: string;
 };
+
+const MIN_UNAMBIGUOUS_SCORE_MARGIN = 12;
+
+function hasHardDiscriminator(step: PlannedStep): boolean {
+  return Boolean(
+    step.target?.ordinal
+    || step.target?.elementId
+    || step.target?.selector
+  );
+}
+
+function ambiguityDetails(input: {
+  step: PlannedStep;
+  bestScore: number;
+  runnerUpScore?: number;
+  bestIdentity?: string;
+  runnerUpIdentity?: string;
+  rankedRecovery?: boolean;
+  bestConfidence?: number;
+  runnerUpConfidence?: number;
+}): Pick<ResolutionCandidate, 'runnerUpScore' | 'scoreMargin' | 'ambiguous' | 'ambiguityReason'> {
+  const confidenceMargin = (input.bestConfidence ?? 0) - (input.runnerUpConfidence ?? 0);
+  if (input.runnerUpScore === undefined || hasHardDiscriminator(input.step) || input.rankedRecovery || confidenceMargin >= 0.2) {
+    return {
+      runnerUpScore: input.runnerUpScore,
+      scoreMargin: input.runnerUpScore === undefined ? undefined : input.bestScore - input.runnerUpScore,
+      ambiguous: false,
+    };
+  }
+  const scoreMargin = input.bestScore - input.runnerUpScore;
+  const ambiguous = scoreMargin < MIN_UNAMBIGUOUS_SCORE_MARGIN;
+  return {
+    runnerUpScore: input.runnerUpScore,
+    scoreMargin,
+    ambiguous,
+    ambiguityReason: ambiguous
+      ? `候选“${input.bestIdentity || '第一名'}”与“${input.runnerUpIdentity || '第二名'}”分差仅 ${scoreMargin.toFixed(1)}，缺少序号、父路径或唯一标识。`
+      : undefined,
+  };
+}
 
 function verificationHint(step: PlannedStep): string {
   if (step.action === 'download_file') return 'download event completed or partial';
@@ -187,6 +234,9 @@ function findCollectionCandidate(input: {
 }): ResolutionCandidate | null {
   const target = input.step.target;
   const inferredType: ObservedCollectionType | undefined = target?.collectionType
+    || (input.phase?.type === 'fill_form' ? 'form_group' : undefined)
+    || (input.phase?.type === 'click_action' && input.phase.ordinal ? 'table_row_group' : undefined)
+    || (input.phase?.type === 'click_action' ? 'action_group' : undefined)
     || (input.phase?.type === 'navigate_to_page' || input.phase?.type === 'open_page_or_center' ? 'menu_group' : undefined)
     || (input.phase?.type === 'download_file' || input.step.action === 'download_file' ? 'action_group' : undefined)
     || (input.phase?.type === 'click_latest_download' ? 'file_list' : undefined);
@@ -215,6 +265,7 @@ function findCollectionCandidate(input: {
     .sort((a, b) => b.score - a.score || a.item.index - b.item.index);
   const bestRowAction = rowActionCandidates[0];
   if (bestRowAction && bestRowAction.score >= 30) {
+    const runnerUp = rowActionCandidates[1];
     return {
       elementId: bestRowAction.action.elementId,
       selector: bestRowAction.action.selector,
@@ -223,6 +274,16 @@ function findCollectionCandidate(input: {
       source: 'collection',
       matchedBy: 'collection_row_action',
       score: bestRowAction.score,
+      ...ambiguityDetails({
+        step: input.step,
+        bestScore: bestRowAction.score,
+        runnerUpScore: runnerUp?.score,
+        bestIdentity: bestRowAction.action.text || bestRowAction.item.text,
+        runnerUpIdentity: runnerUp?.action?.text || runnerUp?.item.text,
+        rankedRecovery: Boolean(input.phaseMemory?.failedCandidates.length),
+        bestConfidence: bestRowAction.item.confidence,
+        runnerUpConfidence: runnerUp?.item.confidence,
+      }),
       verificationHint: verificationHint(input.step),
     };
   }
@@ -246,6 +307,7 @@ function findCollectionCandidate(input: {
     .sort((a, b) => b.score - a.score || a.item.index - b.item.index);
   const best = candidates[0];
   if (!best || best.score < 15) return null;
+  const runnerUp = candidates[1];
   return {
     elementId: best.item.elementId,
     selector: best.item.selector,
@@ -255,6 +317,16 @@ function findCollectionCandidate(input: {
     source: 'collection',
     matchedBy: target?.ordinal ? 'collection_ordinal' : target?.purpose ? 'collection_purpose' : 'collection_semantic_text',
     score: best.score,
+    ...ambiguityDetails({
+      step: input.step,
+      bestScore: best.score,
+      runnerUpScore: runnerUp?.score,
+      bestIdentity: [best.item.parentText, best.item.text].filter(Boolean).join(' > '),
+      runnerUpIdentity: runnerUp ? [runnerUp.item.parentText, runnerUp.item.text].filter(Boolean).join(' > ') : undefined,
+      rankedRecovery: Boolean(input.phaseMemory?.failedCandidates.length),
+      bestConfidence: best.item.confidence,
+      runnerUpConfidence: runnerUp?.item.confidence,
+    }),
     verificationHint: verificationHint(input.step),
   };
 }
@@ -293,6 +365,7 @@ function findElementCandidate(input: {
     .sort((a, b) => b.score - a.score);
   const best = elements[0];
   if (!best || best.score < 20) return null;
+  const runnerUp = elements[1];
   return {
     elementId: best.element.elementId,
     selector: best.element.selector,
@@ -301,6 +374,16 @@ function findElementCandidate(input: {
     source: 'element',
     matchedBy: 'element_fallback',
     score: best.score,
+    ...ambiguityDetails({
+      step: input.step,
+      bestScore: best.score,
+      runnerUpScore: runnerUp?.score,
+      bestIdentity: best.element.text || best.element.purpose,
+      runnerUpIdentity: runnerUp?.element.text || runnerUp?.element.purpose,
+      rankedRecovery: Boolean(input.phaseMemory?.failedCandidates.length),
+      bestConfidence: best.element.score,
+      runnerUpConfidence: runnerUp?.element.score,
+    }),
     verificationHint: verificationHint(input.step),
   };
 }
@@ -366,6 +449,21 @@ export function resolvePlannedStepTarget(input: {
     };
   }
 
+  if (candidate.ambiguous) {
+    return {
+      step: input.step,
+      blocked: true,
+      ambiguous: true,
+      matchedBy: candidate.matchedBy,
+      score: candidate.score,
+      runnerUpScore: candidate.runnerUpScore,
+      scoreMargin: candidate.scoreMargin,
+      reason: `目标存在歧义，已拒绝执行：${candidate.ambiguityReason || '多个候选得分过于接近。'}`,
+      rejectedCandidates: rejectedCandidates(input),
+      verificationHint: candidate.verificationHint || verificationHint(input.step),
+    };
+  }
+
   const nextStep: PlannedStep = {
     ...input.step,
     target: {
@@ -390,6 +488,9 @@ export function resolvePlannedStepTarget(input: {
     candidate,
     matchedBy: candidate.matchedBy,
     score: candidate.score,
+    runnerUpScore: candidate.runnerUpScore,
+    scoreMargin: candidate.scoreMargin,
+    ambiguous: candidate.ambiguous,
     verificationHint: candidate.verificationHint || verificationHint(input.step),
   };
 }

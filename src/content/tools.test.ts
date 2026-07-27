@@ -97,6 +97,23 @@ describe('page extractor', () => {
     expect(result.elements[0].elementId).toMatch(/^el_/);
   });
 
+  it('observes interactive SVG elements without treating className as a string', async () => {
+    document.body.innerHTML = `
+      <svg class="toolbar-icon download-icon" role="button" tabindex="0" aria-label="下载">
+        <path d="M0 0h10v10H0z"></path>
+      </svg>
+    `;
+
+    const result = await observePage({ limit: 10 });
+
+    expect(result.elements).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        role: 'button',
+        selectorCandidates: expect.arrayContaining(['svg.toolbar-icon.download-icon']),
+      }),
+    ]));
+  });
+
   it('marks search inputs and buttons in page observation', async () => {
     document.body.innerHTML = `
       <form>
@@ -155,6 +172,27 @@ describe('page extractor', () => {
       expect.objectContaining({ text: '颗粒剂管理', purpose: 'menu_item', level: expect.any(Number) }),
       expect.objectContaining({ text: '库存预警', purpose: 'menu_item' }),
     ]));
+  });
+
+  it('preserves parent context for section-based duplicate menu leaves', async () => {
+    document.body.innerHTML = `
+      <aside role="navigation">
+        <section data-module="颗粒剂管理">
+          <button class="menu-parent" aria-expanded="true">颗粒剂管理</button>
+          <div><button class="menu-child" role="menuitem">库存预警</button></div>
+        </section>
+        <section data-module="饮片管理">
+          <button class="menu-parent" aria-expanded="true">饮片管理</button>
+          <div><button class="menu-child" role="menuitem">库存预警</button></div>
+        </section>
+      </aside>
+    `;
+
+    const result = await observePage({ limit: 20 });
+    const leaves = result.elements.filter((item) => item.text === '库存预警' && item.clickable);
+
+    expect(leaves).toHaveLength(2);
+    expect(leaves.map((item) => item.parentText)).toEqual(expect.arrayContaining(['颗粒剂管理', '饮片管理']));
   });
 
   it('marks active menu and icon-like export buttons in observation', async () => {
@@ -246,6 +284,27 @@ describe('page extractor', () => {
     }));
     expect(clicked).toBe('');
     expect(first.getAttribute('target')).toBe('_blank');
+  });
+
+  it('does not treat Bing home-page hot topics as natural search results', async () => {
+    document.title = '搜索 - Microsoft 必应';
+    document.body.innerHTML = `
+      <input id="sb_form_q" name="q" value="贝爷" />
+      <section id="homepage-hot-topics">
+        <a href="https://www.bing.com/search?q=%E4%B8%8A%E6%B5%B7%E7%83%AD%E5%88%B0%E5%85%A8%E5%9B%BD%E7%AC%AC%E4%B8%80">上海热到全国第一</a>
+        <a href="https://www.bing.com/search?q=LV%E5%85%AD%E5%BA%A6%E7%8A%B6%E5%91%8A%E5%9B%BD%E7%9F%A5%E5%B1%80">LV六度状告国知局</a>
+        <a href="https://www.bing.com/search?q=16%E6%9C%88%E9%BE%84%E5%B9%BC%E5%84%BF">16月龄幼儿</a>
+      </section>
+    `;
+
+    const results = await handleToolExecution('get_search_results', { limit: 5 });
+
+    expect(results).toEqual(expect.objectContaining({
+      success: true,
+      count: 0,
+      reliable: false,
+    }));
+    expect(results.results).toEqual([]);
   });
 
   it('filters hao123-like Baidu link redirects from natural search results', async () => {

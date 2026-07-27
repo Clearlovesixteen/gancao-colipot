@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { GLMClient, type Message } from './glm-client';
-import type { ModelProfile } from '../../shared/modelProfiles';
+import { GLMClient, type Message } from './modelClient';
+import type { ModelProfile } from '../shared/modelProfiles';
 
 const profile: ModelProfile = {
   id: 'test-model',
@@ -40,6 +40,8 @@ describe('GLMClient streaming', () => {
     await expect(client.send([{ role: 'user', content: '你好' }], undefined, 'request-1')).resolves.toEqual({ success: true });
     expect(messages.map((message) => message.content)).toContain('你');
     expect(messages.map((message) => message.content)).toContain('你好');
+    expect(messages.find((message) => message.content === '你')?.delivery).toBe('streaming');
+    expect(messages.findLast((message) => message.content === '你好')?.delivery).toBe('final');
   });
 
   it('递归工具调用始终携带发起请求时绑定的业务标签页', async () => {

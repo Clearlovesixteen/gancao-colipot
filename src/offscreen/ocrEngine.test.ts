@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { evaluateOcrQuality, getOcrErrorMessage, getPaddleOcrRuntimeOptions, paddleResultToPage } from './ocrEngine';
+import { evaluateOcrQuality, getOcrErrorMessage, paddleResultToPage } from './ocrEngine';
+import { getPaddleOcrRuntimeOptions } from '../shared/paddleOcrRuntime';
 
 describe('ocrEngine', () => {
   it('uses extension-local PaddleOCR models and ORT assets', () => {

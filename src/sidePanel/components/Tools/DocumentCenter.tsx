@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Card, Empty, Input, List, Modal, Progress, Select, Space, Table, Tabs, Tag, Tooltip, Typography, message } from 'antd';
 import { CopyOutlined, DeleteOutlined, DownloadOutlined, EyeOutlined, FileSearchOutlined, ReloadOutlined, ScanOutlined } from '@ant-design/icons';
 import type { DocumentAsset, DocumentContent, DocumentResult, DocumentSpace, DocumentTable, PageStructuredData, RequirementTaskResult, StructuredOcrField, StructuredOcrResult } from '../../../shared/documentTypes';
@@ -8,11 +8,10 @@ import {
   getRawFile,
   listDocumentAssets,
   listDocumentResults,
-  migrateLegacyUploadedFiles,
   rebuildDocumentChunks,
   saveDocumentContent,
   upsertDocumentAsset,
-} from '../../utils/documentStore';
+} from '../../../shared/documentRepository';
 import {
   downloadTextFile,
   downloadWorkbook,
@@ -23,9 +22,12 @@ import {
   toCsv,
 } from '../../../shared/exporters';
 import { parseUploadedFile, type ParsedUploadedFile } from '../../../shared/fileParser';
-import { getOcrErrorMessage, runOcr } from '../../utils/ocrEngine';
-import { structureOcrText, structuredOcrToMarkdown } from '../../../shared/ocrStructurer';
+import { structuredOcrToMarkdown } from '../../../shared/ocrStructurer';
 import { listDocumentSpaces, upsertDocumentSpace } from '../../../shared/documentSpaces';
+import {
+  createAndRunAutomationTask,
+  createAutomationTaskId,
+} from '../../../shared/automationTaskClient';
 
 const { Text, Title } = Typography;
 const { TabPane } = Tabs;
@@ -46,11 +48,11 @@ const DocumentCenter: React.FC<{ onBack: () => void; reference?: { documentId: s
   const [spaces, setSpaces] = useState<DocumentSpace[]>([]);
   const [selectedSpaceId, setSelectedSpaceId] = useState<string>('all');
   const [ocrCorrection, setOcrCorrection] = useState<{ fields: string; tables: string } | null>(null);
+  const ocrTaskAssetsRef = useRef<Map<string, string>>(new Map());
 
   const refresh = async () => {
     setLoading(true);
     try {
-      await migrateLegacyUploadedFiles();
       const [nextAssets, nextResults, nextSpaces] = await Promise.all([
         listDocumentAssets(),
         listDocumentResults(),
@@ -140,6 +142,28 @@ const DocumentCenter: React.FC<{ onBack: () => void; reference?: { documentId: s
     refresh();
     const listener = (event: any) => {
       if (event?.type === 'DOCUMENT_CENTER_UPDATED') {
+        refresh();
+        return;
+      }
+      const assetId = ocrTaskAssetsRef.current.get(String(event?.taskId || ''));
+      if (!assetId || event?.kind !== 'ocr') return;
+      if (event.type === 'AUTOMATION_TASK_PROGRESS') {
+        const progress = Math.round(Number(event.data?.progress || 0) * 100);
+        setOcrProgress((prev) => ({ ...prev, [assetId]: progress }));
+        return;
+      }
+      if (event.type === 'AUTOMATION_TASK_FINISHED' || event.type === 'AUTOMATION_TASK_ERROR') {
+        ocrTaskAssetsRef.current.delete(String(event.taskId));
+        setOcrProgress((prev) => {
+          const next = { ...prev };
+          delete next[assetId];
+          return next;
+        });
+        if (event.type === 'AUTOMATION_TASK_FINISHED') {
+          message.success({ content: event.result?.summary || 'OCR 完成', key: `ocr_${assetId}` });
+        } else {
+          message.error({ content: event.result?.error || 'OCR 失败', key: `ocr_${assetId}` });
+        }
         refresh();
       }
     };
@@ -306,75 +330,26 @@ const DocumentCenter: React.FC<{ onBack: () => void; reference?: { documentId: s
   };
 
   const handleRunOcr = async (asset: DocumentAsset) => {
+    const taskId = createAutomationTaskId();
+    ocrTaskAssetsRef.current.set(taskId, asset.id);
     try {
       message.loading({ content: 'OCR 正在识别...', key: `ocr_${asset.id}` });
       setOcrProgress((prev) => ({ ...prev, [asset.id]: 0 }));
-      const file = await getRawFileAsFile(asset);
       await upsertDocumentAsset({ ...asset, ocrStatus: 'running', updatedAt: Date.now() });
-      const result = await runOcr(file, asset.mimeType || file.type, {
-        maxPages: 20,
-        onProgress: (progress) => {
-          setOcrProgress((prev) => ({
-            ...prev,
-            [asset.id]: Math.round((progress.progress || 0) * 100),
-          }));
-        },
-      });
-      const existing = await getDocumentContent(asset.id);
-      const structuredOcr = structureOcrText({
-        text: result.text,
-        pages: result.pages,
-        warnings: result.warnings,
-      });
-      const structuredOcrMarkdown = structuredOcrToMarkdown(structuredOcr);
-      const text = [existing?.localText, structuredOcrMarkdown].filter(Boolean).join('\n\n');
-      const hasOcrText = Boolean(result.text.trim());
-      const ocrIsReliable = hasOcrText && !result.quality.lowConfidence && !result.quality.likelyGarbled;
-      const ocrWarning = result.warnings.join(' ');
-      const nextAsset: DocumentAsset = {
-        ...asset,
-        ocrStatus: ocrIsReliable ? 'done' : 'partial',
-        error: ocrIsReliable ? undefined : (ocrWarning || 'OCR 结果置信度较低'),
-        updatedAt: Date.now(),
-      };
-      const nextContent = {
-        assetId: asset.id,
-        text,
-        localText: existing?.localText,
-        ocrText: result.text,
-        structuredOcr,
-        tables: [
-          ...(existing?.tables || []).filter((table) => !table.title?.startsWith('OCR 表格')),
-          ...structuredOcr.tables,
-        ],
+      await createAndRunAutomationTask({
+        id: taskId,
+        kind: 'ocr',
+        title: `OCR：${asset.title}`,
+        goal: `识别 ${asset.title}`,
+        source: 'chat',
         metadata: {
-          ...(existing?.metadata || {}),
-          ocrPages: result.pages,
-          ocrQuality: result.quality,
-          ocrWarnings: result.warnings,
+          assetId: asset.id,
+          maxPages: 20,
         },
-        updatedAt: Date.now(),
-      };
-      await saveDocumentContent(nextContent);
-      await upsertDocumentAsset(nextAsset);
-      await rebuildDocumentChunks(nextAsset, nextContent);
-      if (hasOcrText) {
-        if (ocrIsReliable) {
-          message.success({ content: 'OCR 完成', key: `ocr_${asset.id}` });
-        } else {
-          message.warning({ content: 'OCR 已完成，但置信度较低', key: `ocr_${asset.id}` });
-        }
-      } else {
-        message.warning({ content: 'OCR 已完成，但未识别到文字', key: `ocr_${asset.id}` });
-      }
-      setOcrProgress((prev) => {
-        const next = { ...prev };
-        delete next[asset.id];
-        return next;
       });
-      refresh();
     } catch (error: any) {
-      const errorMessage = getOcrErrorMessage(error);
+      ocrTaskAssetsRef.current.delete(taskId);
+      const errorMessage = error?.message || 'OCR 任务启动失败';
       await upsertDocumentAsset({ ...asset, ocrStatus: 'error', error: errorMessage, updatedAt: Date.now() });
       message.error({ content: errorMessage, key: `ocr_${asset.id}` });
       setOcrProgress((prev) => {

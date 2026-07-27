@@ -1,10 +1,19 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { dirname, resolve } from 'path';
-import { copyFileSync, mkdirSync, existsSync, readdirSync, statSync } from 'fs';
+import { copyFileSync, mkdirSync, existsSync, readdirSync, statSync, readFileSync, writeFileSync } from 'fs';
 import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
+const runtimeVersionModuleId = 'virtual:gancao-runtime-version';
+const resolvedRuntimeVersionModuleId = `\0${runtimeVersionModuleId}`;
+const contentRuntimeVersionModuleId = 'virtual:gancao-content-runtime-version';
+const resolvedContentRuntimeVersionModuleId = `\0${contentRuntimeVersionModuleId}`;
+
+function createBuildId() {
+  const timestamp = new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 17);
+  return `${timestamp}-${Math.random().toString(36).slice(2, 8)}`;
+}
 
 function safeChunkName(name?: string) {
   const normalized = String(name || 'chunk')
@@ -15,10 +24,28 @@ function safeChunkName(name?: string) {
   return normalized || 'chunk';
 }
 
-// 自定义插件：复制 public 目录到 dist
-function copyPublicPlugin() {
+// 自定义插件：为每次构建生成运行时版本，并复制扩展静态资源。
+function extensionBuildPlugin() {
+  let buildId = createBuildId();
   return {
-    name: 'copy-public',
+    name: 'extension-build',
+    buildStart() {
+      buildId = createBuildId();
+    },
+    resolveId(id: string) {
+      if (id === runtimeVersionModuleId) return resolvedRuntimeVersionModuleId;
+      if (id === contentRuntimeVersionModuleId) return resolvedContentRuntimeVersionModuleId;
+      return null;
+    },
+    load(id: string) {
+      if (id === resolvedRuntimeVersionModuleId || id === resolvedContentRuntimeVersionModuleId) {
+        return `export const RUNTIME_BUILD_ID = ${JSON.stringify(buildId)};`;
+      }
+      return null;
+    },
+    shouldTransformCachedModule({ id }: { id: string }) {
+      return id === resolvedRuntimeVersionModuleId || id === resolvedContentRuntimeVersionModuleId;
+    },
     closeBundle() {
       const publicDir = resolve(__dirname, 'public');
       const distDir = resolve(__dirname, 'dist');
@@ -92,12 +119,20 @@ function copyPublicPlugin() {
           throw new Error(`PaddleOCR model asset missing: public/paddleocr/models/${file}`);
         }
       });
+
+      const manifestPath = resolve(distDir, 'manifest.json');
+      if (existsSync(manifestPath)) {
+        const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+        manifest.version_name = `build ${buildId}`;
+        writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+      }
+      writeFileSync(resolve(distDir, 'build-info.json'), `${JSON.stringify({ buildId }, null, 2)}\n`);
     },
   };
 }
 
 export default defineConfig({
-  plugins: [react(), copyPublicPlugin()],
+  plugins: [react(), extensionBuildPlugin()],
   build: {
     outDir: 'dist',
     emptyOutDir: true,

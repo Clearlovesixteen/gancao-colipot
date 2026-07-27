@@ -49,6 +49,38 @@ const observation: BrowserObservation = {
 };
 
 describe('pageContextBuilder', () => {
+  it('treats an incomplete post-navigation observation as retryable instead of reading missing arrays', async () => {
+    const executeBrowserTool = vi.fn(async (_tabId: number, toolName: string) => {
+      if (toolName === 'observe_page') return {
+        success: false,
+        error: '目标标签页仍在加载，content script 尚未就绪',
+      };
+      return {};
+    });
+
+    await expect(buildComputerUsePageContext({
+      tabId: 1,
+      intent: baseIntent,
+      executeBrowserTool,
+    })).rejects.toThrow('PAGE_OBSERVATION_NOT_READY');
+  });
+
+  it('ignores malformed legacy collection shells and rebuilds collections from elements', async () => {
+    const executeBrowserTool = vi.fn(async (_tabId: number, toolName: string) => {
+      if (toolName === 'observe_page') return {
+        ...observation,
+        collections: [{ id: 'partial', type: 'action_group' }],
+      };
+      if (toolName === 'extract_page_structured_data') return { headings: [], fields: [], tables: [], lists: [] };
+      if (toolName === 'extract_page_tables') return { tables: [] };
+      if (toolName === 'get_page_info') return { text: '' };
+      return {};
+    });
+
+    const context = await buildComputerUsePageContext({ tabId: 1, intent: baseIntent, executeBrowserTool });
+    expect(context.collections?.some((collection) => collection.type === 'action_group')).toBe(true);
+  });
+
   it('builds navigation, table, and action candidates', async () => {
     const executeBrowserTool = vi.fn(async (_tabId: number, toolName: string) => {
       if (toolName === 'observe_page') return observation;

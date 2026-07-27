@@ -1,27 +1,10 @@
 
-import { BUSINESS_TOOLS } from '../../shared/businessTools';
-import type { ModelProfile } from '../../shared/modelProfiles';
+import { BUSINESS_TOOLS } from '../shared/businessTools';
+import type { ModelProfile } from '../shared/modelProfiles';
+import type { ModelMessage, NativeFileReference } from '../shared/modelRuntimeTypes';
 
-// 导出 Message 接口，与 SSE 客户端保持一致
-export interface Message {
-  id: string;
-  content: string;
-  type: 'user' | 'system' | 'assistant';
-  timestamp: number;
-  requestId?: string;
-  tool_calls?: Array<{
-    id: string;
-    name: string;
-    arguments: Record<string, any>;
-  }>;
-}
-
-export interface NativeFileReference {
-  id: string;
-  name?: string;
-  type?: string;
-  size?: number;
-}
+export type Message = ModelMessage;
+export type { NativeFileReference };
 
 type GLMContentPart =
   | { type: 'text'; text: string }
@@ -211,7 +194,7 @@ export class GLMClient {
 - 能用工具完成的低风险动作可以调用工具；涉及提交、删除、购买、付款、发送消息、修改线上数据等高风险动作前，必须先向用户确认。
 - 对需求文档、表格、网页内容要输出结构化结果，例如摘要、待办、风险点、字段清单、流程建议。
 - 当用户想沉淀重复工作时，生成业务流程草稿，而不是只给浏览器点击步骤。
-- 当用户提到已上传的文件、PDF、Word、PPT、Excel、需求文档或“这个文件”时，优先调用 list_documents / search_documents / read_document 获取资料中心内容；旧工具 list_uploaded_files/read_uploaded_file 只作为兼容兜底。
+- 当用户提到已上传的文件、PDF、Word、PPT、Excel、需求文档或“这个文件”时，调用 list_documents / search_documents / read_document 获取资料中心内容。
 - 用户问具体问题时先用 search_documents 检索相关片段，并在回答中说明引用来源（文件名、页码/章节、片段摘要）。
 - 用户要求需求文档拆任务时调用 generate_requirement_tasks，并基于返回的任务清单总结，不要只泛泛建议。
 - 用户要求提取当前网页数据、表格或字段时调用 extract_page_structured_data。
@@ -428,6 +411,7 @@ export class GLMClient {
                 type: 'assistant',
                 timestamp: Date.now(),
                 requestId,
+                delivery: 'streaming',
               });
             }
 
@@ -520,6 +504,7 @@ export class GLMClient {
       type: 'assistant',
       timestamp: Date.now(),
       requestId,
+      delivery: 'final',
     });
 
     // 将消息添加到历史记录
@@ -562,6 +547,7 @@ export class GLMClient {
       type: 'assistant',
       timestamp: Date.now(),
       requestId,
+      delivery: 'tool',
       tool_calls: cleanedToolCalls,
     });
 

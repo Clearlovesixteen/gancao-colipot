@@ -176,6 +176,53 @@ describe('targetResolver', () => {
     expect(resolved.step.target).toEqual(expect.objectContaining({ elementId: 'drink_warning', selector: '#drink-warning' }));
   });
 
+  it('blocks duplicate menu labels when no parent path disambiguates them', () => {
+    const phase: ComputerUsePhase = {
+      id: 'navigate',
+      type: 'navigate_to_page',
+      goal: '进入库存预警',
+      targets: ['库存预警'],
+      navigationPath: ['库存预警'],
+    };
+    const step: PlannedStep = {
+      id: 'click_warning',
+      action: 'click',
+      target: { collectionType: 'menu_group', text: '库存预警' },
+      rationale: '点击库存预警',
+    };
+
+    const resolved = resolvePlannedStepTarget({ step, context: makeContext(), phase });
+
+    expect(resolved.blocked).toBe(true);
+    expect(resolved.ambiguous).toBe(true);
+    expect(resolved.reason).toContain('歧义');
+    expect(resolved.scoreMargin).toBeLessThan(12);
+  });
+
+  it('blocks equally plausible page actions without a unique semantic target', () => {
+    const step: PlannedStep = {
+      id: 'click_action',
+      action: 'click',
+      target: { collectionType: 'action_group', purpose: 'search_button' },
+      rationale: '点击查询',
+    };
+    const context = makeContext({
+      collections: [{
+        id: 'actions',
+        type: 'action_group',
+        items: [
+          { index: 1, text: '查询', elementId: 'search_a', selector: '#search-a', purpose: 'search_button', confidence: 0.9 },
+          { index: 2, text: '查询', elementId: 'search_b', selector: '#search-b', purpose: 'search_button', confidence: 0.9 },
+        ],
+      }],
+    });
+
+    const resolved = resolvePlannedStepTarget({ step, context });
+
+    expect(resolved.blocked).toBe(true);
+    expect(resolved.reason).toContain('歧义');
+  });
+
   it('revalidates an explicit planner-selected elementId through semantic collection scoring', () => {
     const phase: ComputerUsePhase = {
       id: 'navigate',
@@ -480,8 +527,6 @@ describe('targetResolver', () => {
       id: 'download_first_row',
       action: 'download_file',
       target: {
-        elementId: 'row_download_1',
-        selector: '#row-download-1',
         collectionType: 'table_row_group',
         ordinal: 1,
         purpose: 'download_button',
@@ -550,6 +595,41 @@ describe('targetResolver', () => {
     expect(resolved.matchedBy).toBe('collection_row_action');
     expect(resolved.score).toBeGreaterThan(0);
     expect(resolved.verificationHint).toContain('download');
+  });
+
+  it('resolves a semantic form label to the correct control', () => {
+    const step: PlannedStep = {
+      id: 'fill_alias',
+      action: 'type',
+      target: { collectionType: 'form_group', text: '用户花名' },
+      value: '秋枫',
+      rationale: '输入用户花名',
+    };
+    const context = makeContext({
+      collections: [{
+        id: 'form_fields',
+        type: 'form_group',
+        title: '查询表单',
+        items: [
+          { index: 1, text: '文件名', elementId: 'filename', selector: '#filename', confidence: 0.9, metadata: { label: '文件名', controlType: 'input' } },
+          { index: 2, text: '用户花名', elementId: 'alias', selector: '#alias', confidence: 0.9, metadata: { label: '用户花名', controlType: 'input' } },
+        ],
+      }],
+      observation: {
+        ...baseObservation,
+        elements: [
+          ...baseObservation.elements,
+          { elementId: 'filename', role: 'textbox', tag: 'input', text: '', selector: '#filename', selectors: ['#filename'], bbox: { x: 10, y: 10, width: 120, height: 32 }, visible: true, enabled: true, clickable: true, parentText: '文件名' },
+          { elementId: 'alias', role: 'textbox', tag: 'input', text: '', selector: '#alias', selectors: ['#alias'], bbox: { x: 10, y: 50, width: 120, height: 32 }, visible: true, enabled: true, clickable: true, parentText: '用户花名' },
+        ],
+      },
+    });
+
+    const resolved = resolvePlannedStepTarget({ step, context, phase: { id: 'fill', type: 'fill_form', goal: '输入用户花名' } });
+
+    expect(resolved.blocked).toBeFalsy();
+    expect(resolved.step.target).toEqual(expect.objectContaining({ elementId: 'alias', selector: '#alias' }));
+    expect(resolved.matchedBy).toBe('collection_semantic_text');
   });
 
   it('reports rejected candidates when a semantic target cannot be resolved', () => {

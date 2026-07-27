@@ -23,6 +23,20 @@ function extractKeywords(text: string): string[] {
   return Array.from(new Set(words)).slice(0, 24);
 }
 
+function extractSearchTerms(text: string): string[] {
+  const terms = [...extractKeywords(text)];
+  const cjkRuns = text.match(/[\p{Script=Han}]{2,}/gu) || [];
+  for (const run of cjkRuns) {
+    for (const size of [4, 3, 2]) {
+      if (run.length < size) continue;
+      for (let index = 0; index <= run.length - size; index += 1) {
+        terms.push(run.slice(index, index + size));
+      }
+    }
+  }
+  return Array.from(new Set(terms)).slice(0, 80);
+}
+
 function getPageNumber(section: string): number | undefined {
   const match = section.match(/^##\s*Page\s+(\d+)/im);
   return match ? Number(match[1]) : undefined;
@@ -95,7 +109,7 @@ export function chunkDocument(input: ChunkDocumentInput): DocumentChunk[] {
 }
 
 export function scoreChunk(query: string, chunk: DocumentChunk): number {
-  const terms = extractKeywords(query);
+  const terms = extractSearchTerms(query);
   if (terms.length === 0) return 0;
 
   const haystack = `${chunk.sectionTitle || ''}\n${chunk.text}`.toLowerCase();

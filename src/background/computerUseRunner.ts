@@ -25,6 +25,7 @@ import { verifyComputerUseStep } from './verifyComputerUseStep';
 import { extractTablesFromComputerUseResult, summarizeExtractedTables } from '../shared/computerUseResults';
 import { resolvePlannedStepTarget } from './targetResolver';
 import {
+  evaluatePhaseActionCompletion,
   getDownloadResult,
   getPhaseFinishEvidence,
   isLatestDownloadOpened,
@@ -32,9 +33,21 @@ import {
 } from './phaseCompletion';
 import { buildSearchUrl } from './computerUseTaskParser';
 import { resolveBrowserUseActionTool } from './browserUseActionRegistry';
+import { evaluatePhaseObservationGate } from './phaseObservationGate';
+import { executeNavigationAwareAction } from './navigationCoordinator';
 import type { BrowserUseSession } from './browserUseSession';
 import { executeBrowserUseTabAction, type BrowserUseTabActionDeps } from './browserUseTabActions';
 import { resolvePlannedStepVariables } from './browserUseVariables';
+import {
+  BrowserUseFailure,
+  fingerprintComputerUseContext,
+  waitForStableBrowserState,
+} from './browserUseReadiness';
+import {
+  createBrowserUseTargetLease,
+  revalidateBrowserUseTargetLease,
+} from './browserUseTargetLease';
+import { validateBrowserUseOutcome } from './browserUseOutcomeValidator';
 
 export type ComputerUseRunnerDeps = {
   tabId: number;
@@ -98,7 +111,17 @@ function looksHighRisk(action: ComputerUseAction): boolean {
     action.summary,
     action.selector,
   ].filter(Boolean).join(' ');
-  return /(提交|删除|支付|购买|下单|发送|确认|保存|导出|下载|修改|submit|delete|pay|buy|send|confirm|save|export|download)/i.test(text);
+  // Export/download is an explicitly requested Browser Use capability. Treating
+  // every later reference to a downloaded file as high risk would pause safe
+  // navigation such as opening that file in the document center.
+  return /(提交|删除|支付|购买|下单|发送|确认|保存|修改|submit|delete|pay|buy|send|confirm|save|update)/i.test(text);
+}
+
+function actionNeedsFreshTarget(action: ComputerUseAction): boolean {
+  return ![
+    'finish', 'wait', 'scroll', 'extract_table', 'press_key', 'keyboard_shortcut',
+    'open_tab', 'switch_tab', 'close_tab', 'go_back', 'go_forward', 'reload',
+  ].includes(action.action) && action.x === undefined && action.y === undefined;
 }
 
 function plannedStepToAction(step: PlannedStep): ComputerUseAction {
@@ -115,7 +138,14 @@ function plannedStepToAction(step: PlannedStep): ComputerUseAction {
     x: step.target?.x,
     y: step.target?.y,
     text: actionText,
-    url: step.action === 'open_tab' ? step.target?.href || step.value || step.target?.text : undefined,
+    // Keep the resolved href as a navigation hint for ordinary link clicks too.
+    // The content action still performs the click; BrowserUseSession uses this
+    // URL only to identify a noopener/noreferrer result tab reliably.
+    url: step.action === 'open_tab'
+      ? step.target?.href || step.value || step.target?.text
+      : step.action === 'click'
+        ? step.target?.href
+        : undefined,
     value: step.value,
     key: step.action === 'press_key' || step.action === 'keyboard_shortcut' ? step.value : undefined,
     expect: step.verify?.value,
@@ -419,29 +449,14 @@ function hasCompletedNavigationPath(runState: ComputerUseRunState, expectedPath:
   ));
 }
 
-function lastCompletedPhase(runState: ComputerUseRunState) {
-  return runState.completedPhases[runState.completedPhases.length - 1];
-}
-
-function hasFileListCandidate(context: ComputerUsePageContext): boolean {
-  return Boolean((context.collections || []).some((collection) => collection.type === 'file_list' && collection.items.length > 0));
-}
-
 function looksUnstable(context: ComputerUsePageContext): boolean {
   const text = [
     context.pageTextPreview,
     context.observation.elements.slice(0, 50).map((element) => element.text || element.context).join(' '),
   ].join(' ');
   return /(加载中|请稍候|loading|spinner|skeleton)/i.test(text)
-    || (context.observation.elements.length < 6 && !context.pageTextPreview);
-}
-
-function shouldReobserveForStablePhase(phase: ComputerUsePhase, context: ComputerUsePageContext, runState: ComputerUseRunState): boolean {
-  const last = lastCompletedPhase(runState);
-  const afterNavigation = last?.phase.type === 'navigate_to_page' || last?.phase.type === 'open_page_or_center';
-  if (phase.type === 'download_file' && afterNavigation && !hasDownloadCandidate(context)) return true;
-  if (phase.type === 'click_latest_download' && !hasFileListCandidate(context)) return true;
-  return looksUnstable(context);
+    || !context.observation.url
+    || /^about:(blank|newtab)/i.test(context.observation.url);
 }
 
 function makePhaseSummary(phase: ComputerUsePhase, result?: unknown): string {
@@ -476,10 +491,6 @@ function finalSummary(runState: ComputerUseRunState, fallback: string): string {
   return `自动操作完成${partial}：已导出文件：${fileText}${assetText}${opened}。`;
 }
 
-function isBlockingFinishSummary(summary: string): boolean {
-  return /(未找到|无法|不能|不足|缺少|需要用户|需要先|请补充|请确认|验证码|登录页|无权限|权限不足)/i.test(summary);
-}
-
 function safeDecodeUrl(value?: string): string {
   try {
     return decodeURIComponent(value || '');
@@ -498,7 +509,9 @@ function isSearchResultObservation(observation: BrowserObservation, query?: stri
 
 function hasNaturalSearchResults(context: ComputerUsePageContext): boolean {
   return Boolean((context.collections || []).some((collection) => (
-    collection.type === 'search_results' && collection.items.length > 0
+    collection.type === 'search_results'
+    && collection.items.length > 0
+    && collection.metadata?.verifiedNaturalResults === true
   )));
 }
 
@@ -562,8 +575,34 @@ function validatePhasePreconditions(input: {
   return { ok: true };
 }
 
-function hasLeftSearchResults(before: BrowserObservation, after: BrowserObservation, query?: string): boolean {
+function normalizedDestinationUrl(value?: string): string {
+  if (!value) return '';
+  try {
+    const url = new URL(value);
+    url.hash = '';
+    return url.toString();
+  } catch {
+    return value.trim();
+  }
+}
+
+function hasLeftSearchResults(
+  before: BrowserObservation,
+  after: BrowserObservation,
+  query?: string,
+  expectedUrl?: string,
+): boolean {
   if (!after?.url) return false;
+  const actualDestination = normalizedDestinationUrl(after.url);
+  const expectedDestination = normalizedDestinationUrl(expectedUrl);
+  if (expectedDestination && actualDestination === expectedDestination) return true;
+  if (after.url !== before.url) {
+    try {
+      if (new URL(after.url).origin !== new URL(before.url).origin) return true;
+    } catch {
+      // Fall through to the semantic search-page check for non-standard URLs.
+    }
+  }
   if (after.url !== before.url && !isSearchResultObservation(after, query)) return true;
   if (after.title && before.title && after.title !== before.title && !/(搜索|百度|bing|google|youtube)/i.test(after.title)) return true;
   return false;
@@ -596,9 +635,12 @@ export class ComputerUseRunner {
     return this.deps.tabSession?.getCurrentTabId() || this.deps.tabId;
   }
 
-  private async syncBrowserSession(runState?: ComputerUseRunState): Promise<void> {
+  private async syncBrowserSession(runState?: ComputerUseRunState, expectedUrl?: string): Promise<void> {
     if (!this.deps.tabSession) return;
-    const synced = await this.deps.tabSession.syncAfterAction();
+    const synced = await this.deps.tabSession.syncAfterAction({
+      expectedUrl,
+      allowActiveNewTab: true,
+    });
     if (!runState) return;
     runState.browserSession = synced.snapshot;
     if (synced.switched) {
@@ -629,14 +671,21 @@ export class ComputerUseRunner {
       runState.browserSession = this.deps.tabSession.snapshot();
       return result;
     }
-    const result = tool.toolName === 'download_file' && this.deps.executeDownloadAction
-      ? await this.deps.executeDownloadAction({ action, pageUrl, tabId })
-      : await this.deps.executeBrowserTool(tabId, tool.toolName, tool.args);
-    if (tool.descriptor.mayOpenNewTab) {
-      await new Promise((resolve) => setTimeout(resolve, 150));
-      await this.syncBrowserSession(runState);
+    const outcome = await executeNavigationAwareAction({
+      mayNavigate: Boolean(tool.descriptor.mayOpenNewTab),
+      execute: async () => (
+        tool.toolName === 'download_file' && this.deps.executeDownloadAction
+          ? await this.deps.executeDownloadAction({ action, pageUrl, tabId })
+          : await this.deps.executeBrowserTool(tabId, tool.toolName, tool.args)
+      ),
+      synchronize: tool.descriptor.mayOpenNewTab
+        ? async () => await this.syncBrowserSession(runState, action.url)
+        : undefined,
+    });
+    if (outcome.warning && !runState.warnings?.includes(outcome.warning)) {
+      runState.warnings = [...(runState.warnings || []), outcome.warning];
     }
-    return result;
+    return outcome.result;
   }
 
   private getPhaseMemory(phase: ComputerUsePhase): ComputerUsePhaseMemory {
@@ -678,11 +727,24 @@ export class ComputerUseRunner {
   }): Promise<ComputerUsePageContext> {
     const attempts = Math.max(1, input.attempts ?? 9);
     let context = await this.observePhase(input.intent, input.phase);
+    let previousFingerprint = '';
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       const blocker = getSearchBlocker(context);
       if (blocker) throw new Error(blocker);
       const collection = (context.collections || []).find((item) => item.type === input.collectionType);
-      if (collection && collection.items.some((item) => Number(item.index) === input.ordinal)) return context;
+      const requestedItemExists = Boolean(collection?.items.some((item) => Number(item.index) === input.ordinal));
+      const verifiedSearchCollection = input.collectionType !== 'search_results'
+        || collection?.metadata?.verifiedNaturalResults === true;
+      const fingerprint = requestedItemExists && verifiedSearchCollection
+        ? collection!.items
+          .slice(0, Math.max(input.ordinal, 5))
+          .map((item) => `${item.index}:${item.href || item.text || item.elementId}`)
+          .join('|')
+        : '';
+      // Dynamic search pages often expose skeletons or stale home-page modules for
+      // one paint. Require the same ordered result set twice before clicking.
+      if (fingerprint && fingerprint === previousFingerprint) return context;
+      previousFingerprint = fingerprint;
       if (attempt < attempts - 1) {
         await new Promise((resolve) => setTimeout(resolve, 500));
         context = await this.observePhase(input.intent, input.phase);
@@ -727,22 +789,51 @@ export class ComputerUseRunner {
     });
   }
 
+  private async observeAfterAction(
+    intent: ComputerUseIntent,
+    phase: ComputerUsePhase,
+    runState: ComputerUseRunState,
+    action?: ComputerUseAction,
+  ): Promise<ComputerUsePageContext> {
+    const ready = await waitForStableBrowserState({
+      observe: async () => await this.observePhase(intent, phase),
+      synchronize: async () => await this.syncBrowserSession(runState),
+      isReady: (context) => Boolean(
+        context.observation.url
+        && !/^about:(blank|newtab)/i.test(context.observation.url)
+        && !looksUnstable(context)
+      ),
+      fingerprint: (context) => fingerprintComputerUseContext(context, phase),
+      attempts: 12,
+      stableSamples: action?.action === 'extract_table' ? 1 : 2,
+      delayMs: 250,
+      signal: this.deps.signal,
+      description: `阶段「${phase.goal}」动作后的页面`,
+    });
+    return ready.value;
+  }
+
   private async observeStablePhase(
     intent: ComputerUseIntent,
     phase: ComputerUsePhase,
     runState: ComputerUseRunState
   ): Promise<ComputerUsePageContext> {
-    let context = await this.observePhase(intent, phase);
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      if (!shouldReobserveForStablePhase(phase, context, runState)) break;
-      await new Promise((resolve) => setTimeout(resolve, attempt === 0 ? 900 : 1200));
-      const nextContext = await this.observePhase(intent, phase);
-      context = nextContext;
-      if (phase.type === 'download_file' && hasDownloadCandidate(context)) break;
-      if (phase.type === 'click_latest_download' && hasFileListCandidate(context)) break;
-      if (!looksUnstable(context)) break;
-    }
-    return context;
+    const ready = await waitForStableBrowserState({
+      observe: async () => await this.observePhase(intent, phase),
+      synchronize: async () => await this.syncBrowserSession(runState),
+      isReady: (context) => Boolean(
+        context.observation.url
+        && !/^about:(blank|newtab)/i.test(context.observation.url)
+        && !looksUnstable(context)
+      ),
+      fingerprint: (context) => fingerprintComputerUseContext(context, phase),
+      attempts: 12,
+      stableSamples: 2,
+      delayMs: 150,
+      signal: this.deps.signal,
+      description: `阶段「${phase.goal}」执行前页面`,
+    });
+    return ready.value;
   }
 
   private emitPhaseProgress(input: {
@@ -1073,6 +1164,10 @@ export class ComputerUseRunner {
       collectionType,
       ordinal,
     });
+    const observationGate = evaluatePhaseObservationGate({ phase: input.phase, context: beforeContext });
+    if (!observationGate.ok) {
+      throw new Error(`阶段「${input.phase.goal}」观察质量不足：${observationGate.reason || '搜索结果集合不可靠。'}`);
+    }
     const plannedStep: PlannedStep = {
       id: `click_collection_item_${ordinal}`,
       action: 'click',
@@ -1084,7 +1179,7 @@ export class ComputerUseRunner {
       rationale: `点击第${ordinal}个搜索结果`,
       verify: { type: 'page_changed', value: query },
     };
-    const targetResolution = resolvePlannedStepTarget({
+    let targetResolution = resolvePlannedStepTarget({
       step: plannedStep,
       context: beforeContext,
       phase: input.phase,
@@ -1094,6 +1189,20 @@ export class ComputerUseRunner {
     if (targetResolution.blocked) {
       throw new Error(targetResolution.reason || `未识别到可点击的第${ordinal}个搜索结果。`);
     }
+    const targetLease = createBrowserUseTargetLease(targetResolution, beforeContext);
+    const freshContext = await this.observePhase(input.intent, input.phase);
+    const revalidated = revalidateBrowserUseTargetLease({
+      step: targetResolution.step,
+      context: freshContext,
+      lease: targetLease,
+      phase: input.phase,
+      runState: input.runState,
+      phaseMemory: this.getPhaseMemory(input.phase),
+    });
+    if (!revalidated.ok) {
+      throw new BrowserUseFailure(revalidated.code, revalidated.reason, true, { targetLease });
+    }
+    targetResolution = revalidated.resolution;
     const resolvedStep = targetResolution.step;
     const action = plannedStepToAction(resolvedStep);
     action.reason = action.reason || `点击第${ordinal}个搜索结果`;
@@ -1107,24 +1216,34 @@ export class ComputerUseRunner {
       runState: input.runState,
       observation: beforeContext.observation,
       action,
-      result: { collectionType, ordinal, targetResolution },
+      result: { collectionType, ordinal, targetResolution, observationGate },
       targetResolution,
     });
     const clickResult = normalizeToolResult(await this.executeAction({
       ...action,
       waitForElement: false,
     } as ComputerUseAction, input.runState, beforeContext.observation.url));
-    await new Promise((resolve) => setTimeout(resolve, 800));
-    let afterContext = await this.observePhase(input.intent, input.phase);
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    let afterContext = await this.observeAfterAction(input.intent, input.phase, input.runState, action);
     if (!clickResult?.success) {
       throw new Error(clickResult?.error || `未识别到可点击的第${ordinal}个搜索结果。`);
     }
-    if (!hasLeftSearchResults(beforeContext.observation, afterContext.observation, query) && resolvedStep.target?.href) {
+    if (!hasLeftSearchResults(
+      beforeContext.observation,
+      afterContext.observation,
+      query,
+      resolvedStep.target?.href,
+    ) && resolvedStep.target?.href) {
       await this.deps.navigate(this.tabId, resolvedStep.target.href, 'complete', 30000, this.deps.signal);
       await this.syncBrowserSession(input.runState);
-      afterContext = await this.observePhase(input.intent, input.phase);
+      afterContext = await this.observeAfterAction(input.intent, input.phase, input.runState, action);
     }
-    if (!hasLeftSearchResults(beforeContext.observation, afterContext.observation, query)) {
+    if (!hasLeftSearchResults(
+      beforeContext.observation,
+      afterContext.observation,
+      query,
+      resolvedStep.target?.href,
+    )) {
       throw new Error(`已尝试点击第${ordinal}个搜索结果，但页面仍停留在搜索结果页：${afterContext.observation.title || afterContext.observation.url}`);
     }
     this.history.push({
@@ -1197,6 +1316,23 @@ export class ComputerUseRunner {
 
       let stepIndex = 0;
       const startPhaseIndex = Math.max(0, Math.min(checkpoint?.phaseIndex || 0, Math.max(0, taskPlan.phases.length - 1)));
+      this.deps.emit({
+        type: 'COMPUTER_USE_PROGRESS',
+        runId: this.deps.runId,
+        goal: this.deps.goal,
+        stepIndex,
+        state: 'observing',
+        intent: baseIntent,
+        phaseIndex: startPhaseIndex,
+        phaseType: taskPlan.phases[startPhaseIndex]?.type,
+        phaseGoal: taskPlan.phases[startPhaseIndex]?.goal,
+        phase: taskPlan.phases[startPhaseIndex],
+        runState,
+        result: {
+          summary: checkpoint ? '已恢复任务计划，准备继续未完成阶段。' : '任务计划已就绪，准备执行。',
+          taskPlan,
+        },
+      });
       if (checkpoint) {
         this.deps.emit({
           type: 'COMPUTER_USE_PROGRESS',
@@ -1256,7 +1392,7 @@ export class ComputerUseRunner {
             continue;
           }
 
-          const context = await this.observeStablePhase(intent, phase, runState);
+          let context = await this.observeStablePhase(intent, phase, runState);
           const precondition = validatePhasePreconditions({ phase, intent, context, runState });
           if (!precondition.ok) {
             this.deps.emit({
@@ -1273,6 +1409,31 @@ export class ComputerUseRunner {
               phase,
               runState,
               result: { precondition },
+            });
+            return;
+          }
+
+          let observationGate = evaluatePhaseObservationGate({ phase, context });
+          if (!observationGate.ok && observationGate.retryable) {
+            await new Promise((resolve) => setTimeout(resolve, 650));
+            context = await this.observeStablePhase(intent, phase, runState);
+            observationGate = evaluatePhaseObservationGate({ phase, context });
+          }
+          if (!observationGate.ok) {
+            this.deps.emit({
+              type: 'COMPUTER_USE_ERROR',
+              runId: this.deps.runId,
+              goal: this.deps.goal,
+              error: `阶段「${phase.goal}」观察质量不足：${observationGate.reason || '缺少可靠的页面语义。'}`,
+              steps: this.history,
+              lastObservation: context.observation,
+              intent,
+              phaseIndex,
+              phaseType: phase.type,
+              phaseGoal: phase.goal,
+              phase,
+              runState,
+              result: { observationGate },
             });
             return;
           }
@@ -1310,16 +1471,18 @@ export class ComputerUseRunner {
                 })),
               })),
               phaseMemory,
+              observationGate,
             },
           });
 
           const plan = this.deps.createPlan
             ? await this.deps.createPlan({ intent, context, history: this.history, phase, runState, phaseMemory })
             : await createComputerUsePlan({ intent, context, history: this.history, phase, runState, phaseMemory });
+          const planDecision = plan.decision;
           let plannedStep = plan.steps[0];
           if (!plannedStep) throw new Error('Computer Use 规划结果没有步骤');
           plannedStep = resolvePlannedStepVariables(plannedStep, runState);
-          const targetResolution = resolvePlannedStepTarget({
+          let targetResolution = resolvePlannedStepTarget({
             step: plannedStep,
             context,
             phase,
@@ -1347,8 +1510,8 @@ export class ComputerUseRunner {
             return;
           }
           plannedStep = targetResolution.step;
-          const action = plannedStepToAction(plannedStep);
-          const chosenElement = targetResolution.element || (action.elementId
+          let action = plannedStepToAction(plannedStep);
+          let chosenElement = targetResolution.element || (action.elementId
             ? context.observation.elements.find((element) => element.elementId === action.elementId)
             : action.selector
               ? context.observation.elements.find((element) => element.selector === action.selector || element.selectors?.includes(action.selector || ''))
@@ -1356,59 +1519,16 @@ export class ComputerUseRunner {
 
           if (action.action === 'finish') {
             const summary = action.summary || plan.needsUserInput || plan.summary || action.reason || '任务完成';
-            const hasExecutedStep = this.history.some((item) => item.action);
-            const completedDownload = runState.downloadResult ? makeDownloadSummary(runState.downloadResult) : makeDownloadSummary(this.history[this.history.length - 1]?.result);
-            const completedExtract = makeExtractedTableSummary(this.history[this.history.length - 1]?.result);
-            if (
-              taskPlan.phases.length === 1
-              && isDataCompletionIntent(intent)
-              && (!hasExecutedStep || (!completedDownload && !completedExtract))
-              && /^(finish|done|完成|任务完成|已完成)$/i.test(String(summary).trim())
-            ) {
+            if (planDecision !== 'complete') {
+              const blockedReason = plan.blockedReason || plan.needsUserInput || summary;
               this.deps.emit({
                 type: 'COMPUTER_USE_ERROR',
                 runId: this.deps.runId,
                 goal: this.deps.goal,
-                error: '自动操作没有执行：规划器过早结束，未点击目标入口，也未提取到列表数据。请重试或补充目标页面位置。',
+                error: `阶段「${phase.goal}」失败：${blockedReason}`,
                 intent,
                 plan,
                 lastObservation: context.observation,
-                phaseIndex,
-                phaseType: phase.type,
-                phaseGoal: phase.goal,
-                phase,
-                runState,
-              });
-              return;
-            }
-            if (taskPlan.phases.length === 1 && isDataCompletionIntent(intent) && !completedDownload && !completedExtract && isBlockingFinishSummary(summary)) {
-              this.deps.emit({
-                type: 'COMPUTER_USE_ERROR',
-                runId: this.deps.runId,
-                goal: this.deps.goal,
-                error: summary,
-                steps: this.history,
-                lastObservation: context.observation,
-                intent,
-                plan,
-                phaseIndex,
-                phaseType: phase.type,
-                phaseGoal: phase.goal,
-                phase,
-                runState,
-              });
-              return;
-            }
-            if (isBlockingFinishSummary(summary)) {
-              this.deps.emit({
-                type: 'COMPUTER_USE_ERROR',
-                runId: this.deps.runId,
-                goal: this.deps.goal,
-                error: `阶段「${phase.goal}」失败：${summary}`,
-                steps: this.history,
-                lastObservation: context.observation,
-                intent,
-                plan,
                 phaseIndex,
                 phaseType: phase.type,
                 phaseGoal: phase.goal,
@@ -1470,6 +1590,49 @@ export class ComputerUseRunner {
             phaseCompleted = true;
             stepIndex += 1;
             continue;
+          }
+
+          if (actionNeedsFreshTarget(action)) {
+            const lease = createBrowserUseTargetLease(targetResolution, context);
+            const freshContext = await this.observeStablePhase(intent, phase, runState);
+            const revalidated = revalidateBrowserUseTargetLease({
+              step: plannedStep,
+              context: freshContext,
+              lease,
+              phase,
+              runState,
+              phaseMemory,
+            });
+            if (!revalidated.ok) {
+              this.deps.emit({
+                type: 'COMPUTER_USE_ERROR',
+                runId: this.deps.runId,
+                goal: this.deps.goal,
+                errorCode: revalidated.code,
+                error: `阶段「${phase.goal}」执行前目标复验失败：${revalidated.reason}`,
+                steps: this.history,
+                lastObservation: freshContext.observation,
+                intent,
+                plan,
+                phaseIndex,
+                phaseType: phase.type,
+                phaseGoal: phase.goal,
+                phase,
+                runState,
+                result: { phaseMemory, targetLease: lease },
+                targetResolution: revalidated.resolution,
+              });
+              return;
+            }
+            context = freshContext;
+            targetResolution = revalidated.resolution;
+            plannedStep = targetResolution.step;
+            action = plannedStepToAction(plannedStep);
+            chosenElement = targetResolution.element || (action.elementId
+              ? context.observation.elements.find((element) => element.elementId === action.elementId)
+              : action.selector
+                ? context.observation.elements.find((element) => element.selector === action.selector || element.selectors?.includes(action.selector || ''))
+                : undefined);
           }
 
           if (!this.deps.allowHighRisk && action.action !== 'download_file' && looksHighRisk(action)) {
@@ -1546,12 +1709,7 @@ export class ComputerUseRunner {
             targetResolution,
           });
 
-          const afterContext = await buildComputerUsePageContext({
-            tabId: this.tabId,
-            intent,
-            phase,
-            executeBrowserTool: this.deps.executeBrowserTool,
-          });
+          const afterContext = await this.observeAfterAction(intent, phase, runState, action);
           const verification = verifyComputerUseStep({
             step: plannedStep,
             result,
@@ -1578,16 +1736,34 @@ export class ComputerUseRunner {
             downloadResult,
           });
 
-          if (!verification.success) {
+          const phaseCompletion = evaluatePhaseActionCompletion({
+            phase,
+            intent,
+            before: context,
+            after: afterContext,
+            action,
+            result,
+            verification,
+            history: this.history,
+            runState,
+          });
+          const outcome = validateBrowserUseOutcome({
+            verification,
+            completion: phaseCompletion,
+            action: action.action,
+          });
+
+          if (!outcome.ok) {
             this.failureCount += 1;
             phaseMemory.attempts += 1;
-            this.rememberFailedCandidate(phaseMemory, action, verification.reason || verification.warning || '校验失败');
-            if (verification.blocking || this.failureCount >= 3) {
+            this.rememberFailedCandidate(phaseMemory, action, outcome.reason);
+            if (!outcome.retryable || this.failureCount >= 3) {
               this.deps.emit({
                 type: 'COMPUTER_USE_ERROR',
                 runId: this.deps.runId,
                 goal: this.deps.goal,
-                error: `阶段「${phase.goal}」停在第 ${stepIndex + 1} 步：${verification.reason || '校验失败'}。请补充上下文或手动处理后重试。`,
+                errorCode: outcome.code,
+                error: `阶段「${phase.goal}」停在第 ${stepIndex + 1} 步：${outcome.reason}。请补充上下文或手动处理后重试。`,
                 steps: this.history,
                 lastObservation: afterContext.observation,
                 verification,
@@ -1601,7 +1777,7 @@ export class ComputerUseRunner {
                 phaseGoal: phase.goal,
                 phase,
                 runState,
-                result: { phaseMemory },
+                result: { phaseMemory, phaseCompletion, outcome },
                 targetResolution,
               });
               return;
@@ -1625,7 +1801,7 @@ export class ComputerUseRunner {
               phaseGoal: phase.goal,
               phase,
               runState,
-              result: { verification, phaseMemory },
+              result: { verification, phaseMemory, phaseCompletion, outcome },
               targetResolution,
             });
             stepIndex += 1;
@@ -1633,32 +1809,6 @@ export class ComputerUseRunner {
           }
 
           this.failureCount = 0;
-
-          const completedByAction = phase.type === 'navigate_to_page'
-            ? action.action === 'click'
-              && actionTouchesPhaseLeaf(action, phase)
-              && (
-                isPhaseTargetReached(phase, afterContext)
-                || (actionParentPathMatchesPhase(action, phase) && pageRouteChanged(context, afterContext))
-              )
-            : phase.type === 'download_file'
-              ? action.action === 'download_file' && isSuccessfulDownloadResult(result)
-              : phase.type === 'fill_form'
-                ? ['type', 'select_option', 'check'].includes(action.action)
-              : phase.type === 'click_action'
-                ? action.action === 'click'
-              : phase.type === 'wait'
-                ? action.action === 'wait'
-                : phase.type === 'open_page_or_center'
-                  ? action.action === 'click' && isPhaseTargetReached(phase, afterContext, runState)
-                  : phase.type === 'click_latest_download'
-                    ? action.action === 'click' && isLatestDownloadOpened(phase, context, afterContext, runState)
-                    : isDataCompletionIntent(intent)
-                      ? Boolean(
-                        (action.action === 'download_file' && isSuccessfulDownloadResult(result))
-                        || (action.action === 'extract_table' && makeExtractedTableSummary(result, afterContext.observation.title))
-                      )
-                      : action.action !== 'wait';
 
           this.deps.emit({
             type: 'COMPUTER_USE_PROGRESS',
@@ -1683,17 +1833,15 @@ export class ComputerUseRunner {
             targetResolution,
           });
 
-          if (completedByAction) {
-            const summary = makePhaseSummary(phase, result);
-            runState.completedPhases.push({
-              phase,
-              success: true,
-              summary,
-              result,
-              evidence: buildPhaseEvidence({ phase, before: context, after: afterContext, action }),
-            });
-            phaseCompleted = true;
-          }
+          const summary = makePhaseSummary(phase, result);
+          runState.completedPhases.push({
+            phase,
+            success: true,
+            summary,
+            result,
+            evidence: buildPhaseEvidence({ phase, before: context, after: afterContext, action }),
+          });
+          phaseCompleted = true;
           stepIndex += 1;
         }
 
@@ -1722,6 +1870,7 @@ export class ComputerUseRunner {
         type: 'COMPUTER_USE_ERROR',
         runId: this.deps.runId,
         goal: this.deps.goal,
+        errorCode: error instanceof BrowserUseFailure ? error.code : 'ACTION_EXECUTION_FAILED',
         error: error?.message || 'Computer Use 执行失败',
         runState: activeRunState || this.deps.resumeCheckpoint?.runState,
         phaseIndex: activeRunState?.currentPhaseIndex,

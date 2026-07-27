@@ -1,12 +1,14 @@
 import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import pdfWorkerSrc from 'pdfjs-dist/legacy/build/pdf.worker.mjs?url';
+import {
+  getPaddleOcrRuntimeOptions,
+  PADDLE_DET_MODEL_FILE,
+  PADDLE_REC_MODEL_FILE,
+} from '../shared/paddleOcrRuntime';
+
+export { getPaddleOcrRuntimeOptions } from '../shared/paddleOcrRuntime';
 
 GlobalWorkerOptions.workerSrc = pdfWorkerSrc;
-
-const PADDLE_DET_MODEL = 'PP-OCRv5_mobile_det';
-const PADDLE_REC_MODEL = 'PP-OCRv5_mobile_rec';
-const PADDLE_DET_MODEL_FILE = `${PADDLE_DET_MODEL}.tar`;
-const PADDLE_REC_MODEL_FILE = `${PADDLE_REC_MODEL}.tar`;
 
 export interface OcrProgress {
   status: string;
@@ -74,35 +76,6 @@ const SANDBOX_RESPONSE_SOURCE = 'gancao-paddleocr-sandbox';
 const PADDLE_SANDBOX_TIMEOUT_MS = 120000;
 
 let paddleSandboxBridgePromise: Promise<PaddleOcrSandboxBridge> | null = null;
-
-function runtimeUrl(path: string): string {
-  if (typeof chrome !== 'undefined' && chrome.runtime?.getURL) {
-    return chrome.runtime.getURL(path);
-  }
-  return `/${path}`;
-}
-
-export function getPaddleOcrRuntimeOptions(): Record<string, any> {
-  return {
-    worker: false,
-    sandboxUrl: runtimeUrl('paddleocrSandbox.html'),
-    textDetectionModelName: PADDLE_DET_MODEL,
-    textDetectionModelAsset: {
-      url: runtimeUrl(`paddleocr/models/${PADDLE_DET_MODEL_FILE}`),
-    },
-    textRecognitionModelName: PADDLE_REC_MODEL,
-    textRecognitionModelAsset: {
-      url: runtimeUrl(`paddleocr/models/${PADDLE_REC_MODEL_FILE}`),
-    },
-    ortOptions: {
-      backend: 'wasm',
-      wasmPaths: runtimeUrl('paddleocr/ort/'),
-      numThreads: 1,
-      simd: true,
-      proxy: false,
-    },
-  };
-}
 
 export function getOcrErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message) return normalizePaddleErrorMessage(error.message);

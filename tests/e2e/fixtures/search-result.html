@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>搜索结果详情</title>
+  </head>
+  <body>
+    <main>
+      <h1 id="result-title">搜索结果详情</h1>
+      <svg class="result-status-icon is-ready" role="button" tabindex="0" aria-label="结果状态" width="16" height="16">
+        <circle cx="8" cy="8" r="6"></circle>
+      </svg>
+      <p id="result-marker"></p>
+    </main>
+    <script>
+      const params = new URLSearchParams(location.search);
+      const index = params.get('index');
+      const query = params.get('q');
+      document.title = `${query} 搜索结果 ${index}`;
+      document.querySelector('#result-title').textContent = `${query} 搜索结果 ${index}`;
+      document.querySelector('#result-marker').textContent = `已进入第 ${index} 条结果`;
+    </script>
+  </body>
+</html>

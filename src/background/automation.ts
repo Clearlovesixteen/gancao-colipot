@@ -1,9 +1,7 @@
 import type {
-  AutomationErrorMessage,
-  AutomationFinishedMessage,
-  AutomationProgressMessage,
   AutomationStep,
   AutomationWorkflow,
+  WorkflowRunnerEvent,
 } from '../shared/automationTypes';
 
 type RunnerDeps = {
@@ -15,7 +13,7 @@ type RunnerDeps = {
   executeBrowserTool: (tabId: number, toolName: string, args: any) => Promise<any>;
   captureVisibleTab: (tabId: number, format: 'png' | 'jpeg', quality?: number) => Promise<string>;
   runComputerUse?: (goal: string, options: { tabId: number; maxSteps?: number; startUrl?: string; allowHighRisk?: boolean }) => Promise<unknown>;
-  emit: (msg: AutomationProgressMessage | AutomationFinishedMessage | AutomationErrorMessage) => void;
+  emit: (event: WorkflowRunnerEvent) => void;
 };
 
 function interpolate(value: string, vars: Record<string, unknown>): string {
@@ -106,7 +104,7 @@ export class AutomationRunner {
 
   async run(): Promise<void> {
     if (!isWorkflowLike(this.deps.workflow)) {
-      this.deps.emit({ type: 'AUTOMATION_ERROR', runId: this.deps.runId, error: '工作流格式不正确' });
+      this.deps.emit({ type: 'WORKFLOW_RUN_ERROR', runId: this.deps.runId, error: '工作流格式不正确' });
       return;
     }
 
@@ -118,21 +116,21 @@ export class AutomationRunner {
         const rawStep = steps[i] as AutomationStep;
         const step = interpolateStep(rawStep, this.vars);
 
-        this.deps.emit({ type: 'AUTOMATION_PROGRESS', runId: this.deps.runId, stepIndex: i, step, state: 'running' });
+        this.deps.emit({ type: 'WORKFLOW_RUN_PROGRESS', runId: this.deps.runId, stepIndex: i, step, state: 'running' });
         const result = await this.executeStep(step);
         this.last = result;
         this.stepsResults.push({ stepIndex: i, step, result });
-        this.deps.emit({ type: 'AUTOMATION_PROGRESS', runId: this.deps.runId, stepIndex: i, step, state: 'done', result });
+        this.deps.emit({ type: 'WORKFLOW_RUN_PROGRESS', runId: this.deps.runId, stepIndex: i, step, state: 'done', result });
       }
 
       this.deps.emit({
-        type: 'AUTOMATION_FINISHED',
+        type: 'WORKFLOW_RUN_FINISHED',
         runId: this.deps.runId,
         result: { vars: this.vars, last: this.last, steps: this.stepsResults },
       });
     } catch (err: any) {
       const message = err?.message ? String(err.message) : '执行失败';
-      this.deps.emit({ type: 'AUTOMATION_ERROR', runId: this.deps.runId, error: message });
+      this.deps.emit({ type: 'WORKFLOW_RUN_ERROR', runId: this.deps.runId, error: message });
     }
   }
 

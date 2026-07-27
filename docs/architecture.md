@@ -12,7 +12,7 @@
 ## V3.2 统一底座
 
 - `ModelGateway`: background-only 模型网关，读取用户本地配置，统一流式对话、JSON 规划、文本补全、取消和连接测试。SidePanel 不持有 API Key，也不直接请求模型服务。
-- `DocumentRepository`: 唯一资料访问层，沿用 `gancao_document_center` v1，不重建已有资料；旧 `documentDb/documentStore` 仅保留兼容 re-export。
+- `DocumentRepository`: 唯一资料访问层，所有上传、OCR、下载入库和资料问答都通过该仓库读写。重复的 `documentDb/documentStore` 已删除。
 - `TaskExecutorRegistry`: 统一运行 `computer_use / page_monitor / page_diagnosis / document_qa / ocr / extract / workflow`，统一状态、停止、结果和 trace snapshot。`computer_use` 是 Browser Use 的历史兼容类型。
 
 ## V3.3-V4 产品能力
@@ -32,7 +32,9 @@
 
 Browser Use 是自动化能力的正式产品名称和演进目标。它只负责浏览器中的自主任务执行：理解目标、观察标签页、制定短计划、执行原子动作、校验结果、失败恢复并交付页面数据或文件。页面诊断、资料问答、OCR、Memory 和监控作为可被 Browser Use 调用或承接结果的协作能力存在。
 
-内部 `ComputerUse*` 类型、`computer_use` 任务类型和 `RUN_COMPUTER_USE` 等消息名暂时保留，用于兼容已有任务记录、工作流与扩展消息协议；新增用户界面和文档统一使用 Browser Use。
+Browser Use 的真实 Chromium 黄金任务、Observe 质量报告和发布门槛见 [Browser Use 可靠性门禁](./browser-use-reliability.md)。
+
+代码中的 `ComputerUse*` 和 `computer_use` 是 Browser Use 执行器内部类型。所有长任务统一由 `TaskExecutorRegistry` 接收 `RUN_AUTOMATION_TASK`，产品界面与文档统一使用 Browser Use。
 
 ## 总体架构图
 
@@ -60,7 +62,7 @@ flowchart LR
 
   subgraph RuntimeData["执行与数据层"]
     Content["content.js + content/tools.ts<br/>观察页面 / 执行动作 / 提取数据"]
-    ChromeStorage["chrome.storage.local<br/>登录态 / 上传文件兼容数据 / 工作流 / 草稿"]
+    ChromeStorage["chrome.storage.local<br/>登录态 / 模型配置 / 任务 / 工作流 / 草稿"]
     IndexedDB["IndexedDB: gancao_document_center<br/>assets / assetContents / chunks / results / rawFiles"]
   end
 
@@ -165,8 +167,9 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-  Start["侧边栏或工作流发起<br/>RUN_COMPUTER_USE / computerTask"]
-  Router["后台 runComputerUseOnTab<br/>创建 runId / AbortController / 初始轨迹"]
+  Start["侧边栏、任务中心或工作流发起<br/>RUN_AUTOMATION_TASK"]
+  Registry["TaskExecutorRegistry<br/>选择 computer_use 执行器"]
+  Router["后台 runComputerUseOnTab<br/>创建内部 runId / AbortController / 初始轨迹"]
   Parser["轻量预解析<br/>computerUseTaskParser.ts<br/>识别 URL / 站点别名 / 低风险信号"]
   Intent["意图与任务计划<br/>computerUseIntent.ts<br/>统一生成 taskPlan.phases"]
   PhaseLoop["阶段循环<br/>ComputerUsePhase<br/>按阶段推进"]
@@ -183,7 +186,8 @@ flowchart LR
   Trace["轨迹记录<br/>computerUseTrace.ts<br/>观察 / 计划 / 动作 / 结果 / 错误"]
   UI["侧边栏任务卡片<br/>日志 / 复制 / 重试 / 高风险确认"]
 
-  Start --> Router
+  Start --> Registry
+  Registry --> Router
   Router --> Parser
   Parser --> Intent
   Intent --> PhaseLoop
@@ -281,11 +285,11 @@ flowchart TB
 flowchart LR
   Editor["工作台编辑器<br/>WorkflowEditor / WorkflowGraph"]
   Storage["chrome.storage.local<br/>automationWorkflows"]
-  BG["后台服务<br/>RUN_AUTOMATION"]
+  BG["统一任务执行器<br/>RUN_AUTOMATION_TASK"]
   Runner["AutomationRunner<br/>顺序执行固定步骤"]
   Browser["页面工具集<br/>导航 / 点击 / 输入 / 等待 / 提取 / 截图"]
   ComputerTask["computerTask 步骤<br/>复用智能浏览器操作子系统"]
-  Events["运行事件<br/>AUTOMATION_PROGRESS / FINISHED / ERROR"]
+  Events["任务事件<br/>AUTOMATION_TASK_PROGRESS / FINISHED / ERROR"]
   UI["工作台或侧边栏日志"]
 
   Editor -->|"保存 / 加载"| Storage
@@ -314,13 +318,13 @@ flowchart LR
 | `src/background/downloadManager.ts` | 真实导出/下载动作：监听 `chrome.downloads`，尝试读取下载内容，解析后保存到资料中心。 |
 | `src/content` | 页面侧执行层：DOM 观察、元素语义识别、搜索结果提取、点击/双击/右键/坐标点击/快捷键等浏览器动作、页面结构化提取、控制台错误缓存、登录态读取。 |
 | `src/shared` | 跨入口共享类型、业务工具声明、文件解析、文档分块、OCR 结构化、Computer Use 结果汇总、导出器。 |
-| `src/sidePanel/utils/documentStore.ts` 与 `src/background/documentDb.ts` | 两套入口各自访问同一个 `gancao_document_center` IndexedDB，用于资料、内容、分块、结果和原始文件。 |
+| `src/shared/documentRepository.ts` | 资料、内容、分块、结果和原始文件的唯一 IndexedDB 访问层。 |
 | `public` | Manifest、HTML 壳、钉钉登录脚本、页面控制台桥接脚本。 |
 
 ## 架构备注
 
 - `background/index.ts` 仍是最核心的编排点，但 Browser Use 已经拆成“意图/计划、页面上下文、集合构建、目标解析、动作注册、标签页会话、阶段完成判定、轨迹记录”等独立模块。
-- Browser Use 现在以兼容类型 `ComputerUseTaskPlan` 和 `ComputerUsePhase` 推进任务；`RunState` 记录标签页会话、阶段输出、下载结果、完成阶段和警告，`PhaseMemory` 记录失败候选，避免在同一阶段反复点错。
+- Browser Use 由 `ComputerUseTaskPlan` 和 `ComputerUsePhase` 推进任务；`RunState` 记录标签页会话、阶段输出、下载结果、完成阶段和警告，`PhaseMemory` 记录失败候选，避免在同一阶段反复点错。
 - `pageContextBuilder.ts` 会把 `observe_page` 结果加工成 `ObservedCollection`，规划器和目标解析器优先使用这些集合，而不是只依赖零散元素列表。
 - 搜索任务不再作为入口级独立链路分流：`open_site / search / select_collection_item` 也进入统一 phase runner。搜索结果由 `get_search_results` 转成 `search_results` 集合，再通过 `TargetResolver` 按 ordinal 解析第 N 个自然结果。
 - `content/tools.ts` 现在不只是执行动作，还会给元素打上 `purpose`、`region`、`context`、`score`，并支持双击、右键、坐标点击、清空输入、聚焦和快捷键等更细的操作。

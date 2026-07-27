@@ -2,8 +2,9 @@ import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { Button, Card, Divider, Input, InputNumber, Select, Space, Tabs, Typography, message, Modal, Breadcrumb, Empty } from 'antd';
 import { ArrowDownOutlined, ArrowUpOutlined, CopyOutlined, DeleteOutlined, DownloadOutlined, EditOutlined, SaveOutlined, PlayCircleOutlined, ArrowLeftOutlined, PlusOutlined, MenuUnfoldOutlined, MenuFoldOutlined } from '@ant-design/icons';
 import { useParams, useNavigate } from 'react-router-dom';
-import type { AutomationEvent, AutomationStep, AutomationWorkflow } from '../../shared/automationTypes';
-import { getAutomationWorkflow, upsertAutomationWorkflow } from '../../sidePanel/utils/automationStorage';
+import type { AutomationStep, AutomationWorkflow } from '../../shared/automationTypes';
+import { getAutomationWorkflow, upsertAutomationWorkflow } from '../../shared/automationWorkflowStore';
+import { createAndRunAutomationTask, stopAutomationTask } from '../../shared/automationTaskClient';
 import WorkflowGraph from '../components/WorkflowGraph';
 import { BLOCK_DEFINITIONS, BLOCK_CATEGORIES, BlockDefinition } from '../../shared/blockDefs';
 import { getBlockDef, createDefaultStep } from '../../shared/blockHelpers';
@@ -79,50 +80,39 @@ const WorkflowEditor: React.FC = () => {
 
   useEffect(() => {
     const listener = (msg: any) => {
-      const event = msg as AutomationEvent;
-      if (!event?.type || typeof event.type !== 'string') return;
-      
-      // 这里的逻辑稍微复杂：
-      // 1. 如果 event.runId 不等于当前的 runId (且 runId 已设置)，忽略 -> 是别的任务
-      // 2. 如果 runId 还没设置 (null)，但 running 为 true，说明正在启动中，此时应该接收 (这是首条日志的关键)
-      // 3. 如果 running 为 false，说明没在跑，忽略
-      
-      if (!running && event.type !== 'AUTOMATION_FINISHED') return; // 如果已经结束了，还要允许接收 FINISHED
-      
-      if (runId && event.runId !== runId) return; // ID 不匹配
+      if (!msg?.type || msg.taskId !== runId) return;
 
-      // 如果 runId 为 null，我们假设这是我们要的日志 (因为 running=true)
-      // 并在收到第一条日志时自动设置 runId (可选优化)
-      if (!runId && event.runId) {
-         setRunId(event.runId);
-      }
-
-      if (event.type === 'AUTOMATION_PROGRESS') {
-        let text = `#${event.stepIndex + 1} ${event.state} ${event.step.type}`;
-        if (event.state === 'done' && event.result) {
-          const res = event.result as any;
-          if (event.step.type === 'extract') {
+      if (msg.type === 'AUTOMATION_TASK_PROGRESS') {
+        const event = msg.data?.event;
+        let text = msg.summary || msg.stage || '工作流执行中';
+        if (event?.type === 'WORKFLOW_RUN_PROGRESS') {
+          text = `#${event.stepIndex + 1} ${event.state} ${event.step.type}`;
+          if (event.state === 'done' && event.result) {
+            const res = event.result as any;
+            if (event.step.type === 'extract') {
             text += ` 提取: ${res.count}项`;
-          } else if (event.step.type === 'screenshot') {
-            text += ' 截图成功';
-          } else if (event.step.type === 'navigate') {
-            text += ` -> ${event.step.url}`;
+            } else if (event.step.type === 'screenshot') {
+              text += ' 截图成功';
+            } else if (event.step.type === 'navigate') {
+              text += ` -> ${event.step.url}`;
+            }
           }
         }
         setLogs((prev) => [...prev, { ts: Date.now(), text }]);
         return;
       }
-      if (event.type === 'AUTOMATION_FINISHED') {
+      if (msg.type === 'AUTOMATION_TASK_FINISHED') {
         setRunning(false);
-        setResult(event.result);
+        setResult(msg.result?.output);
         setLogs((prev) => [...prev, { ts: Date.now(), text: '完成' }]);
         message.success('自动化执行完成');
         return;
       }
-      if (event.type === 'AUTOMATION_ERROR') {
+      if (msg.type === 'AUTOMATION_TASK_ERROR') {
         setRunning(false);
-        setLogs((prev) => [...prev, { ts: Date.now(), text: `错误: ${event.error}` }]);
-        message.error(event.error || '自动化执行失败');
+        const error = msg.result?.error || '自动化执行失败';
+        setLogs((prev) => [...prev, { ts: Date.now(), text: `错误: ${error}` }]);
+        message.error(error);
         return;
       }
     };
@@ -221,25 +211,26 @@ const WorkflowEditor: React.FC = () => {
     URL.revokeObjectURL(url);
   };
 
-  const startRun = (workflow: AutomationWorkflow) => {
+  const startRun = async (workflow: AutomationWorkflow) => {
     setLogs([{ ts: Date.now(), text: '启动中...' }]);
     setResult(null);
-
-    chrome.runtime.sendMessage({ type: 'RUN_AUTOMATION', workflow }, (resp) => {
-      if (chrome.runtime.lastError) {
-        setRunning(false);
-        message.error(chrome.runtime.lastError.message || '启动失败');
-        return;
-      }
-      if (!resp?.success) {
-        setRunning(false);
-        message.error(resp?.error || '启动失败');
-        return;
-      }
-      setRunId(resp.runId);
+    setRunning(true);
+    try {
+      const run = await createAndRunAutomationTask({
+        kind: 'workflow',
+        title: `运行工作流：${workflow.name || draftName || '未命名'}`,
+        goal: `运行工作流：${workflow.name || draftName || '未命名'}`,
+        source: 'dashboard',
+        workflowId: id,
+        metadata: { workflow },
+      });
+      setRunId(run.id);
       setRunning(true);
-      setLogs([{ ts: Date.now(), text: `已启动 runId=${resp.runId}` }]);
-    });
+      setLogs([{ ts: Date.now(), text: `已启动 taskId=${run.id}` }]);
+    } catch (error: any) {
+      setRunning(false);
+      message.error(error?.message || '启动失败');
+    }
   };
 
   const handleRunDraft = () => {
@@ -251,7 +242,7 @@ const WorkflowEditor: React.FC = () => {
 
   const handleStop = () => {
     if (!runId) return;
-    chrome.runtime.sendMessage({ type: 'STOP_AUTOMATION', runId }, () => {});
+    stopAutomationTask(runId).catch((error) => message.error(error.message));
     setRunning(false);
     setLogs((prev) => [...prev, { ts: Date.now(), text: '已请求停止' }]);
   };

@@ -181,43 +181,6 @@ export const BUSINESS_TOOLS: BusinessToolDefinition[] = [
   {
     type: 'function',
     function: {
-      name: 'list_uploaded_files',
-      description: '列出用户在聊天中上传或粘贴过的文件，并返回文件类型、解析状态、解析警告。适合用户提到“刚才的文件”“需求文档”“这个 Excel”等场景。',
-      parameters: {
-        type: 'object',
-        properties: {},
-        additionalProperties: false,
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'read_uploaded_file',
-      description: '读取用户上传文件的解析结果。支持文本、Markdown、JSON、CSV、Excel、HTML/XML、DOCX、PPTX、PDF 和图片元信息，用于总结、提取字段、分析需求文档。',
-      parameters: {
-        type: 'object',
-        properties: {
-          id: {
-            type: 'string',
-            description: '文件唯一 ID。优先使用 id 读取，避免同名文件混淆。',
-          },
-          name: {
-            type: 'string',
-            description: '文件名。可以先调用 list_uploaded_files 获取。',
-          },
-          index: {
-            type: 'number',
-            description: '文件下标，从 0 开始。name 和 index 至少提供一个。',
-          },
-        },
-        additionalProperties: false,
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
       name: 'list_documents',
       description: '列出资料中心中的文件、网页资料和 OCR 资料，返回解析、模型上传、OCR 状态。',
       parameters: {

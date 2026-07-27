@@ -149,6 +149,49 @@ export interface ObservedCollection {
   confidence?: number;
 }
 
+export type BrowserObservationQualityIssueCode =
+  | 'NO_INTERACTIVE_ELEMENTS'
+  | 'NO_SEMANTIC_COLLECTIONS'
+  | 'LOW_COLLECTION_COVERAGE'
+  | 'DUPLICATE_ELEMENT_ID'
+  | 'DUPLICATE_COLLECTION_ITEM'
+  | 'LOW_CONFIDENCE_ITEM'
+  | 'NON_ACTIONABLE_ITEM'
+  | 'MISSING_PARENT_CONTEXT'
+  | 'INCOMPLETE_FORM_FIELD'
+  | 'INCOMPLETE_TABLE_ROW'
+  | 'INCOMPLETE_ACTION';
+
+export interface BrowserObservationQualityIssue {
+  code: BrowserObservationQualityIssueCode;
+  severity: 'info' | 'warning' | 'error';
+  message: string;
+  collectionId?: string;
+  elementIds?: string[];
+}
+
+export interface BrowserObservationCollectionQuality {
+  id: string;
+  type: ObservedCollectionType;
+  itemCount: number;
+  actionableCount: number;
+  averageConfidence: number;
+}
+
+export interface BrowserObservationQualityReport {
+  score: number;
+  generatedAt: number;
+  interactiveElementCount: number;
+  actionableElementCount: number;
+  collectionCount: number;
+  collectionItemCount: number;
+  coverageRatio: number;
+  duplicateRatio: number;
+  lowConfidenceCount: number;
+  collections: BrowserObservationCollectionQuality[];
+  issues: BrowserObservationQualityIssue[];
+}
+
 export type ElementPurpose =
   | 'search_input'
   | 'search_button'
@@ -205,6 +248,7 @@ export interface BrowserObservation {
   regions?: BrowserPageRegion[];
   pageState?: BrowserPageState;
   pageSignals?: BrowserPageSignal[];
+  qualityReport?: BrowserObservationQualityReport;
   screenshot?: string;
   capturedAt: number;
 }
@@ -252,6 +296,7 @@ export interface ComputerUsePageContext {
   tableCandidates: unknown[];
   actionCandidates: ObservedElement[];
   collections?: ObservedCollection[];
+  observationQuality?: BrowserObservationQualityReport;
 }
 
 export interface PlannedStep {
@@ -282,12 +327,16 @@ export interface PlannedStep {
 }
 
 export interface ComputerUsePlan {
+  decision: ComputerUsePlanDecision;
   summary: string;
   confidence: number;
   steps: PlannedStep[];
   successCriteria: string[];
   needsUserInput?: string;
+  blockedReason?: string;
 }
+
+export type ComputerUsePlanDecision = 'act' | 'complete' | 'blocked' | 'needs_confirmation';
 
 export interface ComputerUsePhaseMemory {
   phaseId: string;
@@ -309,9 +358,23 @@ export interface ComputerUseVerificationResult {
   warning?: string;
 }
 
+export type BrowserUseErrorCode =
+  | 'OBSERVATION_INCOMPLETE'
+  | 'TARGET_AMBIGUOUS'
+  | 'TARGET_STALE'
+  | 'ACTION_NO_EFFECT'
+  | 'PAGE_NOT_SETTLED'
+  | 'OUTCOME_NOT_REACHED'
+  | 'BLOCKED_BY_AUTH'
+  | 'DOWNLOAD_NOT_STARTED'
+  | 'ACTION_EXECUTION_FAILED';
+
 export interface ComputerUseTargetResolutionTrace {
   matchedBy?: string;
   score?: number;
+  runnerUpScore?: number;
+  scoreMargin?: number;
+  ambiguous?: boolean;
   verificationHint?: string;
   blocked?: boolean;
   reason?: string;
@@ -608,7 +671,9 @@ export type AutomationRunStatus =
   | 'draft'
   | 'idle'
   | 'scheduled'
+  | 'pending'
   | 'running'
+  | 'waiting'
   | 'success'
   | 'partial'
   | 'failed'
@@ -732,8 +797,8 @@ export interface AutomationTaskTemplate {
   tags?: string[];
 }
 
-export type AutomationProgressMessage = {
-  type: 'AUTOMATION_PROGRESS';
+export type WorkflowRunnerProgressEvent = {
+  type: 'WORKFLOW_RUN_PROGRESS';
   runId: string;
   stepIndex: number;
   step: AutomationStep;
@@ -741,8 +806,8 @@ export type AutomationProgressMessage = {
   result?: unknown;
 };
 
-export type AutomationFinishedMessage = {
-  type: 'AUTOMATION_FINISHED';
+export type WorkflowRunnerFinishedEvent = {
+  type: 'WORKFLOW_RUN_FINISHED';
   runId: string;
   result: {
     vars: Record<string, unknown>;
@@ -751,14 +816,14 @@ export type AutomationFinishedMessage = {
   };
 };
 
-export type AutomationErrorMessage = {
-  type: 'AUTOMATION_ERROR';
+export type WorkflowRunnerErrorEvent = {
+  type: 'WORKFLOW_RUN_ERROR';
   runId: string;
   stepIndex?: number;
   error: string;
 };
 
-export type AutomationEvent = AutomationProgressMessage | AutomationFinishedMessage | AutomationErrorMessage;
+export type WorkflowRunnerEvent = WorkflowRunnerProgressEvent | WorkflowRunnerFinishedEvent | WorkflowRunnerErrorEvent;
 
 export interface ComputerUseAction {
   action: BrowserActionType | 'finish';
@@ -785,6 +850,7 @@ export interface ComputerUseAction {
 
 export interface ComputerUseProgressMessage {
   type: 'COMPUTER_USE_PROGRESS';
+  automationTaskId?: string;
   runId: string;
   stepIndex: number;
   goal: string;
@@ -810,6 +876,7 @@ export interface ComputerUseProgressMessage {
 
 export interface ComputerUseNeedsConfirmationMessage {
   type: 'COMPUTER_USE_NEEDS_CONFIRMATION';
+  automationTaskId?: string;
   runId: string;
   stepIndex: number;
   goal: string;
@@ -819,6 +886,7 @@ export interface ComputerUseNeedsConfirmationMessage {
 
 export interface ComputerUseFinishedMessage {
   type: 'COMPUTER_USE_FINISHED';
+  automationTaskId?: string;
   runId: string;
   goal: string;
   summary: string;
@@ -828,9 +896,11 @@ export interface ComputerUseFinishedMessage {
 
 export interface ComputerUseErrorMessage {
   type: 'COMPUTER_USE_ERROR';
+  automationTaskId?: string;
   runId: string;
   goal: string;
   error: string;
+  errorCode?: BrowserUseErrorCode;
   steps?: Array<{ action?: ComputerUseAction; result?: unknown; verification?: unknown; plan?: ComputerUsePlan }>;
   lastObservation?: BrowserObservation;
   verification?: ComputerUseVerificationResult;
@@ -847,6 +917,7 @@ export interface ComputerUseErrorMessage {
   phaseGoal?: string;
   phase?: ComputerUsePhase;
   runState?: ComputerUseRunState;
+  resumeCheckpoint?: ComputerUseResumeCheckpoint;
   result?: unknown;
 }
 
@@ -860,6 +931,7 @@ export interface ComputerUseTraceEntry {
   action?: ComputerUseAction;
   result?: unknown;
   error?: string;
+  errorCode?: BrowserUseErrorCode;
   summary?: string;
   intent?: ComputerUseIntent;
   navigationPath?: string[];
@@ -878,6 +950,7 @@ export interface ComputerUseTraceEntry {
   phaseResult?: ComputerUsePhaseResult;
   downloadResult?: ComputerUseDownloadResult;
   runState?: ComputerUseRunState;
+  resumeCheckpoint?: ComputerUseResumeCheckpoint;
 }
 
 export interface ComputerUseTrace {

@@ -1,4 +1,4 @@
-import type { BrowserObservation, ObservedCollection } from '../../shared/automationTypes';
+import type { BrowserObservation, ObservedCollection } from './automationTypes';
 
 export interface ContextHubResult {
   title: string;

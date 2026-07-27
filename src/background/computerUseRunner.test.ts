@@ -77,6 +77,7 @@ describe('ComputerUseRunner', () => {
       understandIntent: async () => intent,
       createPlan: async () => ({
         summary: '提取页面表格',
+        decision: 'act',
         confidence: 0.9,
         steps: [{
           id: 'extract_table',
@@ -123,6 +124,7 @@ describe('ComputerUseRunner', () => {
       understandIntent: async () => intent,
       createPlan: async () => ({
         summary: 'finish',
+        decision: 'complete',
         confidence: 0.9,
         steps: [{
           id: 'finish',
@@ -147,7 +149,7 @@ describe('ComputerUseRunner', () => {
 
     expect(emitted.find((message) => message.type === 'COMPUTER_USE_FINISHED')).toBeFalsy();
     const error = emitted.find((message) => message.type === 'COMPUTER_USE_ERROR');
-    expect(error?.error).toContain('自动操作没有执行');
+    expect(error?.error).toContain('尚未获得明确完成证据');
   });
 
   it('finishes download tasks after a real download is captured and saved', async () => {
@@ -172,6 +174,7 @@ describe('ComputerUseRunner', () => {
       understandIntent: async () => downloadIntent,
       createPlan: async () => ({
         summary: '点击真实导出按钮',
+        decision: 'act',
         confidence: 0.9,
         steps: [{
           id: 'download_file',
@@ -238,6 +241,7 @@ describe('ComputerUseRunner', () => {
         createPlanCalls += 1;
         return {
           summary: '不应进入规划器',
+          decision: 'blocked',
           confidence: 0.1,
           steps: [{ id: 'finish', action: 'finish', rationale: 'unexpected' }],
           successCriteria: [],
@@ -308,12 +312,14 @@ describe('ComputerUseRunner', () => {
       createPlan: async ({ phase }) => phase?.type === 'wait'
         ? {
           summary: '等待',
+          decision: 'act',
           confidence: 0.95,
           steps: [{ id: 'wait', action: 'wait', value: '10', rationale: '等待文件中心刷新' }],
           successCriteria: ['等待完成'],
         }
         : {
           summary: '点击导出',
+          decision: 'act',
           confidence: 0.9,
           steps: [{
             id: 'download_file',
@@ -374,6 +380,7 @@ describe('ComputerUseRunner', () => {
       understandIntent: async () => phasedIntent,
       createPlan: async () => ({
         summary: '点击父菜单',
+        decision: 'act',
         confidence: 0.9,
         steps: [{
           id: 'click_parent',
@@ -493,6 +500,7 @@ describe('ComputerUseRunner', () => {
         createPlanCalls += 1;
         return {
           summary: '不应进入通用规划器',
+          decision: 'blocked',
           confidence: 0.1,
           steps: [{ id: 'finish', action: 'finish', rationale: 'unexpected' }],
           successCriteria: [],
@@ -548,6 +556,184 @@ describe('ComputerUseRunner', () => {
     expect(emitted.find((message) => message.type === 'COMPUTER_USE_ERROR')).toBeFalsy();
   });
 
+  it('waits for verified search results instead of clicking a home-page hot topic', async () => {
+    const emitted: Array<ComputerUseProgressMessage | ComputerUseFinishedMessage | any> = [];
+    let page: 'home' | 'results' | 'target' = 'home';
+    let resultPolls = 0;
+    let clickedElementId: string | undefined;
+    const searchIntent: ComputerUseIntent = {
+      rawGoal: '打开必应，搜索贝爷，点击第3个搜索结果',
+      taskType: 'search',
+      objective: '打开必应，搜索贝爷并点击第3个结果',
+      entities: ['必应'],
+      startUrl: 'https://www.bing.com/',
+      siteName: 'bing',
+      query: '贝爷',
+      targetResultIndex: 3,
+      riskLevel: 'low',
+      taskPlan: {
+        rawGoal: '打开必应，搜索贝爷，点击第3个搜索结果',
+        summary: '打开必应 -> 搜索贝爷 -> 点击第3个搜索结果',
+        phases: [
+          { id: 'open', type: 'open_site', goal: '打开必应', startUrl: 'https://www.bing.com/', siteName: 'bing' },
+          { id: 'search', type: 'search', goal: '搜索贝爷', query: '贝爷', startUrl: 'https://www.bing.com/', siteName: 'bing' },
+          { id: 'select', type: 'select_collection_item', goal: '点击第3个搜索结果', query: '贝爷', ordinal: 3, collectionType: 'search_results' },
+        ],
+      },
+    };
+    const buildObservation = (): BrowserObservation => page === 'target'
+      ? { ...observation(), url: 'https://example.test/bear', title: '贝尔·格里尔斯', elements: [] }
+      : {
+        ...observation(),
+        url: page === 'results' ? 'https://www.bing.com/search?q=%E8%B4%9D%E7%88%B7' : 'https://www.bing.com/',
+        title: page === 'results' ? '贝爷 - 搜索' : '搜索 - Microsoft 必应',
+        pageState: { kind: 'search_page', searchInputId: 'q', searchButtonId: 'search', hasModal: false, hasCaptcha: false, hasLoginSignal: false },
+        elements: [
+          observedElement({ elementId: 'q', role: 'textbox', tag: 'input', selector: '#q', purpose: 'search_input', value: '贝爷' }),
+          observedElement({ elementId: 'search', role: 'button', tag: 'button', selector: '#search', text: '搜索', purpose: 'search_button' }),
+        ],
+      };
+
+    const runner = new ComputerUseRunner({
+      tabId: 1,
+      runId: 'run_wait_for_real_results',
+      goal: searchIntent.rawGoal,
+      maxSteps: 8,
+      signal: new AbortController().signal,
+      navigate: async (_tabId, url) => { page = url.includes('/search?') ? 'results' : 'home'; },
+      understandIntent: async () => searchIntent,
+      createPlan: async () => ({ summary: 'unused', decision: 'blocked', confidence: 0, steps: [], successCriteria: [] }),
+      executeBrowserTool: async (_tabId, toolName, args) => {
+        if (toolName === 'observe_page') return buildObservation();
+        if (toolName === 'type_text') return { success: true };
+        if (toolName === 'click_element' && args.elementId === 'search') return { success: true };
+        if (toolName === 'click_element' && args.elementId === 'real_3') {
+          clickedElementId = args.elementId;
+          page = 'target';
+          return { success: true };
+        }
+        if (toolName === 'get_search_results') {
+          resultPolls += 1;
+          if (page === 'home') {
+            return {
+              success: true,
+              reliable: false,
+              count: 3,
+              results: [
+                { index: 1, title: '上海热点', elementId: 'hot_1', href: 'https://www.bing.com/search?q=hot1' },
+                { index: 2, title: 'LV六度状告国知局', elementId: 'hot_2', href: 'https://www.bing.com/search?q=hot2' },
+                { index: 3, title: '幼儿热点', elementId: 'hot_3', href: 'https://www.bing.com/search?q=hot3' },
+              ],
+            };
+          }
+          return {
+            success: true,
+            reliable: true,
+            query: '贝爷',
+            count: 3,
+            results: [
+              { index: 1, title: '第一条', elementId: 'real_1', href: 'https://one.test/' },
+              { index: 2, title: '第二条', elementId: 'real_2', href: 'https://two.test/' },
+              { index: 3, title: '贝尔·格里尔斯', elementId: 'real_3', href: 'https://example.test/bear' },
+            ],
+          };
+        }
+        throw new Error(`unexpected tool: ${toolName}`);
+      },
+      confirmAction: async () => true,
+      emit: (message) => emitted.push(message),
+    });
+
+    await runner.run();
+
+    expect(resultPolls).toBeGreaterThan(1);
+    expect(clickedElementId).toBe('real_3');
+    expect(emitted.find((message) => message.type === 'COMPUTER_USE_ERROR')).toBeFalsy();
+  });
+
+  it('treats a BFCache message-channel closure as an indeterminate navigation and verifies the destination page', async () => {
+    const emitted: Array<ComputerUseProgressMessage | ComputerUseFinishedMessage | any> = [];
+    let page: 'results' | 'target' = 'results';
+
+    const searchIntent: ComputerUseIntent = {
+      rawGoal: '打开必应，搜索贝爷，点击第3个搜索结果',
+      taskType: 'search',
+      objective: '打开必应，搜索贝爷并点击第3个结果',
+      entities: ['贝爷'],
+      startUrl: 'https://www.bing.com/',
+      siteName: 'bing',
+      query: '贝爷',
+      postSearchAction: 'click_first_result',
+      targetResultIndex: 3,
+      riskLevel: 'low',
+      taskPlan: {
+        rawGoal: '打开必应，搜索贝爷，点击第3个搜索结果',
+        summary: '点击必应第3个搜索结果',
+        phases: [{
+          id: 'select_search_result',
+          type: 'select_collection_item',
+          goal: '点击第3个搜索结果',
+          targets: ['第3个搜索结果'],
+          query: '贝爷',
+          ordinal: 3,
+          collectionType: 'search_results',
+        }],
+      },
+    };
+
+    const buildObservation = (): BrowserObservation => page === 'target'
+      ? {
+        ...observation(),
+        url: 'https://example.test/bear-grylls',
+        title: '贝尔·格里尔斯 - 人物介绍',
+        elements: [],
+      }
+      : {
+        ...observation(),
+        url: 'https://www.bing.com/search?q=%E8%B4%9D%E7%88%B7',
+        title: '贝爷 - 搜索',
+        pageState: { kind: 'search_page', hasModal: false, hasCaptcha: false, hasLoginSignal: false },
+        elements: [],
+      };
+
+    const runner = new ComputerUseRunner({
+      tabId: 1,
+      runId: 'run_bfcache_navigation',
+      goal: searchIntent.rawGoal,
+      maxSteps: 3,
+      signal: new AbortController().signal,
+      navigate: async () => {},
+      understandIntent: async () => searchIntent,
+      createPlan: async () => ({ summary: 'unused', decision: 'blocked', confidence: 0, steps: [], successCriteria: [] }),
+      executeBrowserTool: async (_tabId, toolName, args) => {
+        if (toolName === 'observe_page') return buildObservation();
+        if (toolName === 'get_search_results') return {
+          success: true,
+          count: 3,
+          results: [
+            { index: 1, title: '第一条', href: 'https://one.test/', elementId: 'result_1', selector: '#r1' },
+            { index: 2, title: '第二条', href: 'https://two.test/', elementId: 'result_2', selector: '#r2' },
+            { index: 3, title: '贝尔·格里尔斯', href: 'https://example.test/bear-grylls', elementId: 'result_3', selector: '#r3' },
+          ],
+        };
+        if (toolName === 'click_element' && args.elementId === 'result_3') {
+          page = 'target';
+          throw new Error('The page keeping the extension port is moved into back/forward cache, so the message channel is closed.');
+        }
+        throw new Error(`unexpected tool: ${toolName}`);
+      },
+      confirmAction: async () => true,
+      emit: (message) => emitted.push(message),
+    });
+
+    await runner.run();
+
+    expect(emitted.find((message) => message.type === 'COMPUTER_USE_ERROR')).toBeFalsy();
+    const finished = emitted.find((message) => message.type === 'COMPUTER_USE_FINISHED') as ComputerUseFinishedMessage | undefined;
+    expect(finished?.runState?.completedPhases.map((item) => item.phase.type)).toEqual(['select_collection_item']);
+    expect(finished?.runState?.warnings).toContain('页面导航期间消息通道已切换，正在通过目标页面状态校验动作结果');
+  });
+
   it('completes navigation when the correct leaf click changes the business route without active evidence', async () => {
     const emitted: Array<ComputerUseProgressMessage | ComputerUseFinishedMessage | any> = [];
     let page: 'before' | 'target' = 'before';
@@ -596,6 +782,7 @@ describe('ComputerUseRunner', () => {
       understandIntent: async () => phasedIntent,
       createPlan: async () => ({
         summary: '点击子菜单',
+        decision: 'act',
         confidence: 0.9,
         steps: [{
           id: 'click_leaf',
@@ -707,6 +894,7 @@ describe('ComputerUseRunner', () => {
         if (phase?.type === 'navigate_to_page') {
           return {
             summary: '点击子菜单',
+            decision: 'act',
             confidence: 0.9,
             steps: [{
               id: 'click_leaf',
@@ -721,6 +909,7 @@ describe('ComputerUseRunner', () => {
         expect(context.actionCandidates.some((element) => element.elementId === 'export_button')).toBe(true);
         return {
           summary: '点击导出',
+          decision: 'act',
           confidence: 0.9,
           steps: [{
             id: 'download',
@@ -777,6 +966,7 @@ describe('ComputerUseRunner', () => {
       understandIntent: async () => ({ ...intent, taskType: 'generic', desiredOutput: undefined }),
       createPlan: async () => ({
         summary: '等待页面变化',
+        decision: 'act',
         confidence: 0.9,
         steps: [{ id: 'wait', action: 'wait', rationale: '等待页面变化', value: '10' }],
         successCriteria: [],
@@ -901,6 +1091,7 @@ describe('ComputerUseRunner', () => {
       understandIntent: async () => phasedIntent,
       createPlan: async () => ({
         summary: '打开文件中心',
+        decision: 'act',
         confidence: 0.9,
         steps: [{
           id: 'open_page_or_center',

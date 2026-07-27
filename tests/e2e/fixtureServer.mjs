@@ -36,7 +36,7 @@ createServer((request, response) => {
     const filename = decodeURIComponent(url.pathname.split('/').pop() || 'report.xlsx');
     response.writeHead(200, {
       'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      'Content-Disposition': `attachment; filename="${filename.replace(/[^a-zA-Z0-9_.-]/g, '_')}"`,
+      'Content-Disposition': `attachment; filename="report.xlsx"; filename*=UTF-8''${encodeURIComponent(filename)}`,
     });
     response.end('fixture workbook content');
     return;
@@ -49,6 +49,13 @@ createServer((request, response) => {
     response.end('not found');
     return;
   }
-  response.writeHead(200, { 'Content-Type': mimeTypes[extname(filePath)] || 'application/octet-stream' });
-  createReadStream(filePath).pipe(response);
+  const sendFile = () => {
+    response.writeHead(200, { 'Content-Type': mimeTypes[extname(filePath)] || 'application/octet-stream' });
+    createReadStream(filePath).pipe(response);
+  };
+  const loadDelay = url.pathname === '/search-result.html'
+    ? Math.max(0, Math.min(5000, Number(url.searchParams.get('loadDelay') || 0)))
+    : 0;
+  if (loadDelay) setTimeout(sendFile, loadDelay);
+  else sendFile();
 }).listen(4173, '127.0.0.1');

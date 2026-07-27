@@ -43,7 +43,7 @@ function elementToCollectionItem(element: ObservedElement, index: number, confid
       level: element.level,
       region: element.region,
     },
-    confidence,
+    confidence: Math.max(confidence, Number(element.score || 0)),
   };
 }
 

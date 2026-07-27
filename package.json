@@ -8,6 +8,7 @@
     "watch": "vite build --watch",
     "test:e2e": "vite build && playwright test",
     "test:e2e:headed": "vite build && PW_HEADLESS=0 playwright test",
+    "test:browser-use:golden": "vite build && RUN_BROWSER_USE_GOLDEN=1 BROWSER_USE_GOLDEN_REPEAT=5 playwright test tests/e2e/browserUse.golden.spec.ts",
     "verify": "tsc --noEmit --pretty false && vitest run --config vitest.config.ts && vite build && playwright test"
   },
   "dependencies": {

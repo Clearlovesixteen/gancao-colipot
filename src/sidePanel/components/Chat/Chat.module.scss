@@ -150,6 +150,39 @@ $radius-full: 9999px;
   animation: fadeIn 0.6s ease-out;
 }
 
+.sessionLoadingState {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: $text-secondary;
+}
+
+.sessionLoadingLines {
+  width: min(280px, 76%);
+  display: grid;
+  gap: 8px;
+
+  span {
+    display: block;
+    height: 10px;
+    border-radius: 4px;
+    background: linear-gradient(90deg, rgba(226, 232, 240, 0.65), rgba(248, 250, 252, 0.95), rgba(226, 232, 240, 0.65));
+    background-size: 200% 100%;
+    animation: loadingShimmer 1.2s ease-in-out infinite;
+  }
+
+  span:nth-child(2) { width: 86%; }
+  span:nth-child(3) { width: 64%; }
+}
+
+@keyframes loadingShimmer {
+  from { background-position: 100% 0; }
+  to { background-position: -100% 0; }
+}
+
 .emptyIconWrapper {
   width: 80px;
   height: 80px;
@@ -207,13 +240,27 @@ $radius-full: 9999px;
   display: flex;
   justify-content: flex-end;
   margin-bottom: 16px;
-  animation: fadeInUp 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+  animation: fadeInUp 0.18s ease-out;
   opacity: 0;
   animation-fill-mode: forwards;
 
   &.messageItemLeft {
     justify-content: flex-start;
   }
+}
+
+.streamingCursor {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 3px;
+  vertical-align: -2px;
+  background: #6366f1;
+  animation: cursorBlink 0.8s steps(1) infinite;
+}
+
+@keyframes cursorBlink {
+  50% { opacity: 0; }
 }
 
 .messageContent {

@@ -5,6 +5,7 @@ import type {
   ComputerUsePageContext,
   ComputerUsePhase,
   ComputerUseRunState,
+  ComputerUseVerificationResult,
 } from '../shared/automationTypes';
 import { extractTablesFromComputerUseResult, summarizeExtractedTables } from '../shared/computerUseResults';
 
@@ -33,6 +34,30 @@ function includesCompact(text: string, target?: string): boolean {
   const haystack = compactText(text);
   const needle = compactText(target);
   return Boolean(needle && haystack.includes(needle));
+}
+
+function routeChanged(before: ComputerUsePageContext, after: ComputerUsePageContext): boolean {
+  const beforeUrl = before.observation.url || '';
+  const afterUrl = after.observation.url || '';
+  if (!beforeUrl || !afterUrl || beforeUrl === afterUrl) return false;
+  try {
+    const left = new URL(beforeUrl);
+    const right = new URL(afterUrl);
+    return left.origin !== right.origin || left.pathname !== right.pathname || left.hash !== right.hash;
+  } catch {
+    return true;
+  }
+}
+
+function actionMatchesNavigationPath(action: ComputerUseAction, phase: ComputerUsePhase): boolean {
+  const path = phase.navigationPath?.length ? phase.navigationPath : phase.targets || [];
+  const leaf = compactText(path[path.length - 1]);
+  const actionText = compactText(action.text);
+  if (!leaf || !actionText || !(actionText === leaf || (actionText.includes(leaf) && actionText.length <= leaf.length + 8))) return false;
+  const expectedParents = path.slice(0, -1).map(compactText).filter(Boolean);
+  if (!expectedParents.length) return true;
+  const actualParents = (action.parentPath || []).map(compactText).filter(Boolean);
+  return expectedParents.every((parent) => actualParents.some((item) => item === parent || item.includes(parent) || parent.includes(item)));
 }
 
 function isFileCenterTarget(target?: string): boolean {
@@ -70,7 +95,11 @@ function isOpenSiteReached(phase: ComputerUsePhase, context: ComputerUsePageCont
 function isSearchResultReached(phase: ComputerUsePhase, context: ComputerUsePageContext): boolean {
   const query = phase.query || phase.targets?.[0];
   const decodedUrl = safeDecodeUrl(context.observation.url);
-  if ((context.collections || []).some((collection) => collection.type === 'search_results' && collection.items.length > 0)) return true;
+  if ((context.collections || []).some((collection) => (
+    collection.type === 'search_results'
+    && collection.items.length > 0
+    && collection.metadata?.verifiedNaturalResults === true
+  ))) return true;
   if (context.observation.pageState?.kind === 'result_page' && (!query || decodedUrl.includes(query))) return true;
   if (/[?&](wd|word|q|query|keyword|search_query)=/i.test(decodedUrl) && (!query || decodedUrl.includes(query))) return true;
   return Boolean(query && context.observation.title?.includes(query) && /(搜索|search|百度|bing|google|youtube)/i.test(context.observation.title));
@@ -339,9 +368,76 @@ export function getPhaseFinishEvidence(input: {
       ? { ok: true }
       : { ok: false, reason: '数据/导出类阶段没有交付下载文件或表格数据。' };
   }
-  return input.history.some((item) => item.action)
-    ? { ok: true }
-    : { ok: false, reason: '当前阶段没有执行过可验证动作。' };
+  if (getPhaseTargets(input.phase, input.runState).length > 0) {
+    return isPhaseTargetReached(input.phase, input.context, input.runState)
+      ? { ok: true }
+      : { ok: false, reason: '当前阶段目标尚未在页面中得到验证。' };
+  }
+  return { ok: false, reason: '当前阶段没有定义可验证的完成条件。' };
+}
+
+export function evaluatePhaseActionCompletion(input: {
+  phase: ComputerUsePhase;
+  intent: ComputerUseIntent;
+  before: ComputerUsePageContext;
+  after: ComputerUsePageContext;
+  action: ComputerUseAction;
+  result: unknown;
+  verification: ComputerUseVerificationResult;
+  history: PhaseHistoryEntry[];
+  runState: ComputerUseRunState;
+}): { complete: boolean; reason?: string } {
+  if (!input.verification.success) {
+    return { complete: false, reason: input.verification.reason || '动作尚未通过步骤验收。' };
+  }
+
+  if (input.phase.type === 'navigate_to_page') {
+    const reached = isNavigationPhaseReached(input.phase, input.after)
+      || (
+        ['click', 'double_click'].includes(input.action.action)
+        && actionMatchesNavigationPath(input.action, input.phase)
+        && routeChanged(input.before, input.after)
+      );
+    return reached
+      ? { complete: true }
+      : { complete: false, reason: '导航动作已执行，但目标路径尚未获得 active、URL、标题或正文证据。' };
+  }
+  if (input.phase.type === 'download_file') {
+    return isSuccessfulDownloadResult(input.result)
+      ? { complete: true }
+      : { complete: false, reason: '下载动作未产生 completed 或 partial 下载结果。' };
+  }
+  if (input.phase.type === 'open_page_or_center') {
+    return isPhaseTargetReached(input.phase, input.after, input.runState)
+      ? { complete: true }
+      : { complete: false, reason: '点击入口后未验证目标页面已打开。' };
+  }
+  if (input.phase.type === 'click_latest_download') {
+    return isLatestDownloadOpened(input.phase, input.before, input.after, input.runState)
+      ? { complete: true }
+      : { complete: false, reason: '点击文件后未验证文件详情或目标文件已激活。' };
+  }
+  if (input.phase.type === 'wait') {
+    return input.action.action === 'wait'
+      ? { complete: true }
+      : { complete: false, reason: '等待阶段尚未执行 wait 动作。' };
+  }
+  if (input.phase.type === 'click_action') {
+    return ['click', 'double_click', 'right_click', 'click_by_coordinate'].includes(input.action.action)
+      ? { complete: true }
+      : { complete: false, reason: '动作阶段尚未执行并验收点击动作。' };
+  }
+
+  const evidence = getPhaseFinishEvidence({
+    phase: input.phase,
+    intent: input.intent,
+    context: input.after,
+    history: input.history,
+    runState: input.runState,
+  });
+  return evidence.ok
+    ? { complete: true }
+    : { complete: false, reason: evidence.reason };
 }
 
 export function getDownloadResult(result: unknown): ComputerUseDownloadResult | undefined {

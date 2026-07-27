@@ -160,6 +160,9 @@ pnpm test:e2e
 # 有界面地运行扩展 E2E
 pnpm test:e2e:headed
 
+# Browser Use 黄金任务连续 5 轮稳定性门禁
+pnpm test:browser-use:golden
+
 # 持续监听构建
 pnpm watch
 ```
@@ -167,9 +170,12 @@ pnpm watch
 当前本地质量基线：
 
 - TypeScript 检查通过
-- `38` 个 Vitest 测试文件、`202` 个测试通过
+- `47` 个 Vitest 测试文件、`229` 个测试通过
 - Vite 生产构建通过
 - Chromium 扩展 E2E：`4` 条通过，`1` 条依赖公网的 live 用例默认跳过
+- Browser Use 黄金任务：`3` 个核心场景连续 `5` 轮，共 `15` 次通过
+
+Browser Use 的 Observe 质量指标、黄金任务目录和发布标准见 [Browser Use 可靠性门禁](docs/browser-use-reliability.md)。
 
 ## 项目目录
 
@@ -222,7 +228,7 @@ docs/
 
 ## 路线图
 
-当前自动化产品目标已正式从 Computer Use 调整为 **Browser Use**：代理围绕浏览器中的页面观察、导航、搜索、表单、数据提取、下载、跨页面任务和结果交付自主完成任务，而不是模拟系统级鼠标键盘。现有 `computer_use` 类型和 `RUN_COMPUTER_USE` 消息名作为兼容协议继续保留。详细目标见 [Browser Use 产品目标](docs/browser-use-goal.md)。
+当前自动化产品目标已正式从 Computer Use 调整为 **Browser Use**：代理围绕浏览器中的页面观察、导航、搜索、表单、数据提取、下载、跨页面任务和结果交付自主完成任务，而不是模拟系统级鼠标键盘。所有长任务统一通过 `TaskExecutorRegistry` 和 `RUN_AUTOMATION_TASK` 启动；`computer_use` 与 `ComputerUse*` 仅是 Browser Use 执行器内部类型，不再存在聊天直连执行链。详细目标见 [Browser Use 产品目标](docs/browser-use-goal.md)。
 
 当前已完成 V3.2 统一底座，并落地失败阶段续跑、监控通知、候选 Memory、资料引用定位、OCR 人工校正、自定义命令表单/版本/模型路由等后续能力。下一阶段重点是：
 

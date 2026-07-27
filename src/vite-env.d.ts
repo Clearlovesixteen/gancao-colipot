@@ -1,5 +1,13 @@
 /// <reference types="vite/client" />
 
+declare module 'virtual:gancao-runtime-version' {
+  export const RUNTIME_BUILD_ID: string;
+}
+
+declare module 'virtual:gancao-content-runtime-version' {
+  export const RUNTIME_BUILD_ID: string;
+}
+
 declare module '*.module.scss' {
   const classes: { [key: string]: string };
   export default classes;

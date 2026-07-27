@@ -50,11 +50,15 @@ import {
   upsertAutomationRun,
 } from '../../shared/automationRunStore';
 import { createWorkflowDraftFromComputerUseRun } from '../../shared/automationWorkflowDraft';
-import { upsertAutomationWorkflow } from '../../sidePanel/utils/automationStorage';
-import { listAutomationWorkflows, type StoredAutomationWorkflow } from '../../sidePanel/utils/automationStorage';
+import {
+  listAutomationWorkflows,
+  upsertAutomationWorkflow,
+  type StoredAutomationWorkflow,
+} from '../../shared/automationWorkflowStore';
 import { listDocumentAssets } from '../../shared/documentRepository';
 import type { DocumentAsset } from '../../shared/documentTypes';
 import { listPageMonitorChecks } from '../../shared/pageMonitorHistory';
+import { retryAutomationTask, runAutomationTask, stopAutomationTask } from '../../shared/automationTaskClient';
 
 const { Text, Title, Paragraph } = Typography;
 const { Search } = Input;
@@ -64,7 +68,9 @@ const statusColor: Record<AutomationRunStatus, string> = {
   draft: 'default',
   idle: 'blue',
   scheduled: 'purple',
+  pending: 'processing',
   running: 'processing',
+  waiting: 'warning',
   success: 'success',
   partial: 'warning',
   failed: 'error',
@@ -275,30 +281,31 @@ const AutomationTaskCenter: React.FC = () => {
       message.error('任务缺少目标描述');
       return;
     }
-    chrome.runtime.sendMessage(
-      {
-        type: 'RUN_AUTOMATION_TASK',
-        taskId: run.id,
-      },
-      async (resp) => {
-        const runtimeError = chrome.runtime.lastError?.message;
-        if (runtimeError || !resp?.success) {
-          message.error(resp?.error || runtimeError || '启动失败');
-          refresh();
-          return;
-        }
-        setRunningTask({ taskId: run.id });
-        message.success('任务已启动');
-        refresh();
-      },
-    );
+    try {
+      if (run.status === 'failed' || run.status === 'stopped' || run.status === 'partial') {
+        await retryAutomationTask(run.id);
+      } else {
+        await runAutomationTask(run.id);
+      }
+      setRunningTask({ taskId: run.id });
+      message.success('任务已启动');
+    } catch (error: any) {
+      message.error(error?.message || '启动失败');
+    } finally {
+      refresh();
+    }
   };
 
   const handleStop = async (run: AutomationRun) => {
-    chrome.runtime.sendMessage({ type: 'STOP_AUTOMATION_TASK', taskId: run.id });
-    if (runningTask?.taskId === run.id) setRunningTask(null);
-    message.info('已请求停止');
-    refresh();
+    try {
+      await stopAutomationTask(run.id);
+      if (runningTask?.taskId === run.id) setRunningTask(null);
+      message.info('已请求停止');
+    } catch (error: any) {
+      message.error(error?.message || '停止失败');
+    } finally {
+      refresh();
+    }
   };
 
   const handleSubmitTask = async () => {

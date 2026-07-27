@@ -7,6 +7,7 @@ import {
   type PageAuthStorageSource,
   type PageStorageEntry,
 } from '../shared/authBridge';
+import { RUNTIME_BUILD_ID } from 'virtual:gancao-content-runtime-version';
 
 let selectionButton: HTMLDivElement | null = null;
 let lastAuthSignature = '';
@@ -432,6 +433,16 @@ startAuthBridge();
 
 // 监听工具执行请求
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type === 'GET_CONTENT_RUNTIME_INFO') {
+    sendResponse({
+      success: true,
+      buildId: RUNTIME_BUILD_ID,
+      context: 'content',
+      url: window.location.href,
+    });
+    return true;
+  }
+
   if (message.type === 'EXECUTE_BROWSER_TOOL') {
     handleToolExecution(message.toolName, message.arguments)
       .then(result => sendResponse({ success: true, result }))
