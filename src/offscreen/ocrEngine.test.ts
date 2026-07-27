@@ -1,5 +1,11 @@
-import { describe, expect, it } from 'vitest';
-import { evaluateOcrQuality, getOcrErrorMessage, paddleResultToPage } from './ocrEngine';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  evaluateOcrQuality,
+  getOcrErrorMessage,
+  getOcrTargetDimensions,
+  paddleResultToPage,
+  renderPdfPageToCanvas,
+} from './ocrEngine';
 import { getPaddleOcrRuntimeOptions } from '../shared/paddleOcrRuntime';
 
 describe('ocrEngine', () => {
@@ -50,5 +56,47 @@ describe('ocrEngine', () => {
 
     expect(quality.lowConfidence).toBe(false);
     expect(quality.likelyGarbled).toBe(false);
+  });
+
+  it('caps large OCR inputs and avoids unnecessary enlargement', () => {
+    expect(getOcrTargetDimensions(3600, 1500)).toEqual({
+      width: 1800,
+      height: 750,
+      scale: 0.5,
+    });
+    expect(getOcrTargetDimensions(1200, 500)).toEqual({
+      width: 1200,
+      height: 500,
+      scale: 1,
+    });
+    expect(getOcrTargetDimensions(400, 200)).toEqual({
+      width: 800,
+      height: 400,
+      scale: 2,
+    });
+  });
+
+  it('renders PDF pages without requestAnimationFrame in the offscreen host', async () => {
+    const context = {
+      imageSmoothingEnabled: false,
+      imageSmoothingQuality: 'low',
+      drawImage: vi.fn(),
+    } as unknown as CanvasRenderingContext2D;
+    const getContext = vi.spyOn(HTMLCanvasElement.prototype, 'getContext')
+      .mockReturnValue(context);
+    const render = vi.fn(() => ({ promise: Promise.resolve(), cancel: vi.fn() }));
+    const page = {
+      getViewport: ({ scale }: { scale: number }) => ({ width: 1200 * scale, height: 500 * scale }),
+      render,
+      cleanup: vi.fn(),
+    };
+
+    await renderPdfPageToCanvas({ getPage: vi.fn().mockResolvedValue(page) }, 1);
+
+    expect(render).toHaveBeenCalledWith(expect.objectContaining({
+      canvas: expect.any(HTMLCanvasElement),
+      intent: 'print',
+    }));
+    getContext.mockRestore();
   });
 });

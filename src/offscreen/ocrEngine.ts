@@ -74,6 +74,10 @@ interface PaddleOcrSandboxResponse {
 const SANDBOX_REQUEST_SOURCE = 'gancao-paddleocr';
 const SANDBOX_RESPONSE_SOURCE = 'gancao-paddleocr-sandbox';
 const PADDLE_SANDBOX_TIMEOUT_MS = 120000;
+const OCR_MAX_DIMENSION = 1800;
+const OCR_MIN_LONG_SIDE = 1000;
+const PDF_RESOURCE_CLEANUP_TIMEOUT_MS = 3000;
+const PDF_PAGE_RENDER_TIMEOUT_MS = 30000;
 
 let paddleSandboxBridgePromise: Promise<PaddleOcrSandboxBridge> | null = null;
 
@@ -180,7 +184,7 @@ async function getPaddleSandboxBridge(onProgress?: (progress: OcrProgress) => vo
               id,
               type: 'predict',
               imageData,
-            }, '*');
+            }, '*', [imageData.data.buffer]);
           });
         },
       };
@@ -284,14 +288,33 @@ function getOcrWarnings(quality: OcrQuality, hasText: boolean): string[] {
   return warnings;
 }
 
-function preprocessCanvas(source: HTMLCanvasElement | HTMLImageElement, options: { binarize?: boolean } = {}): HTMLCanvasElement {
+export function getOcrTargetDimensions(
+  sourceWidth: number,
+  sourceHeight: number,
+  options: { allowUpscale?: boolean } = {}
+): { width: number; height: number; scale: number } {
+  const longSide = Math.max(1, sourceWidth, sourceHeight);
+  const maxScale = OCR_MAX_DIMENSION / longSide;
+  const upscale = options.allowUpscale !== false && longSide < OCR_MIN_LONG_SIDE
+    ? Math.min(2, OCR_MIN_LONG_SIDE / longSide)
+    : 1;
+  const scale = Math.min(maxScale, upscale);
+  return {
+    width: Math.max(1, Math.round(sourceWidth * scale)),
+    height: Math.max(1, Math.round(sourceHeight * scale)),
+    scale,
+  };
+}
+
+function preprocessCanvas(
+  source: HTMLCanvasElement | HTMLImageElement,
+  options: { binarize?: boolean; allowUpscale?: boolean } = {}
+): HTMLCanvasElement {
   const sourceWidth = source instanceof HTMLCanvasElement ? source.width : source.naturalWidth || source.width;
   const sourceHeight = source instanceof HTMLCanvasElement ? source.height : source.naturalHeight || source.height;
-  const maxDimension = 3600;
-  const minDimension = Math.max(sourceWidth, sourceHeight);
-  const scale = Math.min(maxDimension / Math.max(1, minDimension), minDimension < 1600 ? 2.5 : 1.5);
-  const width = Math.max(1, Math.round(sourceWidth * scale));
-  const height = Math.max(1, Math.round(sourceHeight * scale));
+  const { width, height } = getOcrTargetDimensions(sourceWidth, sourceHeight, {
+    allowUpscale: options.allowUpscale,
+  });
   const canvas = document.createElement('canvas');
   const context = canvas.getContext('2d', { willReadFrequently: true });
   if (!context) throw new Error('无法创建 OCR 预处理画布');
@@ -301,6 +324,8 @@ function preprocessCanvas(source: HTMLCanvasElement | HTMLImageElement, options:
   context.imageSmoothingEnabled = true;
   context.imageSmoothingQuality = 'high';
   context.drawImage(source, 0, 0, width, height);
+
+  if (!options.binarize) return canvas;
 
   const imageData = context.getImageData(0, 0, width, height);
   const data = imageData.data;
@@ -314,16 +339,14 @@ function preprocessCanvas(source: HTMLCanvasElement | HTMLImageElement, options:
     sum += contrasted;
   }
 
-  if (options.binarize) {
-    const threshold = Math.max(115, Math.min(180, sum / gray.length));
-    for (let index = 0; index < gray.length; index += 1) {
-      const value = gray[index] > threshold ? 255 : 0;
-      const offset = index * 4;
-      data[offset] = value;
-      data[offset + 1] = value;
-      data[offset + 2] = value;
-      data[offset + 3] = 255;
-    }
+  const threshold = Math.max(115, Math.min(180, sum / gray.length));
+  for (let index = 0; index < gray.length; index += 1) {
+    const value = gray[index] > threshold ? 255 : 0;
+    const offset = index * 4;
+    data[offset] = value;
+    data[offset + 1] = value;
+    data[offset + 2] = value;
+    data[offset + 3] = 255;
   }
 
   context.putImageData(imageData, 0, 0);
@@ -341,7 +364,7 @@ function scoreOcrPage(page: OcrPageResult): number {
 
 function shouldRetryOcr(page: OcrPageResult): boolean {
   const quality = page.quality || evaluateOcrQuality(page.text, page.confidence);
-  return quality.likelyGarbled || quality.lowConfidence || quality.textLength < 60;
+  return quality.likelyGarbled || quality.lowConfidence || quality.textLength === 0;
 }
 
 function pickBetterOcrPage(current: OcrPageResult, candidate: OcrPageResult): OcrPageResult {
@@ -426,25 +449,54 @@ export async function ocrImage(file: Blob, options: OcrOptions = {}): Promise<Oc
   };
 }
 
-export async function renderPdfPageToCanvases(pdf: any, pageNumber: number): Promise<{ enhanced: HTMLCanvasElement; binarized: HTMLCanvasElement }> {
+export async function renderPdfPageToCanvas(pdf: any, pageNumber: number): Promise<HTMLCanvasElement> {
   const page = await pdf.getPage(pageNumber);
-  const viewport = page.getViewport({ scale: 3 });
+  const baseViewport = page.getViewport({ scale: 1 });
+  const target = getOcrTargetDimensions(baseViewport.width, baseViewport.height);
+  const viewport = page.getViewport({ scale: target.scale });
   const canvas = document.createElement('canvas');
   const context = canvas.getContext('2d');
   if (!context) throw new Error('无法创建 OCR 画布');
 
   canvas.width = Math.ceil(viewport.width);
   canvas.height = Math.ceil(viewport.height);
-  await page.render({ canvasContext: context, viewport }).promise;
-  return {
-    enhanced: preprocessCanvas(canvas, { binarize: false }),
-    binarized: preprocessCanvas(canvas, { binarize: true }),
-  };
+  let timer: number | undefined;
+  try {
+    // Offscreen documents may suspend requestAnimationFrame. The print intent
+    // renders through microtasks, so PDF pages continue while the panel is closed.
+    const renderTask = page.render({ canvas, viewport, intent: 'print' });
+    await Promise.race([
+      renderTask.promise,
+      new Promise<never>((_, reject) => {
+        timer = window.setTimeout(() => {
+          renderTask.cancel?.();
+          reject(new Error(`PDF 第 ${pageNumber} 页渲染超时`));
+        }, PDF_PAGE_RENDER_TIMEOUT_MS);
+      }),
+    ]);
+    return preprocessCanvas(canvas, { binarize: false, allowUpscale: false });
+  } finally {
+    if (timer !== undefined) window.clearTimeout(timer);
+    page.cleanup?.();
+  }
+}
+
+async function settleWithin(task: Promise<unknown> | undefined, timeoutMs: number): Promise<void> {
+  if (!task) return;
+  let timer: number | undefined;
+  await Promise.race([
+    task.catch(() => undefined),
+    new Promise<void>((resolve) => {
+      timer = window.setTimeout(resolve, timeoutMs);
+    }),
+  ]);
+  if (timer !== undefined) window.clearTimeout(timer);
 }
 
 export async function ocrPdf(file: Blob, options: OcrOptions = {}): Promise<OcrResult> {
   assertNotAborted(options.signal);
   const maxPages = options.maxPages || 20;
+  options.onProgress?.({ status: 'loading_pdf', progress: 0 });
   const loadingTask = getDocument({
     data: new Uint8Array(await file.arrayBuffer()),
     useWorkerFetch: false,
@@ -453,6 +505,7 @@ export async function ocrPdf(file: Blob, options: OcrOptions = {}): Promise<OcrR
   });
   const pdf = await loadingTask.promise;
   const pageCount = Math.min(pdf.numPages, maxPages);
+  options.onProgress?.({ status: 'loading_pdf', progress: 1, pageCount });
   const bridge = await getPaddleSandboxBridge(options.onProgress);
   const pages: OcrPageResult[] = [];
   let stopped = false;
@@ -462,11 +515,12 @@ export async function ocrPdf(file: Blob, options: OcrOptions = {}): Promise<OcrR
       try {
         assertNotAborted(options.signal);
         options.onProgress?.({ status: 'rendering_pdf', progress: (pageNumber - 1) / pageCount, pageNumber, pageCount });
-        const canvases = await renderPdfPageToCanvases(pdf, pageNumber);
-        let page = await recognizeCanvas(canvases.enhanced, pageNumber, bridge, pageCount, options.onProgress);
+        const canvas = await renderPdfPageToCanvas(pdf, pageNumber);
+        let page = await recognizeCanvas(canvas, pageNumber, bridge, pageCount, options.onProgress);
         assertNotAborted(options.signal);
         if (shouldRetryOcr(page)) {
-          const retryPage = await recognizeCanvas(canvases.binarized, pageNumber, bridge, pageCount, options.onProgress);
+          const binarized = preprocessCanvas(canvas, { binarize: true, allowUpscale: false });
+          const retryPage = await recognizeCanvas(binarized, pageNumber, bridge, pageCount, options.onProgress);
           page = pickBetterOcrPage(page, retryPage);
         }
         pages.push(page);
@@ -491,12 +545,8 @@ export async function ocrPdf(file: Blob, options: OcrOptions = {}): Promise<OcrR
       warnings,
     };
   } finally {
-    try {
-      await pdf.cleanup?.();
-      await loadingTask.destroy?.();
-    } catch (error) {
-      console.warn('PDF OCR 资源释放失败:', error);
-    }
+    await settleWithin(Promise.resolve(pdf.cleanup?.()), PDF_RESOURCE_CLEANUP_TIMEOUT_MS);
+    await settleWithin(Promise.resolve(loadingTask.destroy?.()), PDF_RESOURCE_CLEANUP_TIMEOUT_MS);
   }
 }
 

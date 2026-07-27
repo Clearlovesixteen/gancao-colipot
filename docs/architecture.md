@@ -18,6 +18,22 @@
 - `pageSignals`: Content、PageContextHub 和 Browser Use 共用的页面信号定义与推导逻辑，统一登录、验证码、权限、空状态及脚本/资源/网络错误判断。
 - `DocumentContextHub`: 资料问答的唯一资料上下文入口，负责 chunk 检索、全文兜底、引用来源和 OCR/解析可靠性警告，不混入无关页面内容。
 
+## 扩展级验收矩阵
+
+Playwright 使用持久化 Chromium Context 加载生产构建后的 `dist`，直接经过 Chrome runtime、Service Worker、Content Script、Offscreen Document、Sandbox、IndexedDB 和 downloads/alarms API 验收跨上下文闭环。
+
+| 能力 | 扩展级验收内容 |
+| --- | --- |
+| 模型与聊天 | 配置 OpenAI-compatible 测试模型、接收流式内容、停止生成且不产生 final 消息。 |
+| 页面诊断 | 采集当前业务页和错误上下文，运行统一诊断任务并持久化诊断输出。 |
+| 资料问答 | 写入真实资料资产和 chunk，运行资料问答并返回文件名、页码、章节和 chunk 引用。 |
+| PaddleOCR | 通过后台 OCR 任务识别图片与扫描 PDF，并验证结构化结果写回统一资料库。 |
+| 页面监控 | 创建 alarm、执行初次快照、修改页面内容、再次运行并验证变化时间和 hash。 |
+| Workflow / Memory / Auth | 运行固定工作流、扩展重载后恢复本地会话与长期记忆、验证页面登录和退出联动。 |
+| Browser Use | 同名菜单、表单筛选、真实下载、文件中心、失败恢复、延迟 DOM 和新标签页接管。 |
+
+PaddleOCR 的 PDF 页面渲染使用 PDF.js `print` intent。Offscreen Document 是隐藏页面，默认 `display` intent 依赖的 `requestAnimationFrame` 可能被浏览器暂停；生产代码同时设置页渲染超时，异常 PDF 不会留下永久运行任务。
+
 ## V3.3-V4 产品能力
 
 - 任务结果不再只有 trace JSON。任务中心按 Browser Use 下载、资料问答引用、OCR、页面诊断和结构化提取显示交付结果卡。

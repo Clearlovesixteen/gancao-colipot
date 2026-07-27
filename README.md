@@ -170,9 +170,9 @@ pnpm watch
 当前本地质量基线：
 
 - TypeScript 检查通过
-- `47` 个 Vitest 测试文件、`229` 个测试通过
+- `63` 个 Vitest 测试文件、`294` 个测试通过
 - Vite 生产构建通过
-- Chromium 扩展 E2E：`4` 条通过，`1` 条依赖公网的 live 用例默认跳过
+- Chromium 扩展 E2E：`15` 条通过，`6` 条按环境条件跳过
 - Browser Use 黄金任务：`3` 个核心场景连续 `5` 轮，共 `15` 次通过
 
 Browser Use 的 Observe 质量指标、黄金任务目录和发布标准见 [Browser Use 可靠性门禁](docs/browser-use-reliability.md)。
