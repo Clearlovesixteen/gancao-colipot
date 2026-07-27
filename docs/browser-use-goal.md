@@ -53,7 +53,7 @@ Browser Use 与其他长任务共用唯一任务入口：
 
 - `RUN_AUTOMATION_TASK` 创建并启动任务
 - `STOP_AUTOMATION_TASK` 按任务 ID 停止任务
-- `computer_use` 任务类型选择 Browser Use 执行器
+- `browser_use` 任务类型选择 Browser Use 执行器
 - `ComputerUse*` 类型和 `COMPUTER_USE_*` 事件只描述执行器内部状态
 - `computerTask` 工作流步骤通过任务执行器调用 Browser Use
 

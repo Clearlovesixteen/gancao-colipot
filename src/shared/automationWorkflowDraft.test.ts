@@ -7,7 +7,7 @@ describe('automationWorkflowDraft', () => {
     const run: AutomationRun = {
       id: 'run-1',
       title: '导出库存预警',
-      kind: 'computer_use',
+      kind: 'browser_use',
       status: 'success',
       goal: '打开饮片管理中的库存预警列表，点击导出',
       createdAt: 1,
@@ -37,7 +37,7 @@ describe('automationWorkflowDraft', () => {
     const draft = createWorkflowDraftFromComputerUseRun({
       id: 'run-vars',
       title: '参数任务',
-      kind: 'computer_use',
+      kind: 'browser_use',
       status: 'success',
       goal: '查询 {{warehouse}} 中 {{operator}} 的记录',
       createdAt: 1,

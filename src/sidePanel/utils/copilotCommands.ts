@@ -1,5 +1,5 @@
 export type CopilotCommandId =
-  | 'computer_use'
+  | 'browser_use'
   | 'page_diagnosis'
   | 'document_qa'
   | 'document_status'
@@ -22,7 +22,7 @@ export type CopilotCommandContext =
   | 'auth';
 
 export type CopilotCommandRenderer =
-  | 'computer_use_task'
+  | 'browser_use_task'
   | 'diagnosis_result'
   | 'ocr_result'
   | 'document_answer'
@@ -44,13 +44,13 @@ export interface CopilotCommand {
 
 export const COPILOT_COMMANDS: CopilotCommand[] = [
   {
-    id: 'computer_use',
+    id: 'browser_use',
     title: 'Browser Use',
     category: 'automation',
     description: '让 AI 在浏览器中观察、规划、执行并校验多步骤任务。',
     inputPlaceholder: '请使用 Browser Use：',
     requiredContext: ['page', 'auth'],
-    renderer: 'computer_use_task',
+    renderer: 'browser_use_task',
     riskLevel: 'medium',
     quick: true,
   },
@@ -144,7 +144,7 @@ export function recommendCommands(input: {
   if (input.hasAttachedFiles) ids.add('ocr');
   if (input.hasDocuments) ids.add('document_qa');
   if (input.pageHasTables) ids.add('extract_table');
-  ids.add('computer_use');
+  ids.add('browser_use');
   ids.add('page_diagnosis');
 
   return Array.from(ids)

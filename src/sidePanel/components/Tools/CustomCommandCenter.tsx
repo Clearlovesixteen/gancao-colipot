@@ -32,7 +32,7 @@ const CustomCommandCenter: React.FC<{ onBack: () => void }> = ({ onBack }) => {
 
   const openEditor = (command: CustomCopilotCommand | null) => {
     setEditing(command);
-    form.setFieldsValue(command || { mode: 'prompt', riskLevel: 'low', enabled: true, taskKind: 'computer_use', metadataJson: '{}', inputSchemaJson: '[]' });
+    form.setFieldsValue(command || { mode: 'prompt', riskLevel: 'low', enabled: true, taskKind: 'browser_use', metadataJson: '{}', inputSchemaJson: '[]' });
     if (command) form.setFieldValue('metadataJson', JSON.stringify(command.metadata || {}, null, 2));
     if (command) form.setFieldValue('inputSchemaJson', JSON.stringify(command.inputSchema || [], null, 2));
   };
@@ -93,7 +93,7 @@ const CustomCommandCenter: React.FC<{ onBack: () => void }> = ({ onBack }) => {
           <Form.Item name="inputSchemaJson" label="输入表单 JSON"><Input.TextArea rows={4} placeholder={'[{"name":"keyword","label":"关键词","type":"text","required":true}]'} /></Form.Item>
           <Form.Item name="modelProfileId" label="指定模型（可选）"><Select allowClear options={modelProfiles.map((profile) => ({ value: profile.id, label: `${profile.name} · ${profile.model}` }))} /></Form.Item>
           <Form.Item noStyle shouldUpdate={(a, b) => a.mode !== b.mode}>{({ getFieldValue }) => getFieldValue('mode') === 'task' ? <>
-            <Form.Item name="taskKind" label="任务类型"><Select options={['computer_use', 'page_diagnosis', 'document_qa', 'ocr', 'extract', 'workflow'].map((value) => ({ value, label: value }))} /></Form.Item>
+            <Form.Item name="taskKind" label="任务类型"><Select options={['browser_use', 'page_diagnosis', 'document_qa', 'ocr', 'extract', 'workflow'].map((value) => ({ value, label: value }))} /></Form.Item>
             <Form.Item name="metadataJson" label="任务 metadata"><Input.TextArea rows={3} /></Form.Item>
           </> : null}</Form.Item>
           <Form.Item name="riskLevel" label="风险等级"><Select options={['low', 'medium', 'high'].map((value) => ({ value, label: value }))} /></Form.Item>

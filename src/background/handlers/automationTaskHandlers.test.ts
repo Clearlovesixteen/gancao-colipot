@@ -10,7 +10,7 @@ function deps(): AutomationTaskHandlerDeps {
     getAutomationRun: vi.fn(async (taskId): Promise<AutomationRun> => ({
       id: taskId,
       title: '任务',
-      kind: 'computer_use',
+      kind: 'browser_use',
       status: 'running',
       createdAt: 1,
       updatedAt: 1,

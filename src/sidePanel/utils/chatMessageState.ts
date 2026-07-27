@@ -17,7 +17,7 @@ export function hasRenderableChatMessage(message: RenderableChatMessage | null |
   if (typeof message.content === 'string' && message.content.trim().length > 0) return true;
   if (Array.isArray(message.attachments) && message.attachments.length > 0) return true;
   if (Array.isArray(message.tool_calls) && message.tool_calls.length > 0) return true;
-  if (message.kind === 'computer_use_task' && message.computerUseTrace) return true;
+  if (message.kind === 'browser_use_task' && message.computerUseTrace) return true;
   if (message.kind === 'ocr_result' && message.ocrResult) return true;
   if (message.kind === 'document_qa_result' && message.documentQaResult) return true;
   return false;

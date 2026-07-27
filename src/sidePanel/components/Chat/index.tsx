@@ -921,7 +921,7 @@ const Chat: React.FC = () => {
     setMessages(prev => {
       let found = false;
       const nextMessages = prev.map((item) => {
-        if (item.kind !== 'computer_use_task' || item.computerUseTrace?.runId !== runId) return item;
+        if (item.kind !== 'browser_use_task' || item.computerUseTrace?.runId !== runId) return item;
         found = true;
         const currentTrace = item.computerUseTrace || {
           runId,
@@ -947,7 +947,7 @@ const Chat: React.FC = () => {
         content: goal,
         type: 'assistant',
         timestamp: Date.now(),
-        kind: 'computer_use_task',
+        kind: 'browser_use_task',
         computerUseTrace: updater({
           runId,
           goal,
@@ -1062,7 +1062,7 @@ const Chat: React.FC = () => {
     setMessages(prev => {
       const updatedMessages = [...prev, userMessage];
       const messageHistory = updatedMessages
-        .filter(msg => (msg.type === 'user' || msg.type === 'assistant') && msg.kind !== 'computer_use_task')
+        .filter(msg => (msg.type === 'user' || msg.type === 'assistant') && msg.kind !== 'browser_use_task')
         .map(msg => ({
           role: msg.type === 'user' ? 'user' : 'assistant',
           content: msg.llmContent || msg.content,
@@ -1158,7 +1158,7 @@ const Chat: React.FC = () => {
 
     shouldAutoScrollRef.current = true;
     const userMessage: ChatMessage = {
-      id: `computer_user_${Date.now()}`,
+      id: `browser_user_${Date.now()}`,
       content: finalGoal,
       type: 'user',
       timestamp: Date.now(),
@@ -1184,7 +1184,7 @@ const Chat: React.FC = () => {
 
     createAndRunChatTask({
       id: taskId,
-      kind: 'computer_use',
+      kind: 'browser_use',
       title: `Browser Use：${finalGoal.slice(0, 40)}`,
       goal: finalGoal,
       metadata: {
@@ -1300,26 +1300,6 @@ const Chat: React.FC = () => {
             });
           },
         });
-      } else if (message.type === 'COMPUTER_USE_FINISHED') {
-        if (!message.automationTaskId || message.automationTaskId !== browserUseTaskIdRef.current) return;
-        if (computerUseRunIdRef.current && message.runId !== computerUseRunIdRef.current) return;
-        mergeComputerUseEvent(message);
-        setIsTyping(false);
-        setComputerUseRunId(null);
-        computerUseRunIdRef.current = null;
-        fetchComputerUseTrace(message.runId);
-        const tableSummary = getLatestExtractedTablesFromSteps(message.steps || []);
-        if (tableSummary) {
-          addAssistantMessage(formatComputerUseTablesMessage(tableSummary, message.summary));
-        }
-      } else if (message.type === 'COMPUTER_USE_ERROR') {
-        if (!message.automationTaskId || message.automationTaskId !== browserUseTaskIdRef.current) return;
-        if (computerUseRunIdRef.current && message.runId !== computerUseRunIdRef.current) return;
-        mergeComputerUseEvent(message);
-        setIsTyping(false);
-        setComputerUseRunId(null);
-        computerUseRunIdRef.current = null;
-        fetchComputerUseTrace(message.runId);
       } else if (message.type === 'AUTOMATION_TASK_FINISHED' || message.type === 'AUTOMATION_TASK_ERROR') {
         if (!chatTaskIdsRef.current.has(message.taskId)) return;
         chatTaskIdsRef.current.delete(message.taskId);
@@ -1328,12 +1308,14 @@ const Chat: React.FC = () => {
         getAutomationRun(message.taskId).then((run) => {
           if (!run) return;
           const output = (run.metadata as any)?.taskOutput;
-          if (run.kind === 'computer_use') {
+          if (run.kind === 'browser_use') {
             if (browserUseTaskIdRef.current === run.id) {
               browserUseTaskIdRef.current = null;
               setBrowserUseTaskId(null);
             }
             setIsTyping(false);
+            setComputerUseRunId(null);
+            computerUseRunIdRef.current = null;
             const internalRunId = String(run.metadata?.computerUseRunId || '');
             if (internalRunId) fetchComputerUseTrace(internalRunId);
             return;
@@ -1629,7 +1611,7 @@ const Chat: React.FC = () => {
 
   const handleCopilotCommand = useCallback((commandId: CopilotCommandId) => {
     switch (commandId) {
-      case 'computer_use':
+      case 'browser_use':
         startComputerUse();
         break;
       case 'page_diagnosis':
@@ -1686,7 +1668,7 @@ const Chat: React.FC = () => {
       const runCommand = async () => {
       try {
         const run = await createAndRunChatTask({
-          kind: command.taskKind || 'computer_use',
+          kind: command.taskKind || 'browser_use',
           title: command.title,
           goal: renderedPrompt,
           metadata: { ...renderedMetadata, modelProfileId: command.modelProfileId },
@@ -1888,7 +1870,7 @@ const Chat: React.FC = () => {
       const updatedMessages = [...prev, userMessage];
       
       const messageHistory = updatedMessages
-        .filter(msg => (msg.type === 'user' || msg.type === 'assistant') && msg.kind !== 'computer_use_task')
+        .filter(msg => (msg.type === 'user' || msg.type === 'assistant') && msg.kind !== 'browser_use_task')
         .map(msg => ({
           role: msg.type === 'user' ? 'user' : 'assistant',
           content: msg.llmContent || msg.content,
@@ -2334,7 +2316,7 @@ const Chat: React.FC = () => {
         ) : (
           <>
             {visibleMessages.map((msg) => {
-              if (msg.kind === 'computer_use_task') {
+              if (msg.kind === 'browser_use_task') {
                 return (
                   <div
                     key={msg.id}

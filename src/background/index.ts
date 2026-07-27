@@ -814,7 +814,9 @@ async function runComputerUseOnTab(options: {
       if (typeof msg?.runId === 'string' && msg.type?.startsWith?.('COMPUTER_USE_')) {
         recordComputerUseTraceEvent(msg);
       }
-      chrome.runtime.sendMessage(msg).catch(() => {});
+      if (msg.type !== 'COMPUTER_USE_FINISHED' && msg.type !== 'COMPUTER_USE_ERROR') {
+        chrome.runtime.sendMessage(msg).catch(() => {});
+      }
       if (msg.type === 'COMPUTER_USE_FINISHED') {
         resolve(msg);
       } else if (msg.type === 'COMPUTER_USE_ERROR') {
@@ -1104,7 +1106,7 @@ function getTaskExecutorRegistry(): TaskExecutorRegistry {
   if (taskExecutorRegistry) return taskExecutorRegistry;
   taskExecutorRegistry = new TaskExecutorRegistry()
     .register({
-      kind: 'computer_use',
+      kind: 'browser_use',
       async validate(run) {
         if (!String(run.goal || '').trim()) throw new Error('任务缺少目标描述');
       },
@@ -1207,22 +1209,6 @@ async function handleBusinessTool(toolName: string, args: any, contextTabId?: nu
 
   const authError = await requireBusinessAuth();
   if (authError) return authError;
-
-  if (toolName === 'create_business_workflow_draft') {
-    const draft = {
-      id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-      name: String(args?.name || '未命名业务流程'),
-      goal: String(args?.goal || ''),
-      steps: Array.isArray(args?.steps) ? args.steps.map(String) : [],
-      createdAt: Date.now(),
-    };
-    const result = await chrome.storage.local.get('businessWorkflowDrafts');
-    const drafts = Array.isArray(result.businessWorkflowDrafts) ? result.businessWorkflowDrafts : [];
-    drafts.unshift(draft);
-    await chrome.storage.local.set({ businessWorkflowDrafts: drafts.slice(0, 50) });
-    broadcastDocumentCenterUpdated({ reason: 'business_workflow_draft_created' });
-    return { success: true, draft };
-  }
 
   if (toolName === 'list_documents') {
     const assets = await listDocumentAssets();
@@ -1819,8 +1805,12 @@ chrome.runtime.onInstalled.addListener(() => {
   syncPageMonitorAlarms().catch((error) => console.warn('同步页面监控 alarm 失败:', error));
 });
 
-getTaskRuntimeService().recoverInterrupted().catch((error) => console.warn('收口遗留任务失败:', error));
-purgeRemovedLegacyData().catch((error) => console.warn('清理已删除的旧上传文件数据失败:', error));
+async function initializeTaskRuntime(): Promise<void> {
+  await purgeRemovedLegacyData();
+  await getTaskRuntimeService().recoverInterrupted();
+}
+
+initializeTaskRuntime().catch((error) => console.warn('初始化任务运行时失败:', error));
 
 chrome.runtime.onStartup?.addListener(() => {
   syncPageMonitorAlarms().catch((error) => console.warn('启动时同步页面监控 alarm 失败:', error));

@@ -146,7 +146,7 @@ const TaskOutputCard: React.FC<{ run: AutomationRun }> = ({ run }) => {
     );
   }
 
-  if (run.kind === 'computer_use') {
+  if (run.kind === 'browser_use') {
     const download = output.downloadResult || output.result?.downloadResult;
     if (download) {
       return (
@@ -540,7 +540,7 @@ const AutomationTaskCenter: React.FC = () => {
           <Button size="small" icon={<EyeOutlined />} onClick={() => setDetailRun(run)}>
             详情
           </Button>
-          {run.kind === 'computer_use' && (run.status === 'success' || run.status === 'partial') && (
+          {run.kind === 'browser_use' && (run.status === 'success' || run.status === 'partial') && (
             <Button size="small" icon={<SaveOutlined />} onClick={() => handleSaveWorkflowDraft(run)}>
               存草稿
             </Button>
@@ -594,7 +594,7 @@ const AutomationTaskCenter: React.FC = () => {
             <Space>
               <Select value={kindFilter} onChange={setKindFilter} style={{ width: 150 }}>
                 <Option value="all">全部类型</Option>
-                <Option value="computer_use">Browser Use</Option>
+                <Option value="browser_use">Browser Use</Option>
                 <Option value="page_monitor">页面监控</Option>
                 <Option value="page_diagnosis">页面诊断</Option>
                 <Option value="document_qa">资料问答</Option>
@@ -636,7 +636,7 @@ const AutomationTaskCenter: React.FC = () => {
         extra={detailRun ? (
           <Space>
             <Button icon={<CopyOutlined />} onClick={() => handleCopyFullLog(detailRun)}>复制日志</Button>
-            {detailRun.kind === 'computer_use' && (detailRun.status === 'success' || detailRun.status === 'partial') && (
+            {detailRun.kind === 'browser_use' && (detailRun.status === 'success' || detailRun.status === 'partial') && (
               <Button icon={<SaveOutlined />} onClick={() => handleSaveWorkflowDraft(detailRun)}>保存为工作流</Button>
             )}
           </Space>
@@ -808,7 +808,7 @@ const AutomationTaskCenter: React.FC = () => {
                   <Input.TextArea rows={3} />
                 </Form.Item>
               )}
-              {template.kind === 'computer_use' && <>
+              {template.kind === 'browser_use' && <>
                 <Form.Item name="startUrl" label="起始 URL（可选）"><Input /></Form.Item>
                 <Form.Item name="maxSteps" label="最大步骤"><InputNumber min={1} max={30} style={{ width: '100%' }} /></Form.Item>
                 <Form.Item name="workflowVariablesJson" label="保存为工作流时的参数默认值">

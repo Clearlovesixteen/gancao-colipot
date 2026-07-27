@@ -398,33 +398,6 @@ export const BUSINESS_TOOLS: BusinessToolDefinition[] = [
       },
     },
   },
-  {
-    type: 'function',
-    function: {
-      name: 'create_business_workflow_draft',
-      description: '根据用户业务目标生成可保存的流程草稿，不直接执行。适合把重复业务沉淀为流程模板。',
-      parameters: {
-        type: 'object',
-        properties: {
-          name: {
-            type: 'string',
-            description: '流程名称。',
-          },
-          goal: {
-            type: 'string',
-            description: '业务目标。',
-          },
-          steps: {
-            type: 'array',
-            description: '自然语言步骤列表。',
-            items: { type: 'string' },
-          },
-        },
-        required: ['name', 'goal', 'steps'],
-        additionalProperties: false,
-      },
-    },
-  },
 ];
 
 export const BUSINESS_TOOL_NAMES = new Set(BUSINESS_TOOLS.map((tool) => tool.function.name));

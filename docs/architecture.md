@@ -13,7 +13,7 @@
 
 - `ModelGateway`: background-only 模型网关，读取用户本地配置，统一流式对话、JSON 规划、文本补全、取消和连接测试。SidePanel 不持有 API Key，也不直接请求模型服务。
 - `DocumentRepository`: 唯一资料访问层，所有上传、OCR、下载入库和资料问答都通过该仓库读写。重复的 `documentDb/documentStore` 已删除。
-- `TaskExecutorRegistry`: 统一运行 `computer_use / page_monitor / page_diagnosis / document_qa / ocr / extract / workflow`，统一状态、停止、结果和 trace snapshot。`computer_use` 是 Browser Use 的历史兼容类型。
+- `TaskExecutorRegistry`: 统一运行 `browser_use / page_monitor / page_diagnosis / document_qa / ocr / extract / workflow`，统一状态、停止、结果和 trace snapshot。
 
 ## V3.3-V4 产品能力
 
@@ -34,7 +34,7 @@ Browser Use 是自动化能力的正式产品名称和演进目标。它只负�
 
 Browser Use 的真实 Chromium 黄金任务、Observe 质量报告和发布门槛见 [Browser Use 可靠性门禁](./browser-use-reliability.md)。
 
-代码中的 `ComputerUse*` 和 `computer_use` 是 Browser Use 执行器内部类型。所有长任务统一由 `TaskExecutorRegistry` 接收 `RUN_AUTOMATION_TASK`，产品界面与文档统一使用 Browser Use。
+`browser_use` 是 Browser Use 的唯一任务类型；`ComputerUse*` 只保留为执行器内部算法类型。所有长任务统一由 `TaskExecutorRegistry` 接收 `RUN_AUTOMATION_TASK`。
 
 ## 总体架构图
 
@@ -168,7 +168,7 @@ flowchart LR
 ```mermaid
 flowchart LR
   Start["侧边栏、任务中心或工作流发起<br/>RUN_AUTOMATION_TASK"]
-  Registry["TaskExecutorRegistry<br/>选择 computer_use 执行器"]
+  Registry["TaskExecutorRegistry<br/>选择 browser_use 执行器"]
   Router["后台 runComputerUseOnTab<br/>创建内部 runId / AbortController / 初始轨迹"]
   Parser["轻量预解析<br/>computerUseTaskParser.ts<br/>识别 URL / 站点别名 / 低风险信号"]
   Intent["意图与任务计划<br/>computerUseIntent.ts<br/>统一生成 taskPlan.phases"]

@@ -145,7 +145,7 @@ export async function runComputerUse(harness: ExtensionHarness, goal: string, ma
       automationRuns: [{
         id,
         title: `Browser Use E2E：${taskGoal.slice(0, 40)}`,
-        kind: 'computer_use',
+        kind: 'browser_use',
         status: 'idle',
         goal: taskGoal,
         source: 'system',

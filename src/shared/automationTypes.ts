@@ -659,7 +659,7 @@ export interface AutomationWorkflow {
 };
 
 export type AutomationRunKind =
-  | 'computer_use'
+  | 'browser_use'
   | 'workflow'
   | 'page_monitor'
   | 'page_diagnosis'
@@ -788,7 +788,7 @@ export interface PageMonitorNotificationConfig {
 export interface AutomationTaskTemplate {
   id: string;
   title: string;
-  category: 'monitor' | 'extract' | 'diagnosis' | 'document' | 'computer_use' | 'workflow';
+  category: 'monitor' | 'extract' | 'diagnosis' | 'document' | 'browser_use' | 'workflow';
   kind: AutomationRunKind;
   description: string;
   defaultGoal: string;

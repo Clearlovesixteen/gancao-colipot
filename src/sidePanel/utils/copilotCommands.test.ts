@@ -4,7 +4,7 @@ import { COPILOT_COMMANDS, getQuickCommands, recommendCommands } from './copilot
 describe('copilotCommands', () => {
   it('registers core quick commands', () => {
     expect(getQuickCommands().map((command) => command.id)).toEqual([
-      'computer_use',
+      'browser_use',
       'page_diagnosis',
       'document_qa',
       'document_status',
@@ -32,6 +32,6 @@ describe('copilotCommands', () => {
     expect(commands).toContain('document_qa');
     expect(commands).toContain('ocr');
     expect(commands).toContain('extract_table');
-    expect(commands).toContain('computer_use');
+    expect(commands).toContain('browser_use');
   });
 });

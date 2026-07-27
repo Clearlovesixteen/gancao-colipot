@@ -79,7 +79,7 @@ export interface ComputerUseTaskTraceState {
 export type ChatMessage = ModelMessage & {
   llmContent?: string;
   nativeFiles?: NativeFileReference[];
-  kind?: 'text' | 'ocr_result' | 'file_attachment' | 'computer_use_task' | 'tool_result' | 'diagnosis_result' | 'document_qa_result';
+  kind?: 'text' | 'ocr_result' | 'file_attachment' | 'browser_use_task' | 'tool_result' | 'diagnosis_result' | 'document_qa_result';
   computerUseTrace?: ComputerUseTaskTraceState;
   attachments?: ChatAttachmentItem[];
   ocrResult?: OcrResultMessageData;

@@ -884,7 +884,7 @@
         <section id="browser-use">
           <div class="section-head">
             <h2>Browser Use 闭环</h2>
-            <p>Browser Use 是自动化能力的产品名称。所有长任务统一通过 <code>TaskExecutorRegistry</code> 运行，<code>computer_use</code> 和 <code>ComputerUse*</code> 仅作为执行器内部类型。它的关键原则是：LLM 负责语义目标和短期计划，TargetResolver 负责把目标落到真实页面元素。</p>
+            <p>Browser Use 是自动化能力的统一产品名称，任务类型固定为 <code>browser_use</code>。所有长任务统一通过 <code>TaskExecutorRegistry</code> 运行，不再保留旧自动化入口。它的关键原则是：LLM 负责语义目标和短期计划，TargetResolver 负责把目标落到真实页面元素。</p>
           </div>
           <div class="flow">
             <div class="flow-step"><strong>目标解析</strong><span>从自然语言目标提取站点、动作、查询、风险级别和成功标准。</span></div>
@@ -1030,7 +1030,7 @@
         <section id="workflow">
           <div class="section-head">
             <h2>工作流与监控</h2>
-            <p>任务中心统一承载 7 类任务：<code>computer_use</code>、<code>workflow</code>、<code>page_monitor</code>、<code>page_diagnosis</code>、<code>document_qa</code>、<code>ocr</code>、<code>extract</code>。固定工作流可以调用普通页面工具，也可以把成功的 Browser Use 任务沉淀为 <code>computerTask</code> 步骤。</p>
+            <p>任务中心统一承载 7 类任务：<code>browser_use</code>、<code>workflow</code>、<code>page_monitor</code>、<code>page_diagnosis</code>、<code>document_qa</code>、<code>ocr</code>、<code>extract</code>。固定工作流可以调用普通页面工具，也可以把成功的 Browser Use 任务沉淀为 <code>computerTask</code> 步骤。</p>
           </div>
           <div class="grid cols-3">
             <article class="card">

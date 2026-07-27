@@ -7,7 +7,7 @@ function makeRun(patch: Partial<AutomationRun> = {}): AutomationRun {
   return {
     id: 'task_1',
     title: '测试任务',
-    kind: 'computer_use',
+    kind: 'browser_use',
     status: 'idle',
     goal: '完成测试',
     createdAt: 1,
@@ -51,7 +51,7 @@ async function settle(): Promise<void> {
 describe('TaskRuntimeService', () => {
   it('owns the complete task lifecycle and persists a sanitized result', async () => {
     const executor: TaskExecutor = {
-      kind: 'computer_use',
+      kind: 'browser_use',
       validate: vi.fn(async () => undefined),
       run: vi.fn(async (_run, context): Promise<TaskResult> => {
         context.progress('working', '正在执行');
@@ -83,7 +83,7 @@ describe('TaskRuntimeService', () => {
     let resolveRun!: (result: TaskResult) => void;
     const stop = vi.fn(async () => undefined);
     const executor: TaskExecutor = {
-      kind: 'computer_use',
+      kind: 'browser_use',
       validate: async () => undefined,
       run: vi.fn(async (_run, context) => {
         context.progress('waiting_confirmation', '等待确认');
@@ -111,7 +111,7 @@ describe('TaskRuntimeService', () => {
 
   it('fails validation through the same persistence and event path', async () => {
     const executor: TaskExecutor = {
-      kind: 'computer_use',
+      kind: 'browser_use',
       validate: vi.fn(async () => {
         throw new Error('任务缺少目标描述');
       }),
@@ -128,7 +128,7 @@ describe('TaskRuntimeService', () => {
 
   it('safely closes pending, running, and waiting tasks after a service worker restart', async () => {
     const executor: TaskExecutor = {
-      kind: 'computer_use',
+      kind: 'browser_use',
       validate: async () => undefined,
       run: vi.fn(),
     };

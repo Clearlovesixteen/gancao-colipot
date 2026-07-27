@@ -40,7 +40,7 @@ describe('automationRunStore', () => {
     const run = makeAutomationRunFromTemplate(template);
 
     expect(run.title).toBe('表格导出/下载');
-    expect(run.kind).toBe('computer_use');
+    expect(run.kind).toBe('browser_use');
     expect(run.status).toBe('draft');
     expect(run.goal).toContain('导出');
     expect(run.metadata?.riskLevel).toBe('medium');
@@ -63,7 +63,7 @@ describe('automationRunStore', () => {
       {
         id: 'run-2',
         title: '导出任务',
-        kind: 'computer_use',
+        kind: 'browser_use',
         status: 'running',
         goal: '打开页面并导出',
         createdAt: 2,

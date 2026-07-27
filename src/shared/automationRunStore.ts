@@ -74,8 +74,8 @@ export const AUTOMATION_TASK_TEMPLATES: AutomationTaskTemplate[] = [
   {
     id: 'table_export',
     title: '表格导出/下载',
-    category: 'computer_use',
-    kind: 'computer_use',
+    category: 'browser_use',
+    kind: 'browser_use',
     description: '进入指定业务列表，点击真实导出按钮，并记录下载结果。',
     defaultGoal: '打开目标业务列表，点击导出，并等待下载完成',
     riskLevel: 'medium',
@@ -107,8 +107,8 @@ export const AUTOMATION_TASK_TEMPLATES: AutomationTaskTemplate[] = [
   {
     id: 'file_download_check',
     title: '文件中心下载',
-    category: 'computer_use',
-    kind: 'computer_use',
+    category: 'browser_use',
+    kind: 'browser_use',
     description: '打开文件中心，筛选文件并下载目标结果。',
     defaultGoal: '打开文件中心，按条件筛选文件，并下载第一条结果',
     riskLevel: 'medium',

@@ -375,7 +375,7 @@ flowchart LR
 ```mermaid
 flowchart LR
   Start["侧边栏、任务中心或工作流发起<br/>RUN_AUTOMATION_TASK"]
-  Registry["TaskExecutorRegistry<br/>选择 computer_use 执行器"]
+  Registry["TaskExecutorRegistry<br/>选择 browser_use 执行器"]
   Router["后台 runComputerUseOnTab<br/>创建内部 runId / AbortController / 初始轨迹"]
   Parser["候选任务解析<br/>computerUseTaskParser.ts<br/>只提供低风险确定性信号"]
   Intent["统一意图与任务编译<br/>computerUseIntent.ts / taskPlanCompiler.ts<br/>所有任务生成同一 phase queue"]

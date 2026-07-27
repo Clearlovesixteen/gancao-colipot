@@ -228,7 +228,7 @@ docs/
 
 ## 路线图
 
-当前自动化产品目标已正式从 Computer Use 调整为 **Browser Use**：代理围绕浏览器中的页面观察、导航、搜索、表单、数据提取、下载、跨页面任务和结果交付自主完成任务，而不是模拟系统级鼠标键盘。所有长任务统一通过 `TaskExecutorRegistry` 和 `RUN_AUTOMATION_TASK` 启动；`computer_use` 与 `ComputerUse*` 仅是 Browser Use 执行器内部类型，不再存在聊天直连执行链。详细目标见 [Browser Use 产品目标](docs/browser-use-goal.md)。
+当前自动化产品统一命名为 **Browser Use**：代理围绕浏览器中的页面观察、导航、搜索、表单、数据提取、下载、跨页面任务和结果交付自主完成任务，而不是模拟系统级鼠标键盘。所有长任务统一通过 `TaskExecutorRegistry` 和 `RUN_AUTOMATION_TASK` 启动；任务类型统一为 `browser_use`，不再提供旧自动化协议或聊天直连执行链。详细目标见 [Browser Use 产品目标](docs/browser-use-goal.md)。
 
 当前已完成 V3.2 统一底座，并落地失败阶段续跑、监控通知、候选 Memory、资料引用定位、OCR 人工校正、自定义命令表单/版本/模型路由等后续能力。下一阶段重点是：
 

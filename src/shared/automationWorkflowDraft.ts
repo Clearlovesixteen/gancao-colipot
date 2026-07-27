@@ -11,7 +11,7 @@ function inferVariables(goal: string, configured: unknown): Record<string, unkno
 }
 
 export function createWorkflowDraftFromComputerUseRun(run: AutomationRun): { name: string; workflow: AutomationWorkflow } {
-  if (run.kind !== 'computer_use') {
+  if (run.kind !== 'browser_use') {
     throw new Error('只有 Computer Use 任务可以保存为工作流草稿');
   }
   const goal = String(run.goal || '').trim();
