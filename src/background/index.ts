@@ -42,12 +42,7 @@ import type {
   ComputerUseResumeCheckpoint,
 } from '../shared/automationTypes';
 import { getAutomationRun, listAutomationRuns, patchAutomationRun } from '../shared/automationRunStore';
-import { handleAutomationTaskMessage } from './handlers/automationTaskHandlers';
-import { handleAuthBridgeMessage } from './handlers/authBridgeHandlers';
-import { handleModelChatMessage } from './handlers/modelChatHandlers';
-import { handlePageToolMessage } from './handlers/pageToolHandlers';
-import { handleSelectedTextMessage } from './handlers/selectedTextHandler';
-import { handleModelProfileMessage } from './handlers/modelProfileHandlers';
+import { createBackgroundMessageRouter } from './handlers/backgroundMessageRouter';
 import { TaskExecutorRegistry, type TaskResult } from './taskExecutorRegistry';
 import { TaskRuntimeService } from './taskRuntimeService';
 import { getAutomationWorkflow } from '../shared/automationWorkflowStore';
@@ -1822,51 +1817,34 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   });
 });
 
-// 监听 sidePanel , content script 的消息
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (['SEND_MESSAGE', 'RUN_AUTOMATION_TASK', 'STOP_AUTOMATION_TASK', 'RETRY_AUTOMATION_TASK'].includes(message.type)
-    && !isRuntimeVersionCurrent({ buildId: String(message.clientBuildId || '') })) {
-    sendResponse({
-      success: false,
-      code: 'EXTENSION_RUNTIME_MISMATCH',
-      error: runtimeMismatchMessage(message.clientBuildId),
-      buildId: RUNTIME_BUILD_ID,
-    });
-    return false;
-  }
-
-  if (handleModelProfileMessage(message, sendResponse, modelGateway)) return true;
-
-  const automationTaskHandled = handleAutomationTaskMessage(message, sendResponse, {
+chrome.runtime.onMessage.addListener(createBackgroundMessageRouter({
+  modelGateway,
+  buildId: RUNTIME_BUILD_ID,
+  isRuntimeVersionCurrent,
+  runtimeMismatchMessage,
+  automation: {
     startTask: (taskId) => getTaskRuntimeService().start(taskId),
     stopTask: (taskId) => getTaskRuntimeService().stop(taskId),
     retryTask: (taskId) => getTaskRuntimeService().retry(taskId),
     getAutomationRun,
     upsertPageMonitorAlarm,
     clearPageMonitorAlarm,
-  });
-  if (automationTaskHandled) return true;
-
-  if (handleAuthBridgeMessage(message, sender, sendResponse, {
+  },
+  auth: {
     dingTalkAuthTabs,
     sidePanelOpenState,
     savePageAuthState,
     requestPageAuthSync,
-  })) return true;
-
-  if (handleModelChatMessage(message, sendResponse, {
-    modelGateway,
+  },
+  modelChat: {
     requireBusinessAuth,
     initModelGatewayEvents,
     resolveContextTabId: (requestedTabId) => resolveBrowserContextTabId(requestedTabId, {
       getTab: (id) => chrome.tabs.get(id),
       getCurrentActiveTab,
     }),
-    buildId: RUNTIME_BUILD_ID,
-    isRuntimeVersionCurrent,
-  })) return true;
-
-  if (handlePageToolMessage(message, sender, sendResponse, {
+  },
+  pageTools: {
     requireBusinessAuth,
     getCurrentActiveTab,
     resolveContextTabId: (requestedTabId) => resolveBrowserContextTabId(requestedTabId, {
@@ -1876,11 +1854,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     collectConsoleDiagnostics: collectConsoleDiagnosticsWithFallback,
     handleBusinessTool,
     executeBrowserTool,
-  })) return true;
-
-  if (handleSelectedTextMessage(message, sender, sendResponse)) return true;
-
-  if (message.type === 'CONFIRM_COMPUTER_USE_ACTION') {
+  },
+  confirmBrowserUseAction(message, sendResponse) {
     const key = `${String(message.runId || '')}:${Number(message.stepIndex || 0)}`;
     const resolver = computerUseConfirmations.get(key);
     if (resolver) {
@@ -1890,9 +1865,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     sendResponse({ success: false, error: '确认请求已过期' });
     return true;
-  }
-  return false;
-});
+  },
+}));
 
 async function configureSidePanelOpenBehavior() {
   try {

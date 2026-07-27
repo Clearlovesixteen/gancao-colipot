@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Input, Button, Space, Typography, Spin, Avatar, Badge, Image, Tag, Drawer, Tooltip, Dropdown, Menu, message, Modal, Tabs, Card, Table, Empty, Timeline, Collapse, List, Select, Switch } from 'antd';
+import { Input, Button, Space, Typography, Spin, Avatar, Badge, Image, Tag, Drawer, Tooltip, Dropdown, Menu, message, Modal, Tabs, Card, Table, Empty, Collapse, List, Select, Switch } from 'antd';
 import { SendOutlined, UserOutlined, RobotOutlined, ThunderboltOutlined, PaperClipOutlined, DeleteOutlined, ToolOutlined, AppstoreOutlined, MoreOutlined, StopOutlined, CopyOutlined, ReloadOutlined, HistoryOutlined, PlusOutlined, EditOutlined, InboxOutlined } from '@ant-design/icons';
 import type { NativeFileReference } from '../../../shared/modelRuntimeTypes';
 import Tools from '../Tools';
@@ -19,8 +19,8 @@ import {
   upsertDocumentAsset,
 } from '../../../shared/documentRepository';
 import { structuredOcrToMarkdown } from '../../../shared/ocrStructurer';
-import { formatComputerUseTablesMessage, getLatestExtractedTablesFromSteps } from '../../../shared/computerUseResults';
-import type { BrowserObservation, ComputerUseAction, ComputerUseResumeCheckpoint, ComputerUseTrace, ComputerUseTraceEntry } from '../../../shared/automationTypes';
+import { formatComputerUseTablesMessage } from '../../../shared/computerUseResults';
+import type { ComputerUseResumeCheckpoint, ComputerUseTrace } from '../../../shared/automationTypes';
 import { COPILOT_COMMANDS, getQuickCommands, type CopilotCommandId } from '../../utils/copilotCommands';
 import { useCommandRecommendations } from './useCommandRecommendations';
 import {
@@ -28,27 +28,25 @@ import {
   createAutomationTaskId,
   stopAutomationTask,
 } from '../../../shared/automationTaskClient';
-import { getAutomationRun } from '../../../shared/automationRunStore';
 import { listCustomCommands, renderCustomCommandMetadata, renderCustomCommandTemplate, type CustomCopilotCommand } from '../../../shared/customCommandStore';
 import {
-  buildMemoryContext,
   archiveChatSession,
   deleteChatSession,
   inferMemoryType,
   updateChatSession,
   upsertUserMemory,
 } from '../../../shared/userMemoryStore';
-import {
-  getActiveBrowserTabId,
-  shouldStopTypingForGatewayStatus,
-} from '../../utils/chatRequestState';
-import {
-  hasRenderableChatMessage,
-  mergeIncomingChatMessage,
-  shouldPersistIncomingChatMessage,
-} from '../../utils/chatMessageState';
-import { RUNTIME_BUILD_ID } from '../../../shared/runtimeVersion';
+import { hasRenderableChatMessage } from '../../utils/chatMessageState';
 import { useChatSessions } from './useChatSessions';
+import { useAiRequest } from './useAiRequest';
+import { useChatTaskEvents } from './useChatTaskEvents';
+import { BrowserUseTaskCard } from './BrowserUseTaskCard';
+import {
+  browserUseTraceStateFromBackground,
+  compactBrowserUseEntries,
+  getBrowserUseStateLabel,
+  makeBrowserUseEntryFromEvent,
+} from './browserUseTrace';
 import type {
   ChatAttachmentItem,
   ChatMessage,
@@ -65,14 +63,6 @@ const { TabPane } = Tabs;
 const { Panel } = Collapse;
 
 const MAX_LLM_FILE_CONTEXT_LENGTH = 60000;
-
-function createAiRequestId(): string {
-  return `ai_req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function documentsTitleFromTask(title: string): string {
-  return String(title || 'OCR 资料').replace(/^OCR[：:]\s*/, '') || 'OCR 资料';
-}
 
 function normalizeUserFacingError(error: unknown, fallback = '请稍后重试'): string {
   const messageText = String((error as any)?.message || error || fallback);
@@ -95,166 +85,6 @@ function shouldRouteToComputerUse(message: string): boolean {
   return /(自动操作|操作|点击|点一下|填表|输入|选择|勾选|导出|下载|提交|打开.*页面|帮我.*页面|跑流程)/i.test(message.trim());
 }
 
-function getComputerUseActionLabel(action?: { action?: string; reason?: string }): string {
-  if (!action) return '正在执行自动操作';
-  if (action.action === 'extract_table') return '正在提取页面表格';
-  if (action.action === 'download_file') return `正在导出文件：${action.reason || '点击导出/下载按钮'}`;
-  if (action.action === 'click') return `正在点击：${action.reason || '目标元素'}`;
-  if (action.action === 'type') return `正在输入：${action.reason || '文本'}`;
-  return `正在执行：${action.reason || action.action}`;
-}
-
-function getComputerUseStatusMeta(status: ComputerUseTaskStatus): { label: string; color: string } {
-  if (status === 'finished') return { label: '已完成', color: 'green' };
-  if (status === 'error') return { label: '失败', color: 'red' };
-  if (status === 'stopped') return { label: '已停止', color: 'orange' };
-  if (status === 'waiting_confirmation') return { label: '待确认', color: 'gold' };
-  return { label: '运行中', color: 'processing' };
-}
-
-function getComputerUseStateLabel(state?: string): string {
-  const labels: Record<string, string> = {
-    observing: '观察页面',
-    planning: '分析规划',
-    acting: '执行动作',
-    verifying: '校验结果',
-    recovering: '失败恢复',
-    waiting_confirmation: '等待确认',
-    done: '步骤完成',
-  };
-  return state ? labels[state] || state : '任务事件';
-}
-
-function summarizeComputerUseEntry(entry: ComputerUseTraceEntry): string {
-  if (entry.error) return entry.error;
-  if (entry.summary) return entry.summary;
-  if (entry.action) return getComputerUseActionLabel(entry.action);
-  const result = entry.result as any;
-  if (entry.phaseGoal && result?.summary) {
-    return `${entry.phaseGoal}：${result.summary}`;
-  }
-  if (result?.filename || result?.assetId || result?.downloadId) {
-    if (result.savedToDocumentCenter && result.assetId) {
-      return `已导出 ${result.filename || result.assetTitle || '文件'}，资料 ID：${result.assetId}`;
-    }
-    return result.message || `已触发下载 ${result.filename || result.downloadId}`;
-  }
-  if (result?.summary) return String(result.summary);
-  if (typeof result?.navigationCount === 'number' || typeof result?.tableCount === 'number') {
-    return [
-      typeof result.navigationCount === 'number' ? `导航 ${result.navigationCount}` : '',
-      typeof result.tableCount === 'number' ? `表格 ${result.tableCount}` : '',
-    ].filter(Boolean).join('，');
-  }
-  if (entry.observation?.title) return `页面：${entry.observation.title}`;
-  return getComputerUseStateLabel(entry.state);
-}
-
-function getLatestDownloadResultFromSteps(steps: Array<{ action?: ComputerUseAction; result?: unknown }> = []): any | null {
-  for (let index = steps.length - 1; index >= 0; index -= 1) {
-    const step = steps[index];
-    if (step?.action?.action !== 'download_file') continue;
-    const result = step.result as any;
-    if (!result) continue;
-    return result?.success === true && result?.result ? result.result : result;
-  }
-  return null;
-}
-
-function makeComputerUseEntryFromEvent(event: any): ComputerUseTraceEntry {
-  const base = {
-    timestamp: Date.now(),
-    type: event.type,
-    goal: event.goal || '',
-  };
-  if (event.type === 'COMPUTER_USE_PROGRESS') {
-    return {
-      ...base,
-      stepIndex: event.stepIndex,
-      state: event.state,
-      observation: event.observation,
-      action: event.action,
-      intent: event.intent,
-      navigationPath: event.intent?.navigationPath,
-      plan: event.plan,
-      chosenElement: event.chosenElement,
-      beforeObservation: event.beforeObservation,
-      afterObservation: event.afterObservation,
-      verification: event.verification,
-      rejectedPlanReason: event.rejectedPlanReason,
-      fallbackUsed: event.fallbackUsed,
-      phaseIndex: event.phaseIndex,
-      phaseType: event.phaseType,
-      phaseGoal: event.phaseGoal,
-      phase: event.phase,
-      runState: event.runState,
-      result: event.result,
-    };
-  }
-  if (event.type === 'COMPUTER_USE_NEEDS_CONFIRMATION') {
-    return {
-      ...base,
-      stepIndex: event.stepIndex,
-      state: 'waiting_confirmation',
-      action: event.action,
-      result: { reason: event.reason },
-    };
-  }
-  if (event.type === 'COMPUTER_USE_FINISHED') {
-    return {
-      ...base,
-      state: 'done',
-      summary: event.summary,
-      runState: event.runState,
-      result: { steps: event.steps, runState: event.runState },
-    };
-  }
-  return {
-    ...base,
-      error: event.error,
-      observation: event.lastObservation,
-      intent: event.intent,
-      navigationPath: event.intent?.navigationPath,
-      plan: event.plan,
-      chosenElement: event.chosenElement,
-      beforeObservation: event.beforeObservation,
-      afterObservation: event.afterObservation,
-      verification: event.verification,
-      rejectedPlanReason: event.rejectedPlanReason,
-      fallbackUsed: event.fallbackUsed,
-      phaseIndex: event.phaseIndex,
-      phaseType: event.phaseType,
-      phaseGoal: event.phaseGoal,
-      phase: event.phase,
-      runState: event.runState,
-      resumeCheckpoint: event.resumeCheckpoint,
-      result: {
-      steps: event.steps,
-      verification: event.verification,
-      runState: event.runState,
-      resumeCheckpoint: event.resumeCheckpoint,
-    },
-  };
-}
-
-function compactTraceEntries(entries: ComputerUseTraceEntry[]): ComputerUseTraceEntry[] {
-  return entries.slice(-80);
-}
-
-function traceStateFromBackgroundTrace(trace: ComputerUseTrace): ComputerUseTaskTraceState {
-  const lastEntry = trace.entries[trace.entries.length - 1];
-  return {
-    runId: trace.runId,
-    goal: trace.goal,
-    status: trace.status,
-    currentStep: lastEntry ? getComputerUseStateLabel(lastEntry.state) : undefined,
-    summary: lastEntry?.summary,
-    error: lastEntry?.error,
-    entries: trace.entries,
-    lastObservation: [...trace.entries].reverse().find((entry) => entry.observation)?.observation,
-    resumeCheckpoint: [...trace.entries].reverse().find((entry) => entry.resumeCheckpoint)?.resumeCheckpoint,
-  };
-}
 const MAX_LLM_TEXT_PER_FILE = 24000;
 
 function makeFileId(): string {
@@ -762,8 +592,6 @@ const OcrResultCard: React.FC<{
 
 const Chat: React.FC = () => {
   const [inputValue, setInputValue] = useState('');
-  const [connectionStatus, setConnectionStatus] = useState<'connected' | 'disconnected' | 'connecting' | 'error'>('disconnected');
-  const [isTyping, setIsTyping] = useState(false);
   const [attachedFiles, setAttachedFiles] = useState<FileAttachment[]>([]);
   const [toolsVisible, setToolsVisible] = useState(false);
   const [toolsInitialTool, setToolsInitialTool] = useState<string | null>(null);
@@ -775,8 +603,6 @@ const Chat: React.FC = () => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const activeAiRequestIdRef = useRef<string | null>(null);
-  const stoppedAiRequestIdsRef = useRef<Set<string>>(new Set());
   const shouldAutoScrollRef = useRef(true);
   const computerUseRunIdRef = useRef<string | null>(null);
   const browserUseTaskIdRef = useRef<string | null>(null);
@@ -819,6 +645,25 @@ const Chat: React.FC = () => {
     message.warning('登录已失效，请重新登录');
     await chrome.storage.local.set({ user_auth: false });
   }, []);
+
+  const {
+    connectionStatus,
+    isTyping,
+    setIsTyping,
+    sendPrompt: sendPromptToAI,
+    sendUserMessage,
+    handleRuntimeMessage: handleAiRuntimeMessage,
+    stop: stopAiRequest,
+  } = useAiRequest({
+    messages,
+    setMessages,
+    persistChatMessage,
+    currentSessionIdRef,
+    shouldAutoScrollRef,
+    addAssistantMessage,
+    handleUnauthenticated,
+    normalizeError: normalizeUserFacingError,
+  });
 
   const executeBusinessTool = useCallback(async (toolName: string, args: Record<string, any> = {}) => {
     const response = await chrome.runtime.sendMessage({
@@ -965,9 +810,9 @@ const Chat: React.FC = () => {
     const runId = String(event.runId || '');
     if (!runId) return;
     const goal = String(event.goal || inputValue || '自动操作任务');
-    const entry = makeComputerUseEntryFromEvent(event);
+    const entry = makeBrowserUseEntryFromEvent(event);
     upsertComputerUseTaskMessage(runId, goal, (trace) => {
-      const entries = compactTraceEntries([...trace.entries, entry]);
+      const entries = compactBrowserUseEntries([...trace.entries, entry]);
       const lastObservation = event.observation || trace.lastObservation;
       const nextTrace: ComputerUseTaskTraceState = {
         ...trace,
@@ -977,7 +822,7 @@ const Chat: React.FC = () => {
       };
       if (event.type === 'COMPUTER_USE_PROGRESS') {
         nextTrace.status = event.state === 'waiting_confirmation' ? 'waiting_confirmation' : 'running';
-        nextTrace.currentStep = getComputerUseStateLabel(event.state);
+        nextTrace.currentStep = getBrowserUseStateLabel(event.state);
         nextTrace.summary = (event.result as any)?.summary || trace.summary;
       } else if (event.type === 'COMPUTER_USE_NEEDS_CONFIRMATION') {
         nextTrace.status = 'waiting_confirmation';
@@ -1007,8 +852,8 @@ const Chat: React.FC = () => {
       if (!trace) return;
       upsertComputerUseTaskMessage(trace.runId, trace.goal, (current) => ({
         ...current,
-        ...traceStateFromBackgroundTrace(trace),
-        summary: current.summary || traceStateFromBackgroundTrace(trace).summary,
+        ...browserUseTraceStateFromBackground(trace),
+        summary: current.summary || browserUseTraceStateFromBackground(trace).summary,
         steps: current.steps,
       }));
     } catch {
@@ -1041,78 +886,10 @@ const Chat: React.FC = () => {
     });
   }, []);
 
-  const sendPromptToAI = useCallback((content: string, llmContent = content) => {
-    const requestId = createAiRequestId();
+  const sendDirectPrompt = useCallback((content: string) => {
     const modelProfileId = pendingModelProfileIdRef.current;
     pendingModelProfileIdRef.current = undefined;
-    activeAiRequestIdRef.current = requestId;
-    stoppedAiRequestIdsRef.current.delete(requestId);
-    shouldAutoScrollRef.current = true;
-
-    const userMessage: ChatMessage = {
-      id: `user_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-      content,
-      llmContent,
-      type: 'user',
-      timestamp: Date.now(),
-      requestId,
-    };
-    persistChatMessage(userMessage);
-
-    setMessages(prev => {
-      const updatedMessages = [...prev, userMessage];
-      const messageHistory = updatedMessages
-        .filter(msg => (msg.type === 'user' || msg.type === 'assistant') && msg.kind !== 'browser_use_task')
-        .map(msg => ({
-          role: msg.type === 'user' ? 'user' : 'assistant',
-          content: msg.llmContent || msg.content,
-          nativeFiles: msg.nativeFiles,
-        }));
-
-      Promise.all([
-        buildMemoryContext(llmContent || content, currentSessionIdRef.current || undefined),
-        getActiveBrowserTabId(),
-      ])
-        .then(([memoryContext, contextTabId]) => chrome.runtime.sendMessage({
-          type: 'SEND_MESSAGE',
-          clientBuildId: RUNTIME_BUILD_ID,
-          requestId,
-          messageHistory,
-          memoryContext: memoryContext.contextText,
-          modelProfileId,
-          contextTabId,
-        }, async (response) => {
-        const runtimeError = chrome.runtime.lastError?.message;
-        if (activeAiRequestIdRef.current !== requestId) return;
-        if (response?.code === 'UNAUTHENTICATED') {
-          setIsTyping(false);
-          await handleUnauthenticated();
-          return;
-        }
-        if (response?.cancelled || response?.error === '请求已取消' || response?.error === '已停止生成') {
-          setIsTyping(false);
-          return;
-        }
-        if (runtimeError || !response?.success) {
-          setIsTyping(false);
-          addAssistantMessage(`AI 请求失败：${normalizeUserFacingError(response?.error || runtimeError)}`);
-          return;
-        }
-        setIsTyping(false);
-        }))
-        .catch((error) => {
-          setIsTyping(false);
-          addAssistantMessage(`AI 请求失败：${normalizeUserFacingError(error)}`);
-        });
-
-      return updatedMessages;
-    });
-
-    setIsTyping(true);
-  }, [addAssistantMessage, handleUnauthenticated, persistChatMessage]);
-
-  const sendDirectPrompt = useCallback((content: string) => {
-    sendPromptToAI(content);
+    sendPromptToAI(content, content, modelProfileId);
   }, [sendPromptToAI]);
 
   const handleStopGeneration = useCallback(() => {
@@ -1131,23 +908,10 @@ const Chat: React.FC = () => {
       return;
     }
 
-    const requestId = activeAiRequestIdRef.current;
-    if (requestId) {
-      stoppedAiRequestIdsRef.current.add(requestId);
-      activeAiRequestIdRef.current = null;
-    }
-    setIsTyping(false);
-
-    chrome.runtime.sendMessage({ type: 'STOP_AI_MESSAGE' }, (response) => {
-      const runtimeError = chrome.runtime.lastError?.message;
-      setIsTyping(false);
-      if (runtimeError || response?.success === false) {
-        message.error(response?.error || runtimeError || '停止生成失败');
-        return;
-      }
-      addAssistantMessage('已停止生成。');
-    });
-  }, [addAssistantMessage]);
+    stopAiRequest()
+      .then(() => addAssistantMessage('已停止生成。'))
+      .catch((error) => message.error(error?.message || '停止生成失败'));
+  }, [addAssistantMessage, stopAiRequest]);
 
   const startComputerUse = useCallback((goal?: string, resumeCheckpoint?: ComputerUseResumeCheckpoint) => {
     const finalGoal = (goal || inputValue.trim()).trim();
@@ -1235,165 +999,24 @@ const Chat: React.FC = () => {
     shouldAutoScrollRef.current = isNearMessageBottom();
   }, [isNearMessageBottom]);
 
-  
-  useEffect(() => {
-    // 通知 background sidePanel已经打开
-    chrome.runtime.sendMessage({ type: 'SIDE_PANEL_OPENED' }).catch(() => {});
-
-    const messageListener = (message: any) => {
-      if (message.type === 'SSE_MESSAGE') {
-        const newMsg = message.message as ChatMessage;
-        if (
-          newMsg?.requestId &&
-          (stoppedAiRequestIdsRef.current.has(newMsg.requestId) || activeAiRequestIdRef.current !== newMsg.requestId)
-        ) {
-          return;
-        }
-        if (!hasRenderableChatMessage(newMsg)) return;
-        setIsTyping(newMsg.delivery !== 'final');
-        if (shouldPersistIncomingChatMessage(newMsg)) persistChatMessage(newMsg);
-        setMessages(prev => mergeIncomingChatMessage(prev, newMsg));
-      } else if (message.type === 'SSE_STATUS_CHANGE') {
-        setConnectionStatus(message.status);
-        if (shouldStopTypingForGatewayStatus(message.status)) {
-          setIsTyping(false);
-        }
-      } else if (message.type === 'COMPUTER_USE_PROGRESS') {
-        if (!message.automationTaskId || message.automationTaskId !== browserUseTaskIdRef.current) return;
-        if (!computerUseRunIdRef.current) {
-          computerUseRunIdRef.current = message.runId;
-          setComputerUseRunId(message.runId);
-        }
-        if (message.runId !== computerUseRunIdRef.current) return;
-        mergeComputerUseEvent(message);
-      } else if (message.type === 'AUTOMATION_TASK_PROGRESS') {
-        const assetId = ocrTaskAssetsRef.current.get(message.taskId);
-        if (assetId && message.kind === 'ocr') {
-          const progress = Math.round(Number(message.data?.progress || 0) * 100);
-          setAttachedFiles((files) => files.map((file) => (
-            file.fileId === assetId ? { ...file, ocrStatus: 'running', ocrProgress: progress } : file
-          )));
-        }
-      } else if (message.type === 'COMPUTER_USE_NEEDS_CONFIRMATION') {
-        if (!message.automationTaskId || message.automationTaskId !== browserUseTaskIdRef.current) return;
-        if (computerUseRunIdRef.current && message.runId !== computerUseRunIdRef.current) return;
-        mergeComputerUseEvent(message);
-        Modal.confirm({
-          title: '确认高风险自动操作',
-          content: message.reason || message.action?.reason || '该动作可能修改页面数据，是否允许继续？',
-          okText: '允许',
-          cancelText: '拒绝',
-          onOk: () => {
-            chrome.runtime.sendMessage({
-              type: 'CONFIRM_COMPUTER_USE_ACTION',
-              runId: message.runId,
-              stepIndex: message.stepIndex,
-              allowed: true,
-            });
-          },
-          onCancel: () => {
-            chrome.runtime.sendMessage({
-              type: 'CONFIRM_COMPUTER_USE_ACTION',
-              runId: message.runId,
-              stepIndex: message.stepIndex,
-              allowed: false,
-            });
-          },
-        });
-      } else if (message.type === 'AUTOMATION_TASK_FINISHED' || message.type === 'AUTOMATION_TASK_ERROR') {
-        if (!chatTaskIdsRef.current.has(message.taskId)) return;
-        chatTaskIdsRef.current.delete(message.taskId);
-        const ocrAssetId = ocrTaskAssetsRef.current.get(message.taskId);
-        ocrTaskAssetsRef.current.delete(message.taskId);
-        getAutomationRun(message.taskId).then((run) => {
-          if (!run) return;
-          const output = (run.metadata as any)?.taskOutput;
-          if (run.kind === 'browser_use') {
-            if (browserUseTaskIdRef.current === run.id) {
-              browserUseTaskIdRef.current = null;
-              setBrowserUseTaskId(null);
-            }
-            setIsTyping(false);
-            setComputerUseRunId(null);
-            computerUseRunIdRef.current = null;
-            const internalRunId = String(run.metadata?.computerUseRunId || '');
-            if (internalRunId) fetchComputerUseTrace(internalRunId);
-            return;
-          }
-          if (message.type === 'AUTOMATION_TASK_ERROR') {
-            if (ocrAssetId) setAttachedFiles((files) => files.map((file) => (
-              file.fileId === ocrAssetId ? { ...file, ocrStatus: 'error', ocrProgress: undefined, parseError: run.error } : file
-            )));
-            addAssistantMessage(`${run.title}失败：${run.error || message.result?.error || '未知错误'}`);
-            return;
-          }
-          if (run.kind === 'document_qa') {
-            const qaMessage: ChatMessage = {
-              id: `document_qa_${Date.now()}`,
-              content: String(output?.answer || run.resultSummary || '任务已完成'),
-              type: 'assistant',
-              kind: 'document_qa_result',
-              documentQaResult: { answer: String(output?.answer || run.resultSummary || '任务已完成'), sources: output?.sources || [] },
-              timestamp: Date.now(),
-            };
-            setMessages((items) => [...items, qaMessage]);
-            persistChatMessage(qaMessage);
-          } else if (run.kind === 'page_diagnosis') {
-            addAssistantMessage(String(output?.answer || run.resultSummary || '任务已完成'));
-          } else if (run.kind === 'ocr') {
-            const structuredOcr = output?.structuredOcr || output?.result?.structuredOcr;
-            const result = output?.result?.result || output?.result;
-            addOcrResultMessage({
-              fileName: documentsTitleFromTask(run.title),
-              documentId: String(run.metadata?.assetId || ''),
-              status: run.status === 'success' ? 'success' : result?.text ? 'low_confidence' : 'empty',
-              pageCount: structuredOcr?.pageCount || result?.pages?.length || 0,
-              fieldCount: structuredOcr?.fields?.length || 0,
-              tableCount: structuredOcr?.tables?.length || 0,
-              sectionCount: structuredOcr?.sections?.length || 0,
-              previewFields: (structuredOcr?.fields || []).slice(0, 3).map((field: any) => ({ key: field.key, value: field.value })),
-              warnings: structuredOcr?.warnings || result?.warnings || [],
-              text: result?.text || '',
-              structuredOcr,
-            });
-            if (ocrAssetId) setAttachedFiles((files) => files.map((file) => (
-              file.fileId === ocrAssetId
-                ? { ...file, ocrStatus: run.status === 'success' ? 'done' : 'partial', ocrProgress: 100, parseError: undefined }
-                : file
-            )));
-          } else {
-            addAssistantMessage(run.resultSummary || '任务已完成');
-          }
-        }).catch(() => {});
-      } else if (message.type === 'SELECTED_TEXT_RECEIVED') {
-        console.log('SELECTED_TEXT_RECEIVED', message.text);
-        if (message.text) {
-          setInputValue(message.text);
-          
-          setTimeout(() => {
-            const textarea = document.querySelector('textarea') as HTMLTextAreaElement;
-            if (textarea) {
-              textarea.focus();
-              textarea.setSelectionRange(textarea.value.length, textarea.value.length);
-            }
-          }, 100);
-        }
-      }
-    };
-
-    chrome.runtime.onMessage.addListener(messageListener);
-
-    // 获取当前连接状态
-    chrome.runtime.sendMessage({ type: 'GET_STATUS', clientBuildId: RUNTIME_BUILD_ID }, (response) => {
-      if (response?.status) {
-        setConnectionStatus(response.status);
-      }
-    });
-
-    return () => {
-      chrome.runtime.onMessage.removeListener(messageListener);
-    };
-  }, [addAssistantMessage, fetchComputerUseTrace, handleUnauthenticated, mergeComputerUseEvent, persistChatMessage]);
+  useChatTaskEvents({
+    handleAiRuntimeMessage,
+    browserUseTaskIdRef,
+    computerUseRunIdRef,
+    chatTaskIdsRef,
+    ocrTaskAssetsRef,
+    setBrowserUseTaskId,
+    setComputerUseRunId,
+    setIsTyping,
+    setAttachedFiles,
+    setMessages,
+    setInputValue,
+    mergeBrowserUseEvent: mergeComputerUseEvent,
+    fetchBrowserUseTrace: fetchComputerUseTrace,
+    persistChatMessage,
+    addAssistantMessage,
+    addOcrResultMessage,
+  });
 
   useEffect(() => {
     scrollToBottom('auto');
@@ -1848,11 +1471,6 @@ const Chat: React.FC = () => {
         type: file.type,
         size: file.size,
       }));
-    const requestId = createAiRequestId();
-    activeAiRequestIdRef.current = requestId;
-    stoppedAiRequestIdsRef.current.delete(requestId);
-    shouldAutoScrollRef.current = true;
-
     const userMessage: ChatMessage = {
       id: Date.now().toString(),
       content: displayContent,
@@ -1862,70 +1480,12 @@ const Chat: React.FC = () => {
       attachments: attachmentItems,
       type: 'user',
       timestamp: Date.now(),
-      requestId,
     };
-    persistChatMessage(userMessage);
-
-    setMessages(prev => {
-      const updatedMessages = [...prev, userMessage];
-      
-      const messageHistory = updatedMessages
-        .filter(msg => (msg.type === 'user' || msg.type === 'assistant') && msg.kind !== 'browser_use_task')
-        .map(msg => ({
-          role: msg.type === 'user' ? 'user' : 'assistant',
-          content: msg.llmContent || msg.content,
-          nativeFiles: msg.nativeFiles,
-        }));
-      
-      setInputValue('');
-      setAttachedFiles([]);
-      
-      const modelProfileId = pendingModelProfileIdRef.current;
-      pendingModelProfileIdRef.current = undefined;
-      buildMemoryContext(llmContent || displayContent, currentSessionIdRef.current || undefined)
-        .then((memoryContext) => chrome.runtime.sendMessage({
-          type: 'SEND_MESSAGE',
-          clientBuildId: RUNTIME_BUILD_ID,
-          requestId,
-          messageHistory: messageHistory,
-          memoryContext: memoryContext.contextText,
-          modelProfileId,
-        }, async (response) => {
-        const runtimeError = chrome.runtime.lastError?.message;
-        if (activeAiRequestIdRef.current !== requestId) return;
-        if (response?.code === 'UNAUTHENTICATED') {
-          setIsTyping(false);
-          await handleUnauthenticated();
-          return;
-        }
-        if (response?.cancelled || response?.error === '请求已取消' || response?.error === '已停止生成') {
-          setIsTyping(false);
-          return;
-        }
-        if (runtimeError || !response?.success) {
-          setIsTyping(false);
-          setMessages(current => [
-            ...current,
-            {
-              id: `error_${Date.now()}`,
-              content: `AI 请求失败：${normalizeUserFacingError(response?.error || runtimeError)}`,
-              type: 'assistant',
-              timestamp: Date.now(),
-            },
-          ]);
-          return;
-        }
-        setIsTyping(false);
-        }))
-        .catch((error) => {
-          setIsTyping(false);
-          addAssistantMessage(`AI 请求失败：${normalizeUserFacingError(error)}`);
-        });
-
-      return updatedMessages;
-    });
-
-    setIsTyping(true);
+    const modelProfileId = pendingModelProfileIdRef.current;
+    pendingModelProfileIdRef.current = undefined;
+    setInputValue('');
+    setAttachedFiles([]);
+    sendUserMessage(userMessage, modelProfileId);
   };
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
@@ -2081,162 +1641,6 @@ const Chat: React.FC = () => {
     );
   };
 
-  const renderComputerUseTaskMessage = (trace?: ComputerUseTaskTraceState) => {
-    if (!trace) return null;
-    const statusMeta = getComputerUseStatusMeta(trace.status);
-    const tableSummary = getLatestExtractedTablesFromSteps(trace.steps || []);
-    const downloadResult = getLatestDownloadResultFromSteps(trace.steps || []);
-    const lastEntry = trace.entries[trace.entries.length - 1];
-    const lastObservation = trace.lastObservation || lastEntry?.observation;
-    const lastActionEntry = [...trace.entries].reverse().find((entry) => entry.action);
-    const lastVerificationEntry = [...trace.entries].reverse().find((entry) => entry.verification);
-    const navigationPath = [...trace.entries].reverse().find((entry) => entry.navigationPath?.length)?.navigationPath;
-    const lastChosenElement = lastActionEntry?.chosenElement;
-    const isActiveTask = Boolean(browserUseTaskId)
-      && computerUseRunId === trace.runId
-      && ['running', 'waiting_confirmation'].includes(trace.status);
-    const emptyFinished = trace.status === 'finished' && (!trace.entries.length || !trace.steps?.length) && !tableSummary;
-
-    return (
-      <div className={styles.computerUseTask}>
-        <div className={styles.computerUseHeader}>
-          <Space size={6} wrap>
-            <ToolOutlined />
-            <Text strong>Browser Use 任务</Text>
-            <Tag color={statusMeta.color}>{statusMeta.label}</Tag>
-          </Space>
-          <Space size={4} wrap>
-            {isActiveTask && (
-              <Button size="small" danger icon={<StopOutlined />} onClick={handleStopGeneration}>
-                停止
-              </Button>
-            )}
-            <Button size="small" icon={<CopyOutlined />} onClick={() => copyComputerUseTrace(trace)}>
-              复制日志
-            </Button>
-            <Button size="small" icon={<ReloadOutlined />} onClick={() => retryComputerUse(trace)}>
-              重试
-            </Button>
-          </Space>
-        </div>
-
-        <div className={styles.computerUseGoal}>{trace.goal}</div>
-
-        <div className={styles.computerUseSummary}>
-          <Space size={[6, 6]} wrap>
-            <Tag>{trace.currentStep || '准备中'}</Tag>
-            {trace.summary && <Tag color="blue">{trace.summary}</Tag>}
-            {typeof (lastEntry?.result as any)?.navigationCount === 'number' && (
-              <Tag>导航 {(lastEntry?.result as any).navigationCount}</Tag>
-            )}
-            {typeof (lastEntry?.result as any)?.tableCount === 'number' && (
-              <Tag>表格 {(lastEntry?.result as any).tableCount}</Tag>
-            )}
-            {navigationPath?.length && <Tag color="purple">路径 {navigationPath.join(' > ')}</Tag>}
-          </Space>
-          {trace.error && <div className={styles.computerUseError}>{trace.error}</div>}
-          {emptyFinished && (
-            <div className={styles.computerUseError}>未拿到实际执行步骤或可交付结果，请补充目标页面位置后重试。</div>
-          )}
-        </div>
-
-        {lastObservation && (
-          <div className={styles.computerUseMeta}>
-            {lastObservation.title && <div>页面：{lastObservation.title}</div>}
-            {lastObservation.url && <div>URL：{lastObservation.url}</div>}
-            {lastActionEntry?.action && (
-              <div>最后动作：{getComputerUseActionLabel(lastActionEntry.action)}</div>
-            )}
-            {lastChosenElement && (
-              <div>目标元素：{lastChosenElement.text || lastChosenElement.selector || lastChosenElement.elementId}</div>
-            )}
-            {lastVerificationEntry?.verification && (
-              <div>
-                校验：{lastVerificationEntry.verification.success ? '通过' : '失败'}
-                {lastVerificationEntry.verification.reason ? `，${lastVerificationEntry.verification.reason}` : ''}
-                {lastVerificationEntry.verification.warning ? `，${lastVerificationEntry.verification.warning}` : ''}
-              </div>
-            )}
-          </div>
-        )}
-
-        {tableSummary && (
-          <div className={styles.computerUseTablePreview}>
-            <Text strong>已提取列表数据：{tableSummary.tableCount} 个表格，共 {tableSummary.rowCount} 行</Text>
-            {tableSummary.tables.slice(0, 2).map((table, tableIndex) => (
-              <div key={`${table.title || 'table'}_${tableIndex}`} className={styles.computerUseTableBlock}>
-                <div className={styles.computerUseTableTitle}>
-                  {table.title || `表格 ${tableIndex + 1}`}（{table.rowCount || table.rows.length} 行，{table.columnCount || table.headers.length} 列）
-                </div>
-                {!!table.headers.length && (
-                  <div className={styles.computerUseTableFields}>字段：{table.headers.slice(0, 8).join('、')}</div>
-                )}
-                {table.rows.slice(0, 3).map((row, rowIndex) => (
-                  <div key={rowIndex} className={styles.computerUseTableRow}>
-                    {row.slice(0, 6).join(' | ')}
-                  </div>
-                ))}
-              </div>
-            ))}
-          </div>
-        )}
-
-        {downloadResult && (
-          <div className={styles.computerUseTablePreview}>
-            <Text strong>
-              {downloadResult.savedToDocumentCenter
-                ? '已保存导出文件'
-                : '已触发下载'}
-            </Text>
-            <div className={styles.computerUseTableBlock}>
-              <div className={styles.computerUseTableTitle}>
-                文件：{downloadResult.filename || downloadResult.assetTitle || '下载文件'}
-              </div>
-              <div className={styles.computerUseTableFields}>
-                {downloadResult.size ? `大小：${downloadResult.size} bytes` : '大小：未知'}
-                {downloadResult.mimeType ? `，类型：${downloadResult.mimeType}` : ''}
-              </div>
-              {downloadResult.assetId && (
-                <div className={styles.computerUseTableRow}>资料 ID：{downloadResult.assetId}</div>
-              )}
-              {downloadResult.localParseStatus && (
-                <div className={styles.computerUseTableRow}>解析状态：{downloadResult.localParseStatus}</div>
-              )}
-              {downloadResult.needsManualImport && (
-                <div className={styles.computerUseError}>已下载，但浏览器限制导致无法自动读取文件内容，请从下载目录手动添加。</div>
-              )}
-            </div>
-          </div>
-        )}
-
-        <Collapse ghost className={styles.computerUseCollapse}>
-          <Panel header={`执行日志（${trace.entries.length}）`} key="trace">
-            {trace.entries.length ? (
-              <Timeline className={styles.computerUseTimeline}>
-                {trace.entries.map((entry, entryIndex) => (
-                  <Timeline.Item
-                    key={`${entry.timestamp}_${entryIndex}`}
-                    color={entry.error ? 'red' : entry.state === 'done' ? 'green' : entry.state === 'waiting_confirmation' ? 'orange' : 'blue'}
-                  >
-                    <div className={styles.traceEntryTitle}>{getComputerUseStateLabel(entry.state)}</div>
-                    <div className={styles.traceEntryText}>{summarizeComputerUseEntry(entry)}</div>
-                    {(entry.observation?.title || entry.observation?.url) && (
-                      <div className={styles.traceEntryMeta}>
-                        {entry.observation?.title || entry.observation?.url}
-                      </div>
-                    )}
-                  </Timeline.Item>
-                ))}
-              </Timeline>
-            ) : (
-              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无执行日志" />
-            )}
-          </Panel>
-        </Collapse>
-      </div>
-    );
-  };
-
   const hasUploadingFiles = attachedFiles.some(file => file.nativeUploadStatus === 'uploading');
   const visibleMessages = messages.filter(hasRenderableChatMessage);
   const hasVisibleStreamingMessage = visibleMessages.some((chatMessage) => (
@@ -2329,7 +1733,15 @@ const Chat: React.FC = () => {
                         className={`${styles.avatar} ${styles.avatarBot}`}
                       />
                       <div className={`${styles.messageBubble} ${styles.messageBubbleBot} ${styles.computerUseBubble}`}>
-                        {renderComputerUseTaskMessage(msg.computerUseTrace)}
+                        <BrowserUseTaskCard
+                          trace={msg.computerUseTrace}
+                          active={Boolean(browserUseTaskId)
+                            && computerUseRunId === msg.computerUseTrace?.runId
+                            && ['running', 'waiting_confirmation'].includes(msg.computerUseTrace?.status || '')}
+                          onStop={handleStopGeneration}
+                          onCopy={copyComputerUseTrace}
+                          onRetry={retryComputerUse}
+                        />
                         <div className={styles.messageTime}>
                           {moment(msg.timestamp).format('HH:mm')}
                         </div>
