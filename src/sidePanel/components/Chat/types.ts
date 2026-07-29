@@ -1,13 +1,15 @@
-import type { ParsedUploadedFile } from '../../../shared/fileParser';
-import type { NativeLLMFile } from '../../utils/llm-files';
-import type { NativeUploadStatus, OcrStatus, StructuredOcrResult } from '../../../shared/documentTypes';
-import type { ModelMessage, NativeFileReference } from '../../../shared/modelRuntimeTypes';
+import type { ParsedUploadedFile } from '../../../shared/documents/fileParser';
+import type { NativeLLMFile } from '../../utils/documents/llm-files';
+import type { NativeUploadStatus, OcrStatus, StructuredOcrResult } from '../../../shared/documents/documentTypes';
+import type { ModelMessage, NativeFileReference } from '../../../shared/model/modelRuntimeTypes';
 import type {
   BrowserObservation,
   ComputerUseAction,
   ComputerUseResumeCheckpoint,
   ComputerUseTraceEntry,
-} from '../../../shared/automationTypes';
+} from '../../../shared/automation/automationTypes';
+import type { PageSelectionContext } from '../../../shared/context/pageContextActions';
+import type { ResearchScopeDecision } from './research/researchScopeDecider';
 
 export interface FileAttachment {
   uid: string;
@@ -79,10 +81,28 @@ export interface ComputerUseTaskTraceState {
 export type ChatMessage = ModelMessage & {
   llmContent?: string;
   nativeFiles?: NativeFileReference[];
-  kind?: 'text' | 'ocr_result' | 'file_attachment' | 'browser_use_task' | 'tool_result' | 'diagnosis_result' | 'document_qa_result';
+  kind?: 'text'
+    | 'ocr_result'
+    | 'file_attachment'
+    | 'browser_use_task'
+    | 'tool_result'
+    | 'diagnosis_result'
+    | 'document_qa_result'
+    | 'page_context_answer'
+    | 'research_upgrade'
+    | 'topic_source_added';
   computerUseTrace?: ComputerUseTaskTraceState;
   attachments?: ChatAttachmentItem[];
   ocrResult?: OcrResultMessageData;
   documentQaResult?: { answer: string; sources: Array<{ documentId: string; documentTitle?: string; fileName?: string; pageNumber?: number; sectionTitle?: string; chunkId?: string; excerpt?: string }> };
+  pageContext?: PageSelectionContext;
+  researchUpgrade?: ResearchScopeDecision & {
+    title?: string;
+    coreQuestion: string;
+  };
+  topicSource?: {
+    documentId: string;
+    title: string;
+    url: string;
+  };
 };
-

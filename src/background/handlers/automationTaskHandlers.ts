@@ -1,5 +1,5 @@
-import type { AutomationRun } from '../../shared/automationTypes';
-import { toAppErrorPayload } from '../../shared/appErrors';
+import type { AutomationRun } from '../../shared/automation/automationTypes';
+import { toAppErrorPayload } from '../../shared/errors/appErrors';
 
 export type AutomationTaskHandlerDeps = {
   startTask: (taskId: string) => Promise<unknown>;

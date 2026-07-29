@@ -1,5 +1,5 @@
-import type { ModelMessage as Message } from '../shared/modelRuntimeTypes';
-import { ModelGateway, ModelGatewayError } from './modelGateway';
+import type { ModelMessage as Message } from '../shared/model/modelRuntimeTypes';
+import { ModelGateway, ModelGatewayError } from './model/modelGateway';
 import {
   deleteModelProfile,
   listModelProfiles,
@@ -7,24 +7,24 @@ import {
   toPublicModelProfile,
   upsertModelProfile,
   type ModelProfile,
-} from '../shared/modelProfiles';
-import { AutomationRunner } from './automation';
-import { ComputerUseRunner } from './computerUseRunner';
-import { BrowserUseSession } from './browserUseSession';
-import { purgeRemovedLegacyData } from './removedLegacyData';
-import { createComputerUseResumeCheckpoint } from './computerUseCheckpoint';
-import { understandComputerUseIntent as understandComputerUseIntentCore } from './computerUseIntent';
-import { createComputerUsePlan as createComputerUsePlanCore } from './computerUsePlanner';
-import { parseComputerUseTask } from './computerUseTaskParser';
-import { performDownloadFileAction } from './downloadManager';
-import { getComputerUseTrace, listComputerUseTraces, recordComputerUseTraceEvent } from './computerUseTrace';
+} from '../shared/model/modelProfiles';
+import { AutomationRunner } from './tasks/automation';
+import { ComputerUseRunner } from './browserUse/runtime/computerUseRunner';
+import { BrowserUseSession } from './browserUse/runtime/browserUseSession';
+import { purgeRemovedLegacyData } from './maintenance/removedLegacyData';
+import { createComputerUseResumeCheckpoint } from './browserUse/runtime/computerUseCheckpoint';
+import { understandComputerUseIntent as understandComputerUseIntentCore } from './browserUse/planning/computerUseIntent';
+import { createComputerUsePlan as createComputerUsePlanCore } from './browserUse/planning/computerUsePlanner';
+import { parseComputerUseTask } from './browserUse/planning/computerUseTaskParser';
+import { performDownloadFileAction } from './browserUse/actions/downloadManager';
+import { getComputerUseTrace, listComputerUseTraces, recordComputerUseTraceEvent } from './browserUse/runtime/computerUseTrace';
 import {
   clearPageMonitorAlarm,
   handlePageMonitorAlarm,
   runPageMonitorNow,
   syncPageMonitorAlarms,
   upsertPageMonitorAlarm,
-} from './pageMonitorRunner';
+} from './tasks/pageMonitorRunner';
 import type {
   AutomationRun,
   AutomationRunTraceSummary,
@@ -40,22 +40,22 @@ import type {
   ComputerUseRunState,
   ComputerUseTaskIntent,
   ComputerUseResumeCheckpoint,
-} from '../shared/automationTypes';
-import { getAutomationRun, listAutomationRuns, patchAutomationRun } from '../shared/automationRunStore';
+} from '../shared/automation/automationTypes';
+import { getAutomationRun, listAutomationRuns, patchAutomationRun } from '../shared/automation/automationRunStore';
 import { createBackgroundMessageRouter } from './handlers/backgroundMessageRouter';
-import { TaskExecutorRegistry, type TaskResult } from './taskExecutorRegistry';
-import { TaskRuntimeService } from './taskRuntimeService';
-import { getAutomationWorkflow } from '../shared/automationWorkflowStore';
-import { runOcrTask, stopOcrTask } from './ocrJobService';
-import { BUSINESS_TOOL_NAMES } from '../shared/businessTools';
-import type { PageAuthSnapshot } from '../shared/authBridge';
-import type { DocumentAsset, DocumentContent, PageStructuredData, RequirementTaskResult } from '../shared/documentTypes';
+import { TaskExecutorRegistry, type TaskResult } from './tasks/taskExecutorRegistry';
+import { TaskRuntimeService } from './tasks/taskRuntimeService';
+import { getAutomationWorkflow } from '../shared/automation/automationWorkflowStore';
+import { runOcrTask, stopOcrTask } from './ocr/ocrJobService';
+import { BUSINESS_TOOL_NAMES } from '../shared/tools/businessTools';
+import type { PageAuthSnapshot } from '../shared/auth/authBridge';
+import type { DocumentAsset, DocumentContent, PageStructuredData, RequirementTaskResult } from '../shared/documents/documentTypes';
 import {
   extractJsonObject,
   isAuthenticatedValue,
   normalizeRequirementTaskResult,
   UNAUTHENTICATED_RESPONSE,
-} from './businessHelpers';
+} from './business/businessHelpers';
 import {
   generateRequirementTaskResult,
   getDocumentAsset,
@@ -68,12 +68,12 @@ import {
   searchDocuments,
   upsertDocumentAsset,
   upsertDocumentResult,
-} from '../shared/documentRepository';
-import { AppError, toAppErrorPayload } from '../shared/appErrors';
-import { resolveBrowserContextTabId } from './browserTabContext';
-import { RUNTIME_BUILD_ID, isRuntimeVersionCurrent, runtimeMismatchMessage, type RuntimeVersionInfo } from '../shared/runtimeVersion';
-import { collectPageContextHub } from '../shared/pageContextHub';
-import { collectDocumentContextHub } from '../shared/documentContextHub';
+} from '../shared/documents/documentRepository';
+import { AppError, toAppErrorPayload } from '../shared/errors/appErrors';
+import { resolveBrowserContextTabId } from './browserUse/observation/browserTabContext';
+import { RUNTIME_BUILD_ID, isRuntimeVersionCurrent, runtimeMismatchMessage, type RuntimeVersionInfo } from '../shared/runtime/runtimeVersion';
+import { collectPageContextHub } from '../shared/context/pageContextHub';
+import { collectDocumentContextHub } from '../shared/context/documentContextHub';
 
 const modelGateway = new ModelGateway();
 let modelGatewayEventsInitialized = false;

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { AutomationRun } from '../../shared/automationTypes';
+import type { AutomationRun } from '../../shared/automation/automationTypes';
 import { handleAutomationTaskMessage, type AutomationTaskHandlerDeps } from './automationTaskHandlers';
 
 function deps(): AutomationTaskHandlerDeps {

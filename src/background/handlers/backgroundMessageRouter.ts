@@ -1,10 +1,10 @@
-import type { ModelGateway } from '../modelGateway';
+import type { ModelGateway } from '../model/modelGateway';
 import { handleAutomationTaskMessage } from './automationTaskHandlers';
 import { handleAuthBridgeMessage } from './authBridgeHandlers';
 import { handleModelChatMessage } from './modelChatHandlers';
 import { handleModelProfileMessage } from './modelProfileHandlers';
 import { handlePageToolMessage } from './pageToolHandlers';
-import { handleSelectedTextMessage } from './selectedTextHandler';
+import { handlePageContextActionMessage } from './pageContextActionHandler';
 
 const VERSIONED_MESSAGE_TYPES = new Set([
   'SEND_MESSAGE',
@@ -52,7 +52,7 @@ export function createBackgroundMessageRouter(deps: {
       isRuntimeVersionCurrent: deps.isRuntimeVersionCurrent,
     })) return true;
     if (handlePageToolMessage(message, sender, sendResponse, deps.pageTools)) return true;
-    if (handleSelectedTextMessage(message, sender, sendResponse)) return true;
+    if (handlePageContextActionMessage(message, sender, sendResponse)) return true;
     if (message.type === 'CONFIRM_COMPUTER_USE_ACTION') {
       return deps.confirmBrowserUseAction(message, sendResponse);
     }

@@ -1,4 +1,4 @@
-import type { ModelGateway } from '../modelGateway';
+import type { ModelGateway } from '../model/modelGateway';
 import {
   deleteModelProfile,
   listModelProfiles,
@@ -6,8 +6,8 @@ import {
   toPublicModelProfile,
   upsertModelProfile,
   type ModelProfile,
-} from '../../shared/modelProfiles';
-import { toAppErrorPayload } from '../../shared/appErrors';
+} from '../../shared/model/modelProfiles';
+import { toAppErrorPayload } from '../../shared/errors/appErrors';
 
 type SendResponse = (response: unknown) => void;
 

@@ -21,7 +21,7 @@ import {
   type ModelProfile,
   type ModelProvider,
   type PublicModelProfile,
-} from '../../shared/modelProfiles';
+} from '../../shared/model/modelProfiles';
 import { runtimeMessage } from '../utils/runtimeMessage';
 
 const { Title, Text, Paragraph } = Typography;

@@ -8,9 +8,9 @@ import {
   QrcodeOutlined,
   SafetyOutlined
 } from '@ant-design/icons';
-import { saveLoginSession } from '../../utils/auth';
-import { initDingTalkQRCode, getUrlParam } from '../../utils/dingtalk';
-import request from '../../utils/request';
+import { saveLoginSession } from '../../utils/auth/auth';
+import { initDingTalkQRCode, getUrlParam } from '../../utils/integrations/dingtalk';
+import request from '../../utils/runtime/request';
 import styles from './Login.module.scss';
 
 const { Title, Text } = Typography;

@@ -2,8 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { Spin } from 'antd';
 import Chat from './components/Chat';
 import Login from './components/Login';
-import { isAuthenticated } from './utils/auth';
-import { ensurePackagedBuildCurrent } from './utils/runtimeGuard';
+import { isAuthenticated } from './utils/auth/auth';
+import { ensurePackagedBuildCurrent } from './utils/runtime/runtimeGuard';
 
 const App: React.FC = () => {
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);

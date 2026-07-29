@@ -1,4 +1,4 @@
-import type { PageAuthSnapshot } from '../../shared/authBridge';
+import type { PageAuthSnapshot } from '../../shared/auth/authBridge';
 
 export function handleAuthBridgeMessage(
   message: any,

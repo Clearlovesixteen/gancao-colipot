@@ -1,4 +1,4 @@
-import type { ModelGateway } from '../modelGateway';
+import type { ModelGateway } from '../model/modelGateway';
 
 export function handleModelChatMessage(
   message: any,

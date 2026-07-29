@@ -1,17 +1,27 @@
 
-import { handleToolExecution, recordConsoleError } from './tools';
+import { handleToolExecution, recordConsoleError } from './pageTools/tools';
 import {
   isTrustedAuthUrl,
   pickPageAuthFromEntries,
   type PageAuthSnapshot,
   type PageAuthStorageSource,
   type PageStorageEntry,
-} from '../shared/authBridge';
+} from '../shared/auth/authBridge';
 import { RUNTIME_BUILD_ID } from 'virtual:gancao-content-runtime-version';
+import {
+  buildPageSelectionContext,
+  locatePageSelection,
+  PageSelectionToolbar,
+  shouldIgnoreSelectionElement,
+} from './selection/pageSelectionToolbar';
 
-let selectionButton: HTMLDivElement | null = null;
 let lastAuthSignature = '';
 let authSyncTimer: number | null = null;
+const pageSelectionToolbar = new PageSelectionToolbar((message) => {
+  chrome.runtime.sendMessage(message).catch((error) => {
+    console.warn('[Content] 发送页面选区动作失败:', error);
+  });
+});
 
 function normalizePageErrorPayload(payload: any): { message: string; stack?: string } {
   if (payload instanceof Error) {
@@ -122,153 +132,33 @@ function installPageConsoleBridge(): void {
   injectBridgeScript();
 }
 
-function getSelectedText(): string {
-  const selection = window.getSelection();
-  return selection ? selection.toString().trim() : '';
-}
-
-//注入 BTN
-function createSelectionButton(x: number, y: number): void {
-
-  removeSelectionButton();
-
-  const selectedText = getSelectedText();
-  if (!selectedText) {
-    return;
-  }
-
-  // 创建按钮容器
-  const button = document.createElement('div');
-  button.id = 'gancao-selection-button';
-  button.style.cssText = `
-    position: fixed;
-    left: ${x}px;
-    top: ${y - 50}px;
-    background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
-    color: white;
-    padding: 8px 16px;
-    border-radius: 20px;
-    font-size: 14px;
-    font-weight: 500;
-    cursor: pointer;
-    box-shadow: 0 4px 12px rgba(99, 102, 241, 0.4);
-    z-index: 999999;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    user-select: none;
-    transition: transform 0.2s ease, box-shadow 0.2s ease;
-  `;
-  
-  button.innerHTML = `
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
-    </svg>
-    <span>发送到 AI</span>
-  `;
-
-  // 添加点击事件 - 直接在 button 上添加，并阻止所有冒泡
-  button.addEventListener('click', (e) => {
-    console.log(e,'12312')
-    e.preventDefault();
-    e.stopPropagation();
-    e.stopImmediatePropagation();
-    
-   
-    const currentSelectedText = getSelectedText() || selectedText;
-    
-    if (currentSelectedText.trim()) {
-      handleSendSelection(currentSelectedText);
-    }
-    removeSelectionButton();
-  }, true); // 使用捕获阶段，确保优先处理
-
-
-  button.addEventListener('mousedown', (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    e.stopImmediatePropagation();
-  }, true);
-
-  // 添加悬停效果
-  button.addEventListener('mouseenter', () => {
-    button.style.transform = 'translateY(-2px) scale(1.05)';
-    button.style.boxShadow = '0 6px 16px rgba(99, 102, 241, 0.5)';
-  });
-
-  button.addEventListener('mouseleave', () => {
-    button.style.transform = 'translateY(0) scale(1)';
-    button.style.boxShadow = '0 4px 12px rgba(99, 102, 241, 0.4)';
-  });
-
-  document.body.appendChild(button);
-  selectionButton = button;
-}
-
-// 移除浮动按钮
-function removeSelectionButton(): void {
-  if (selectionButton) {
-    selectionButton.remove();
-    selectionButton = null;
-  }
-}
-
-// 发送选中的文本到侧边栏
-function handleSendSelection(text: string): void {
-  console.log('handleSendSelection', text);
-  if (!text.trim()) {
-    return;
-  }
-  
-  //background 转发消息
-  chrome.runtime.sendMessage({
-    type: 'SELECTED_TEXT',
-    text: text.trim(),
-  }, (response) => {
-    if (chrome.runtime.lastError) {
-      console.error('发送失败:', chrome.runtime.lastError);
-    }
-  });
-}
-
-// 监听鼠标抬起事件，检测文本选择
 document.addEventListener('mouseup', (e) => {
-  // 延迟一下，确保选择已完成
-  setTimeout(() => {
-    const selectedText = getSelectedText();
-    
-    if (selectedText && selectedText.length > 0) {
-      // 获取选中文本的位置
-      const selection = window.getSelection();
-      if (selection && selection.rangeCount > 0) {
-        const range = selection.getRangeAt(0);
-        const rect = range.getBoundingClientRect();
-        
-        // 计算按钮位置（在选中文本的上方居中）
-        const x = rect.left + rect.width / 2;
-        const y = rect.top + window.scrollY;
-        
-        createSelectionButton(x, y);
-      }
-    } else {
-      removeSelectionButton();
+  if (pageSelectionToolbar.contains(e.target)) return;
+  window.setTimeout(() => {
+    const selection = window.getSelection();
+    const anchorElement = selection?.anchorNode instanceof HTMLElement
+      ? selection.anchorNode
+      : selection?.anchorNode?.parentElement;
+    if (!selection || selection.isCollapsed || shouldIgnoreSelectionElement(anchorElement || null)) {
+      pageSelectionToolbar.hide();
+      return;
     }
-  }, 10);
+    const context = buildPageSelectionContext(selection);
+    if (context) pageSelectionToolbar.show(context);
+    else pageSelectionToolbar.hide();
+  }, 0);
 });
 
 document.addEventListener('mousedown', (e) => {
-  if (selectionButton) {
-    const target = e.target as HTMLElement;
-    
-    if (!selectionButton.contains(target) && target.id !== 'gancao-selection-button') {
-      removeSelectionButton();
-    }
-  }
-}, true); 
+  if (!pageSelectionToolbar.contains(e.target)) pageSelectionToolbar.hide();
+}, true);
 
 document.addEventListener('scroll', () => {
-  removeSelectionButton();
+  pageSelectionToolbar.hide();
+}, true);
+
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') pageSelectionToolbar.hide();
 }, true);
 
 function collectStorageEntries(): PageStorageEntry[] {
@@ -461,6 +351,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       hasToken: Boolean(snapshot?.token),
       error: snapshot ? undefined : '当前页面不在可信登录态同步域名内',
     });
+    return true;
+  }
+
+  if (message.type === 'LOCATE_PAGE_SELECTION') {
+    sendResponse({ success: locatePageSelection(message.context) });
     return true;
   }
 });

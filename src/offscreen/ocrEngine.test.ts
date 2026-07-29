@@ -6,7 +6,7 @@ import {
   paddleResultToPage,
   renderPdfPageToCanvas,
 } from './ocrEngine';
-import { getPaddleOcrRuntimeOptions } from '../shared/paddleOcrRuntime';
+import { getPaddleOcrRuntimeOptions } from '../shared/ocr/paddleOcrRuntime';
 
 describe('ocrEngine', () => {
   it('uses extension-local PaddleOCR models and ORT assets', () => {

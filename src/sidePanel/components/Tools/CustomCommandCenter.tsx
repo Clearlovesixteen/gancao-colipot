@@ -10,7 +10,7 @@ import {
   rollbackCustomCommand,
   upsertCustomCommand,
   type CustomCopilotCommand,
-} from '../../../shared/customCommandStore';
+} from '../../../shared/commands/customCommandStore';
 
 const { Text, Title } = Typography;
 

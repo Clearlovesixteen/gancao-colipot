@@ -4,9 +4,9 @@ import {
   getPaddleOcrRuntimeOptions,
   PADDLE_DET_MODEL_FILE,
   PADDLE_REC_MODEL_FILE,
-} from '../shared/paddleOcrRuntime';
+} from '../shared/ocr/paddleOcrRuntime';
 
-export { getPaddleOcrRuntimeOptions } from '../shared/paddleOcrRuntime';
+export { getPaddleOcrRuntimeOptions } from '../shared/ocr/paddleOcrRuntime';
 
 GlobalWorkerOptions.workerSrc = pdfWorkerSrc;
 

@@ -1,4 +1,11 @@
-# 甘草 Copilot 架构图
+# 甘草 Copilot 技术架构
+
+## 文档索引
+
+- [项目 README](../README.md)：能力概览、开发运行、目录和质量基线。
+- [Browser Use 技术架构](./browser-use-architecture.md)：自动化内核的分层图、阶段时序、语义模型、可靠性与安全边界。
+- [Browser Use 产品目标](./browser-use-goal.md)：产品定位、能力边界和完成标准。
+- [Browser Use 可靠性门禁](./browser-use-reliability.md)：观察质量、目标租约、黄金任务和发布要求。
 
 当前项目是一个 Manifest V3 Chrome 扩展。Vite 打包 6 个运行入口：
 
@@ -51,7 +58,7 @@ PaddleOCR 的 PDF 页面渲染使用 PDF.js `print` intent。Offscreen Document 
 
 Browser Use 是自动化能力的正式产品名称和演进目标。它只负责浏览器中的自主任务执行：理解目标、观察标签页、制定短计划、执行原子动作、校验结果、失败恢复并交付页面数据或文件。页面诊断、资料问答、OCR、Memory 和监控作为可被 Browser Use 调用或承接结果的协作能力存在。
 
-Browser Use 的真实 Chromium 黄金任务、Observe 质量报告和发布门槛见 [Browser Use 可靠性门禁](./browser-use-reliability.md)。
+Browser Use 的完整模块图和阶段时序见 [Browser Use 技术架构](./browser-use-architecture.md)，真实 Chromium 黄金任务、Observe 质量报告和发布门槛见 [Browser Use 可靠性门禁](./browser-use-reliability.md)。
 
 `browser_use` 是 Browser Use 的唯一任务类型；`ComputerUse*` 只保留为执行器内部算法类型。所有长任务统一由 `TaskExecutorRegistry` 接收 `RUN_AUTOMATION_TASK`。
 
@@ -80,7 +87,7 @@ flowchart LR
   end
 
   subgraph RuntimeData["执行与数据层"]
-    Content["content.js + content/tools.ts<br/>观察页面 / 执行动作 / 提取数据"]
+    Content["content.js + content/pageTools/tools.ts<br/>观察页面 / 执行动作 / 提取数据"]
     ChromeStorage["chrome.storage.local<br/>登录态 / 模型配置 / 工作流 / 草稿 / 轻量启动状态"]
     TaskRepository["IndexedDB: gancao_task_runtime<br/>任务摘要 / 输出 / Trace"]
     IndexedDB["IndexedDB: gancao_document_center<br/>assets / assetContents / chunks / results / rawFiles"]
@@ -134,22 +141,22 @@ flowchart LR
   Model["ModelGateway<br/>BYOK / 流式 / JSON / 取消 / 脱敏"]
   Tasks["TaskExecutorRegistry<br/>七类统一任务执行器"]
   Gateway["业务工具网关<br/>handleBusinessTool"]
-  Auto["固定工作流<br/>automation.ts"]
-  CU["智能浏览器操作调度器<br/>computerUseRunner.ts<br/>阶段循环 / RunState / PhaseMemory"]
-  Intent["意图与任务计划<br/>computerUseIntent.ts<br/>navigationPath / taskPlan"]
-  Planner["阶段规划器<br/>computerUsePlanner.ts<br/>规则优先 + LLM 兜底"]
-  Context["页面上下文<br/>pageContextBuilder.ts<br/>观察页面 / 候选元素 / 结构化数据"]
-  Collections["页面集合构建<br/>collectionBuilder.ts<br/>搜索结果 / 菜单组 / 文件列表 / 表格 / 卡片"]
-  Resolver["目标解析<br/>targetResolver.ts<br/>集合优先 / 序号匹配 / 失败候选避让"]
-  Actions["Browser Use 动作注册表<br/>browserUseActionRegistry.ts<br/>页面动作 + 标签动作 / 风险 / 工具映射"]
-  Tabs["Browser Use 标签页会话<br/>browserUseSession.ts + browserUseTabActions.ts<br/>打开 / 切换 / 关闭 / 历史导航"]
-  Variables["阶段变量<br/>browserUseVariables.ts<br/>outputs / download / currentTab"]
-  PhaseDone["阶段完成判定<br/>phaseCompletion.ts<br/>导航 / 下载 / 提取 / 打开文件"]
-  Verify["步骤校验<br/>verifyComputerUseStep.ts<br/>动作级校验"]
-  Download["下载入库<br/>downloadManager.ts"]
-  Trace["任务轨迹<br/>computerUseTrace.ts"]
+  Auto["固定工作流<br/>background/tasks/automation.ts"]
+  CU["智能浏览器操作调度器<br/>browserUse/runtime/computerUseRunner.ts<br/>阶段循环 / RunState / PhaseMemory"]
+  Intent["意图与任务计划<br/>browserUse/planning/computerUseIntent.ts<br/>navigationPath / taskPlan"]
+  Planner["阶段规划器<br/>browserUse/planning/computerUsePlanner.ts<br/>规则约束 + LLM 规划"]
+  Context["页面上下文<br/>browserUse/observation/pageContextBuilder.ts<br/>观察页面 / 候选元素 / 结构化数据"]
+  Collections["页面集合构建<br/>browserUse/observation/collectionBuilder.ts<br/>搜索结果 / 菜单组 / 文件列表 / 表格 / 卡片"]
+  Resolver["目标解析<br/>browserUse/resolution/targetResolver.ts<br/>集合优先 / 序号匹配 / 失败候选避让"]
+  Actions["Browser Use 动作注册表<br/>browserUse/actions/browserUseActionRegistry.ts<br/>页面动作 + 标签动作 / 风险 / 工具映射"]
+  Tabs["Browser Use 标签页会话<br/>browserUse/runtime/browserUseSession.ts<br/>打开 / 切换 / 关闭 / 历史导航"]
+  Variables["阶段变量<br/>browserUse/runtime/browserUseVariables.ts<br/>outputs / download / currentTab"]
+  PhaseDone["阶段完成判定<br/>browserUse/verification/phaseCompletion.ts<br/>导航 / 下载 / 提取 / 打开文件"]
+  Verify["步骤校验<br/>browserUse/verification/verifyComputerUseStep.ts<br/>动作级校验"]
+  Download["下载入库<br/>browserUse/actions/downloadManager.ts"]
+  Trace["任务轨迹<br/>browserUse/runtime/computerUseTrace.ts"]
   DB["DocumentRepository<br/>唯一 IndexedDB 访问层"]
-  Content["内容脚本工具<br/>content/tools.ts"]
+  Content["内容脚本工具<br/>content/pageTools/tools.ts"]
 
   BG --> Model
   BG --> Tasks
@@ -187,25 +194,27 @@ flowchart LR
 
 ## 智能浏览器操作闭环
 
+下面是主流程摘要。更完整的分层架构、单阶段时序、阶段契约和安全边界见 [Browser Use 技术架构](./browser-use-architecture.md)。
+
 ```mermaid
 flowchart LR
   Start["侧边栏、任务中心或工作流发起<br/>RUN_AUTOMATION_TASK"]
   Registry["TaskExecutorRegistry<br/>选择 browser_use 执行器"]
   Router["后台 runComputerUseOnTab<br/>创建内部 runId / AbortController / 初始轨迹"]
-  Parser["轻量预解析<br/>computerUseTaskParser.ts<br/>识别 URL / 站点别名 / 低风险信号"]
-  Intent["意图与任务计划<br/>computerUseIntent.ts<br/>统一生成 taskPlan.phases"]
+  Parser["轻量预解析<br/>browserUse/planning/computerUseTaskParser.ts<br/>识别 URL / 站点别名 / 低风险信号"]
+  Intent["意图与任务计划<br/>browserUse/planning/computerUseIntent.ts<br/>统一生成 taskPlan.phases"]
   PhaseLoop["阶段循环<br/>ComputerUsePhase<br/>按阶段推进"]
-  Context["页面上下文构建<br/>pageContextBuilder.ts<br/>观察页面 / 候选元素 / 结构化数据"]
-  Collections["语义集合<br/>collectionBuilder.ts + get_search_results<br/>菜单组 / 搜索结果 / 文件列表 / 表格"]
-  Planner["阶段规划器<br/>computerUsePlanner.ts<br/>规则优先 + LLM 兜底"]
-  Resolver["目标解析<br/>targetResolver.ts<br/>优先匹配 collections，再回退元素"]
+  Context["页面上下文构建<br/>browserUse/observation/pageContextBuilder.ts<br/>观察页面 / 候选元素 / 结构化数据"]
+  Collections["语义集合<br/>browserUse/observation/collectionBuilder.ts<br/>菜单组 / 搜索结果 / 文件列表 / 表格"]
+  Planner["阶段规划器<br/>browserUse/planning/computerUsePlanner.ts<br/>规则约束 + LLM 规划"]
+  Resolver["目标解析<br/>browserUse/resolution/targetResolver.ts<br/>优先匹配 collections，再回退元素"]
   Act["动作执行<br/>content tools 或 downloadManager<br/>点击 / 输入 / 快捷键 / 提取 / 下载"]
-  Verify["动作级校验<br/>verifyComputerUseStep.ts<br/>URL / 文本 / 元素 / 表格 / 下载结果"]
-  PhaseDone["阶段完成判定<br/>phaseCompletion.ts<br/>是否进入下一阶段 / 是否结束"]
+  Verify["动作级校验<br/>browserUse/verification/verifyComputerUseStep.ts<br/>URL / 文本 / 元素 / 表格 / 下载结果"]
+  PhaseDone["阶段完成判定<br/>browserUse/verification/phaseCompletion.ts<br/>是否进入下一阶段 / 是否结束"]
   Memory["运行状态与阶段记忆<br/>RunState / PhaseMemory<br/>标签页 / 阶段输出 / 下载结果 / 失败候选"]
   Tabs["标签页会话<br/>BrowserUseSession<br/>当前标签页 / 新标签页跟随"]
   Actions["动作注册表<br/>Browser Use Action Registry<br/>原子动作 / 风险 / 页面工具"]
-  Trace["轨迹记录<br/>computerUseTrace.ts<br/>观察 / 计划 / 动作 / 结果 / 错误"]
+  Trace["轨迹记录<br/>browserUse/runtime/computerUseTrace.ts<br/>观察 / 计划 / 动作 / 结果 / 错误"]
   UI["侧边栏任务卡片<br/>日志 / 复制 / 重试 / 高风险确认"]
 
   Start --> Registry
@@ -270,19 +279,53 @@ sequenceDiagram
   BG-->>Chat: 最终回答
 ```
 
+## 页面感知 Chat 与专题来源
+
+页面选区入口只负责收集用户主动选择的上下文并唤起 Side Panel，不在业务网页中渲染完整 AI 回答。普通会话以当前页面为主要来源；当页面覆盖不足时，Chat 可以把当前会话升级为专题模式，并继续收集其他网页或选区作为资料来源。
+
+```mermaid
+flowchart LR
+  Selection["用户选择网页文本"]
+  Toolbar["content/selection<br/>问 AI / 解释 / 加入专题 / 更多"]
+  Relay["PAGE_CONTEXT_ACTION<br/>background handler + session storage"]
+  Chat["ChatSession<br/>page / topic"]
+  PageHub["PageContextHub<br/>当前页压缩摘要"]
+  Scope["ResearchScopeDecider<br/>当前页回答或建议升级"]
+  Repository["DocumentRepository<br/>专题来源资料"]
+  QA["document_qa 任务<br/>限定 sourceDocumentIds"]
+  Answer["页面回答 / 专题多来源回答<br/>标题、URL、章节或选区引用"]
+
+  Selection --> Toolbar
+  Toolbar --> Relay
+  Relay --> Chat
+  Chat --> PageHub
+  PageHub --> Scope
+  Scope -->|"当前页足够"| Answer
+  Scope -->|"用户确认升级"| Repository
+  Chat -->|"加入页面或选区"| Repository
+  Repository --> QA
+  QA --> Answer
+```
+
+- `PageSelectionContext` 保存选区正文、前后文、标题路径、URL、selector 和 viewport 坐标。
+- `PAGE_CONTEXT_ACTION` 通过 `chrome.storage.session` 暂存，Side Panel 初始化后仍能消费，不依赖消息恰好在面板加载完成时到达。
+- `ChatSession.mode = page | topic`；专题来源只保存 `sourceDocumentIds`，资料事实不写入长期 Memory。
+- 专题问答复用统一资料问答任务，只检索当前会话的来源集合。
+- 选区内容仅在用户点击工具条动作后发送或保存。
+
 ## 资料中心数据流
 
 ```mermaid
 flowchart TB
   Upload["用户上传 / 粘贴文件"]
-  LocalParse["本地解析<br/>shared/fileParser.ts<br/>Excel / Word / PDF / 文本 / 表格"]
+  LocalParse["本地解析<br/>shared/documents/fileParser.ts<br/>Excel / Word / PDF / 文本 / 表格"]
   RawFile["原始文件保存<br/>rawFiles"]
   OCR["OCR 识别<br/>Offscreen Host + PaddleOCR sandbox<br/>ONNX Runtime Web + pdfjs"]
-  OCRStruct["OCR 结构化<br/>shared/ocrStructurer.ts<br/>字段 / 表格 / 正文区块 / 摘要"]
+  OCRStruct["OCR 结构化<br/>shared/ocr/ocrStructurer.ts<br/>字段 / 表格 / 正文区块 / 摘要"]
   WebCapture["网页结构化采集<br/>extract_page_structured_data"]
   Download["浏览器导出下载<br/>downloadManager.ts<br/>chrome.downloads 监听"]
-  Store["唯一资料库访问层<br/>shared/documentRepository.ts<br/>兼容原 IndexedDB v1"]
-  Chunk["文档分块与评分<br/>shared/documentChunker.ts"]
+  Store["唯一资料库访问层<br/>shared/documents/documentRepository.ts<br/>IndexedDB"]
+  Chunk["文档分块与评分<br/>shared/documents/documentChunker.ts"]
   Tools["资料工具<br/>list/read/search/summarize/compare/generate tasks/export"]
   Results["资料结果<br/>需求任务清单 / 网页结构化数据 / 表格结果"]
 
@@ -330,26 +373,30 @@ flowchart LR
 | --- | --- |
 | `src/sidePanel` | 用户主入口：登录、聊天、附件解析、结构化 OCR、资料中心入口、工具箱、智能操作任务卡片。 |
 | `src/dashboard` | 工作流增删改查、可视化编排、固定流程运行控制和运行日志展示。 |
-| `src/background/index.ts` | 插件核心编排：运行时消息、权限、标签页控制、AI 客户端、工具路由、自动化调度、下载入库、登录态同步。 |
-| `src/background/computerUse*.ts` | 智能浏览器操作子系统：意图理解、任务计划、阶段循环、规则/LLM 规划、动作校验和轨迹记录。 |
-| `src/background/collectionBuilder.ts` | 从页面观察结果中整理语义集合：搜索结果、菜单组、文件列表、表格和卡片，减少规划器直接面对零散 DOM 的成本。 |
-| `src/background/targetResolver.ts` | 把计划步骤中的目标解析成真实元素或坐标，优先使用集合、序号、父路径和阶段记忆，避免重复点击失败候选。 |
-| `src/background/browserUseActionRegistry.ts` | Browser Use 原子动作注册表，统一动作到页面工具的映射、参数归一化、风险等级和新标签页能力。 |
-| `src/background/browserUseSession.ts` | Browser Use 标签页会话，记录初始/当前标签页并在动作打开直接子标签页后继续接管。 |
-| `src/background/phaseCompletion.ts` | 统一判断阶段是否完成，覆盖页面导航、下载完成、数据提取、打开文件中心和点击最近下载文件等场景。 |
-| `src/background/downloadManager.ts` | 真实导出/下载动作：监听 `chrome.downloads`，尝试读取下载内容，解析后保存到资料中心。 |
-| `src/content` | 页面侧执行层：DOM 观察、元素语义识别、搜索结果提取、点击/双击/右键/坐标点击/快捷键等浏览器动作、页面结构化提取、控制台错误缓存、登录态读取。 |
-| `src/shared` | 跨入口共享类型、业务工具声明、文件解析、文档分块、OCR 结构化、Computer Use 结果汇总、导出器。 |
-| `src/shared/documentRepository.ts` | 资料、内容、分块、结果和原始文件的唯一 IndexedDB 访问层。 |
+| `src/background/index.ts` | Service Worker 入口：初始化依赖并注册消息监听，不承载领域实现。 |
+| `src/background/handlers` | 模型、认证、任务、页面工具和页面上下文消息的路由层。 |
+| `src/background/browserUse/planning` | Browser Use 的意图理解、任务编译、阶段计划和规则/LLM 规划。 |
+| `src/background/browserUse/observation` | 页面观察、上下文压缩、语义集合构建和观察质量门禁。 |
+| `src/background/browserUse/resolution` | 将语义目标解析为真实元素或坐标，并按父路径、序号和上下文消歧。 |
+| `src/background/browserUse/actions` | 原子动作、标签页操作和真实下载捕获。 |
+| `src/background/browserUse/verification` | 动作校验和阶段完成判定。 |
+| `src/background/browserUse/runtime` | Runner、标签页会话、检查点、轨迹、变量和恢复状态。 |
+| `src/background/tasks` | 统一任务运行时、执行器注册、页面监控和通知。 |
+| `src/background/model` | Background-only 模型网关和客户端。 |
+| `src/background/ocr` | OCR Job 生命周期和 Offscreen 调度。 |
+| `src/content/pageTools` | DOM 观察、语义识别、页面动作、结构化提取、错误缓存和登录态读取。 |
+| `src/content/selection` | 页面选区工具条和结构化选区上下文。 |
+| `src/shared` | 按自动化、资料、上下文、Memory、模型、OCR 等领域组织的共享契约和纯逻辑。 |
+| `src/shared/documents/documentRepository.ts` | 资料、内容、分块、结果和原始文件的唯一 IndexedDB 访问层。 |
 | `public` | Manifest、HTML 壳、钉钉登录脚本、页面控制台桥接脚本。 |
 
 ## 架构备注
 
-- `background/index.ts` 仍是最核心的编排点，但 Browser Use 已经拆成“意图/计划、页面上下文、集合构建、目标解析、动作注册、标签页会话、阶段完成判定、轨迹记录”等独立模块。
+- `background/index.ts` 仅负责装配；Browser Use 按“计划、观察、解析、动作、校验、运行时”分层，任务、模型和 OCR 也拥有独立领域目录。
 - Browser Use 由 `ComputerUseTaskPlan` 和 `ComputerUsePhase` 推进任务；`RunState` 记录标签页会话、阶段输出、下载结果、完成阶段和警告，`PhaseMemory` 记录失败候选，避免在同一阶段反复点错。
 - `pageContextBuilder.ts` 会把 `observe_page` 结果加工成 `ObservedCollection`，规划器和目标解析器优先使用这些集合，而不是只依赖零散元素列表。
 - 搜索任务不再作为入口级独立链路分流：`open_site / search / select_collection_item` 也进入统一 phase runner。搜索结果由 `get_search_results` 转成 `search_results` 集合，再通过 `TargetResolver` 按 ordinal 解析第 N 个自然结果。
-- `content/tools.ts` 现在不只是执行动作，还会给元素打上 `purpose`、`region`、`context`、`score`，并支持双击、右键、坐标点击、清空输入、聚焦和快捷键等更细的操作。
+- `content/pageTools/tools.ts` 现在不只是执行动作，还会给元素打上 `purpose`、`region`、`context`、`score`，并支持双击、右键、坐标点击、清空输入、聚焦和快捷键等更细的操作。
 - 自动操作结果会进入内存轨迹 `computerUseTrace.ts`，侧边栏再以任务卡片形式展示、复制和重试。
 - 下载文件不再只是点击按钮：`download_file` 会等待真实下载事件，并尽量把下载文件解析后写入资料中心。
 - 资料中心同时接收上传文件、OCR 结构化结果、网页结构化采集和下载文件；最终统一走文档分块与检索工具。

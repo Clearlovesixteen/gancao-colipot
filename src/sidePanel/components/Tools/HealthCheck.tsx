@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Alert, Button, Card, Empty, List, Space, Tag, Typography, message } from 'antd';
 import { ArrowLeftOutlined, CopyOutlined, ReloadOutlined } from '@ant-design/icons';
-import { runPluginHealthCheck, type HealthCheckItem, type HealthCheckStatus } from '../../utils/healthCheck';
+import { runPluginHealthCheck, type HealthCheckItem, type HealthCheckStatus } from '../../utils/runtime/healthCheck';
 
 const { Text, Title, Paragraph } = Typography;
 

@@ -2,12 +2,12 @@ import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { Button, Card, Divider, Input, InputNumber, Select, Space, Tabs, Typography, message, Modal, Breadcrumb, Empty } from 'antd';
 import { ArrowDownOutlined, ArrowUpOutlined, CopyOutlined, DeleteOutlined, DownloadOutlined, EditOutlined, SaveOutlined, PlayCircleOutlined, ArrowLeftOutlined, PlusOutlined, MenuUnfoldOutlined, MenuFoldOutlined } from '@ant-design/icons';
 import { useParams, useNavigate } from 'react-router-dom';
-import type { AutomationStep, AutomationWorkflow } from '../../shared/automationTypes';
-import { getAutomationWorkflow, upsertAutomationWorkflow } from '../../shared/automationWorkflowStore';
-import { createAndRunAutomationTask, stopAutomationTask } from '../../shared/automationTaskClient';
+import type { AutomationStep, AutomationWorkflow } from '../../shared/automation/automationTypes';
+import { getAutomationWorkflow, upsertAutomationWorkflow } from '../../shared/automation/automationWorkflowStore';
+import { createAndRunAutomationTask, stopAutomationTask } from '../../shared/automation/automationTaskClient';
 import WorkflowGraph from '../components/WorkflowGraph';
-import { BLOCK_DEFINITIONS, BLOCK_CATEGORIES, BlockDefinition } from '../../shared/blockDefs';
-import { getBlockDef, createDefaultStep } from '../../shared/blockHelpers';
+import { BLOCK_DEFINITIONS, BLOCK_CATEGORIES, BlockDefinition } from '../../shared/automation/blockDefs';
+import { getBlockDef, createDefaultStep } from '../../shared/automation/blockHelpers';
 import BlockConfigForm from '../components/BlockConfigForm';
 
 const { TextArea } = Input;

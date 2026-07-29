@@ -1,8 +1,8 @@
 import React from 'react';
 import { Form, Input, InputNumber, Select, Checkbox, Typography, Space, Divider, Button, Card } from 'antd';
 import { PlusOutlined, DeleteOutlined } from '@ant-design/icons';
-import type { AutomationStep } from '../../shared/automationTypes';
-import { BlockDefinition, BlockField } from '../../shared/blockDefs';
+import type { AutomationStep } from '../../shared/automation/automationTypes';
+import { BlockDefinition, BlockField } from '../../shared/automation/blockDefs';
 
 const { Text } = Typography;
 const { TextArea } = Input;

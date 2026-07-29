@@ -1,5 +1,5 @@
 import { runOcr, getOcrErrorMessage } from './ocrEngine';
-import { structureOcrText, structuredOcrToMarkdown } from '../shared/ocrStructurer';
+import { structureOcrText, structuredOcrToMarkdown } from '../shared/ocr/ocrStructurer';
 import {
   getDocumentAsset,
   getDocumentContent,
@@ -7,7 +7,7 @@ import {
   rebuildDocumentChunks,
   saveDocumentContent,
   upsertDocumentAsset,
-} from '../shared/documentRepository';
+} from '../shared/documents/documentRepository';
 
 const jobs = new Map<string, AbortController>();
 

@@ -18,8 +18,8 @@ import 'reactflow/dist/style.css';
 import CustomNode from './CustomNode';
 import { Button, message } from 'antd';
 import { LayoutOutlined } from '@ant-design/icons';
-import type { AutomationStep } from '../../../shared/automationTypes';
-import { createDefaultStep, getBlockDef } from '../../../shared/blockHelpers';
+import type { AutomationStep } from '../../../shared/automation/automationTypes';
+import { createDefaultStep, getBlockDef } from '../../../shared/automation/blockHelpers';
 
 const nodeTypes = {
   custom: CustomNode,

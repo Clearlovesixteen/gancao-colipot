@@ -739,7 +739,7 @@
         <section id="overview">
           <div class="section-head">
             <h2>项目概览</h2>
-            <p>甘草 Copilot 是一个本地优先的 AI 业务助手扩展。用户在业务网页旁打开 Side Panel，就能对话、诊断页面、上传资料、运行 OCR、触发 Browser Use 自动化、保存工作流并查看任务结果。</p>
+            <p>甘草 Copilot 是一个本地优先的 AI 业务助手扩展。用户在业务网页旁打开 Side Panel，就能基于当前页面和选区对话、诊断页面、上传资料、运行 OCR、触发 Browser Use 自动化、保存工作流并查看任务结果。</p>
           </div>
           <div class="grid cols-4">
             <article class="card">
@@ -752,7 +752,7 @@
             </article>
             <article class="card">
               <h3>核心能力</h3>
-              <p>AI 对话、Browser Use、资料中心、OCR、页面诊断、页面监控、自定义命令、可复用工作流。</p>
+              <p>页面感知对话、专题来源追问、Browser Use、资料中心、OCR、页面诊断、页面监控、自定义命令和可复用工作流。</p>
             </article>
             <article class="card">
               <h3>本地优先</h3>
@@ -789,7 +789,7 @@
               <div class="layer">
                 <div class="layer-name">后台中枢</div>
                 <div class="layer-items">
-                  <div class="box"><strong>background/index.ts</strong>运行时消息、权限、标签页控制</div>
+                  <div class="box"><strong>background/index.ts</strong>依赖装配与消息监听注册</div>
                   <div class="box"><strong>ModelGateway</strong>流式对话、JSON 规划、连接测试</div>
                   <div class="box"><strong>TaskExecutorRegistry</strong>统一任务执行与停止</div>
                   <div class="box"><strong>DownloadManager</strong>真实下载事件与资料入库</div>
@@ -807,7 +807,7 @@
               <div class="layer">
                 <div class="layer-name">执行与数据</div>
                 <div class="layer-items">
-                  <div class="box"><strong>content/tools.ts</strong>观察 DOM、点击、输入、提取</div>
+                  <div class="box"><strong>content/pageTools/tools.ts</strong>观察 DOM、点击、输入、提取</div>
                   <div class="box"><strong>Offscreen OCR Host</strong>Side Panel 关闭后继续 OCR</div>
                   <div class="box"><strong>chrome.storage.local</strong>模型、工作流、运行记录、命令</div>
                   <div class="box"><strong>IndexedDB</strong>资料、内容、分块、结果、原始文件</div>
@@ -873,7 +873,7 @@
               </tr>
               <tr>
                 <td><code>paddleocrSandbox.js</code></td>
-                <td><code>src/sidePanel/utils/paddleocrSandbox.ts</code></td>
+                <td><code>src/sandbox/paddleocrSandbox.ts</code></td>
                 <td>在 sandbox 页面中初始化 PaddleOCR 和 ONNX Runtime。</td>
                 <td>Extension sandbox page</td>
               </tr>
@@ -886,10 +886,15 @@
             <h2>Browser Use 闭环</h2>
             <p>Browser Use 是自动化能力的统一产品名称，任务类型固定为 <code>browser_use</code>。所有长任务统一通过 <code>TaskExecutorRegistry</code> 运行，不再保留旧自动化入口。它的关键原则是：LLM 负责语义目标和短期计划，TargetResolver 负责把目标落到真实页面元素。</p>
           </div>
+          <div class="callout">
+            <strong>专项架构图</strong>
+            完整的分层组件图、单阶段时序、语义集合、目标租约、导航协调、安全边界和发布门禁，请阅读
+            <a href="https://github.com/Clearlovesixteen/gancao-colipot/blob/main/docs/browser-use-architecture.md">Browser Use 技术架构</a>。
+          </div>
           <div class="flow">
             <div class="flow-step"><strong>目标解析</strong><span>从自然语言目标提取站点、动作、查询、风险级别和成功标准。</span></div>
             <div class="flow-step"><strong>页面观察</strong><span>content script 返回元素、区域、页面状态、搜索结果和表格集合。</span></div>
-            <div class="flow-step"><strong>阶段计划</strong><span>按 ComputerUsePhase 推进，规则优先，LLM 兜底生成下一批动作。</span></div>
+            <div class="flow-step"><strong>阶段计划</strong><span>TaskPlanCompiler 校验阶段契约，LLM 生成语义短计划，规则负责约束和确定性信号。</span></div>
             <div class="flow-step"><strong>目标定位</strong><span>优先使用集合、序号、父路径、阶段记忆，避免反复点击失败候选。</span></div>
             <div class="flow-step"><strong>动作执行</strong><span>点击、输入、选择、滚动、下载、上传、结构化提取等原子动作。</span></div>
             <div class="flow-step"><strong>验收校验</strong><span>用 URL、文本、元素、表格、下载结果或页面变化判定动作是否达成。</span></div>
@@ -1142,17 +1147,17 @@ pnpm verify</code></pre>
               <tr>
                 <td>单元测试</td>
                 <td>规划、解析、分块、OCR 结构化、模型配置、任务仓储。</td>
-                <td><code>*.test.ts</code> in <code>src/background</code> / <code>src/shared</code></td>
+                <td><code>*.test.ts</code> in <code>src/background/**</code> / <code>src/shared/**</code></td>
               </tr>
               <tr>
                 <td>组件与工具</td>
                 <td>Side Panel 命令、文档存储、页面上下文、健康检查。</td>
-                <td><code>src/sidePanel/utils/*.test.ts</code></td>
+                <td><code>src/sidePanel/components/**</code> / <code>src/sidePanel/utils/**</code></td>
               </tr>
               <tr>
                 <td>扩展 E2E</td>
                 <td>构建后的 Chromium 扩展加载、业务页面自动化和 fixture server。</td>
-                <td><code>tests/e2e/computerUse.extension.spec.ts</code></td>
+                <td><code>tests/e2e/*.extension.spec.ts</code> / <code>browserUse.golden.spec.ts</code></td>
               </tr>
             </tbody>
           </table>

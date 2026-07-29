@@ -12,8 +12,8 @@ import {
   ThunderboltOutlined,
   FormOutlined
 } from '@ant-design/icons';
-import type { AutomationStep } from '../../../shared/automationTypes';
-import { BLOCK_DEFINITIONS } from '../../../shared/blockDefs';
+import type { AutomationStep } from '../../../shared/automation/automationTypes';
+import { BLOCK_DEFINITIONS } from '../../../shared/automation/blockDefs';
 
 const ICONS: Record<string, React.ReactNode> = {
   navigate: <GlobalOutlined />,

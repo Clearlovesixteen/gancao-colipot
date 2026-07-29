@@ -13,7 +13,7 @@ import {
   upsertUserMemory,
   type UserMemory,
   type UserMemoryType,
-} from '../../../shared/userMemoryStore';
+} from '../../../shared/memory/userMemoryStore';
 
 const { Text, Title, Paragraph } = Typography;
 const { Search, TextArea } = Input;

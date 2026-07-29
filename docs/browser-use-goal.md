@@ -1,5 +1,7 @@
 # Browser Use 产品目标
 
+> 实现分层、阶段时序和安全边界见 [Browser Use 技术架构](./browser-use-architecture.md)，稳定性标准见 [Browser Use 可靠性门禁](./browser-use-reliability.md)。
+
 ## 定位
 
 甘草 Copilot 的自动化能力正式以 **Browser Use** 为目标：用户描述希望在浏览器中完成的结果，代理负责理解目标、观察页面、制定计划、执行动作、校验结果、失败恢复并交付数据或文件。
@@ -71,7 +73,7 @@ Browser Use 内核在现有阶段 Runner 上补充了以下通用能力：
 - Planner 可以读取前序阶段输出，并通过 `{{phaseId.path}}`、`{{outputs.phaseId.path}}`、`{{download.filename}}` 和 `{{currentTab.title}}` 引用跨阶段变量。
 - 新标签页创建后会等待加载完成再观察页面，避免在空白页或中间态上规划后续动作。
 
-现有 `ComputerUseRunner` 仍是兼容执行器，但新增 Browser Use 能力通过独立模块接入，后续可以逐步替换内部协议而不破坏历史任务。
+`ComputerUseRunner` 是 Browser Use 当前唯一的内部阶段执行引擎，不是旧链路兼容执行器。产品入口统一创建 `browser_use` 任务，并由 `TaskExecutorRegistry` 调用该引擎。
 
 ### 当前边界
 

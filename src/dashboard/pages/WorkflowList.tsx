@@ -14,9 +14,9 @@ import {
   StopOutlined
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
-import { listAutomationWorkflows, deleteAutomationWorkflow, upsertAutomationWorkflow, type StoredAutomationWorkflow } from '../../shared/automationWorkflowStore';
-import { createAndRunAutomationTask, stopAutomationTask } from '../../shared/automationTaskClient';
-import type { AutomationWorkflow } from '../../shared/automationTypes';
+import { listAutomationWorkflows, deleteAutomationWorkflow, upsertAutomationWorkflow, type StoredAutomationWorkflow } from '../../shared/automation/automationWorkflowStore';
+import { createAndRunAutomationTask, stopAutomationTask } from '../../shared/automation/automationTaskClient';
+import type { AutomationWorkflow } from '../../shared/automation/automationTypes';
 import moment from 'moment';
 
 const { Text, Title } = Typography;

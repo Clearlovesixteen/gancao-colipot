@@ -1,52 +1,59 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Input, Button, Space, Typography, Spin, Avatar, Badge, Image, Tag, Drawer, Tooltip, Dropdown, Menu, message, Modal, Tabs, Card, Table, Empty, Collapse, List, Select, Switch } from 'antd';
+import { Input, Button, Space, Typography, Spin, Avatar, Badge, Image, Tag, Drawer, Tooltip, Dropdown, Menu, message, Modal, Tabs, Card, Table, Empty, Collapse, List, Select, Switch, Checkbox } from 'antd';
 import { SendOutlined, UserOutlined, RobotOutlined, ThunderboltOutlined, PaperClipOutlined, DeleteOutlined, ToolOutlined, AppstoreOutlined, MoreOutlined, StopOutlined, CopyOutlined, ReloadOutlined, HistoryOutlined, PlusOutlined, EditOutlined, InboxOutlined } from '@ant-design/icons';
-import type { NativeFileReference } from '../../../shared/modelRuntimeTypes';
+import type { NativeFileReference } from '../../../shared/model/modelRuntimeTypes';
 import Tools from '../Tools';
 import type { DocumentReferenceTarget } from '../Tools';
 import moment from 'moment';
 import styles from './Chat.module.scss';
-import { parseUploadedFile, type ParsedUploadedFile } from '../../../shared/fileParser';
-import type { NativeLLMFile } from '../../utils/llm-files';
-import type { DocumentAsset, DocumentContent, NativeUploadStatus, OcrStatus, RequirementTaskResult, StructuredOcrResult } from '../../../shared/documentTypes';
-import { shouldRouteToDocumentQa } from '../../utils/documentQaRouting';
+import { parseUploadedFile, type ParsedUploadedFile } from '../../../shared/documents/fileParser';
+import type { NativeLLMFile } from '../../utils/documents/llm-files';
+import type { DocumentAsset, DocumentContent, NativeUploadStatus, OcrStatus, RequirementTaskResult, StructuredOcrResult } from '../../../shared/documents/documentTypes';
+import { shouldRouteToDocumentQa } from '../../utils/documents/documentQaRouting';
 import {
+  deleteDocumentAsset,
   getDocumentContent,
   makeDocumentId,
   rebuildDocumentChunks,
   saveDocumentContent,
   saveRawFile,
   upsertDocumentAsset,
-} from '../../../shared/documentRepository';
-import { structuredOcrToMarkdown } from '../../../shared/ocrStructurer';
-import { formatComputerUseTablesMessage } from '../../../shared/computerUseResults';
-import type { ComputerUseResumeCheckpoint, ComputerUseTrace } from '../../../shared/automationTypes';
-import { COPILOT_COMMANDS, getQuickCommands, type CopilotCommandId } from '../../utils/copilotCommands';
-import { useCommandRecommendations } from './useCommandRecommendations';
+} from '../../../shared/documents/documentRepository';
+import { structuredOcrToMarkdown } from '../../../shared/ocr/ocrStructurer';
+import { formatComputerUseTablesMessage } from '../../../shared/automation/computerUseResults';
+import type { ComputerUseResumeCheckpoint, ComputerUseTrace } from '../../../shared/automation/automationTypes';
+import { COPILOT_COMMANDS, getQuickCommands, type CopilotCommandId } from '../../utils/chat/copilotCommands';
+import { useCommandRecommendations } from './hooks/useCommandRecommendations';
 import {
   createAndRunChatTask,
   createAutomationTaskId,
   stopAutomationTask,
-} from '../../../shared/automationTaskClient';
-import { listCustomCommands, renderCustomCommandMetadata, renderCustomCommandTemplate, type CustomCopilotCommand } from '../../../shared/customCommandStore';
+} from '../../../shared/automation/automationTaskClient';
+import { listCustomCommands, renderCustomCommandMetadata, renderCustomCommandTemplate, type CustomCopilotCommand } from '../../../shared/commands/customCommandStore';
 import {
   archiveChatSession,
   deleteChatSession,
   inferMemoryType,
   updateChatSession,
   upsertUserMemory,
-} from '../../../shared/userMemoryStore';
-import { hasRenderableChatMessage } from '../../utils/chatMessageState';
-import { useChatSessions } from './useChatSessions';
-import { useAiRequest } from './useAiRequest';
-import { useChatTaskEvents } from './useChatTaskEvents';
-import { BrowserUseTaskCard } from './BrowserUseTaskCard';
+} from '../../../shared/memory/userMemoryStore';
+import { hasRenderableChatMessage } from '../../utils/chat/chatMessageState';
+import { useChatSessions } from './hooks/useChatSessions';
+import { useAiRequest } from './hooks/useAiRequest';
+import { useChatTaskEvents } from './hooks/useChatTaskEvents';
+import { useResearchConversation } from './hooks/useResearchConversation';
+import { BrowserUseTaskCard } from './browserUse/BrowserUseTaskCard';
+import {
+  ResearchUpgradeCard,
+  TopicSessionHeader,
+  TopicSourceAddedMessage,
+} from './research/ResearchConversationCards';
 import {
   browserUseTraceStateFromBackground,
   compactBrowserUseEntries,
   getBrowserUseStateLabel,
   makeBrowserUseEntryFromEvent,
-} from './browserUseTrace';
+} from './browserUse/browserUseTrace';
 import type {
   ChatAttachmentItem,
   ChatMessage,
@@ -623,11 +630,13 @@ const Chat: React.FC = () => {
     showArchivedSessions,
     setShowArchivedSessions,
     currentSessionId,
+    currentSession,
     currentSessionIdRef,
     refreshChatSessions,
     persistChatMessage,
     loadChatSession,
     createNewChatSession,
+    updateCurrentSession,
   } = useChatSessions({ messagesEndRef, shouldAutoScrollRef });
 
   const addAssistantMessage = useCallback((content: string) => {
@@ -681,6 +690,29 @@ const Chat: React.FC = () => {
     }
     return normalized;
   }, [handleUnauthenticated]);
+
+  const runDocumentQaTask = useCallback(async (question: string, documentIds?: string[]) => {
+    const run = await createAndRunChatTask({
+      kind: 'document_qa',
+      title: '资料问答',
+      goal: question,
+      metadata: { question, ...(documentIds?.length ? { documentIds } : {}) },
+    });
+    chatTaskIdsRef.current.add(run.id);
+    message.success({ content: '资料问答任务已启动', key: 'document_qa' });
+  }, []);
+
+  const researchConversation = useResearchConversation({
+    currentSession,
+    updateCurrentSession,
+    setMessages,
+    persistChatMessage,
+    sendUserMessage,
+    executeTool: executeBusinessTool,
+    runDocumentQa: runDocumentQaTask,
+    shouldAutoScrollRef,
+    addAssistantMessage,
+  });
 
   const { commandIds: recommendedCommandIds, refresh: refreshCommandContext } = useCommandRecommendations({
     executeTool: executeBusinessTool,
@@ -1010,7 +1042,7 @@ const Chat: React.FC = () => {
     setIsTyping,
     setAttachedFiles,
     setMessages,
-    setInputValue,
+    onPageContextAction: researchConversation.handlePageContextAction,
     mergeBrowserUseEvent: mergeComputerUseEvent,
     fetchBrowserUseTrace: fetchComputerUseTrace,
     persistChatMessage,
@@ -1202,16 +1234,12 @@ const Chat: React.FC = () => {
     }
 
     try {
-      const run = await createAndRunChatTask({
-        kind: 'document_qa', title: '资料问答', goal: question, metadata: { question, documentIds },
-      });
-      chatTaskIdsRef.current.add(run.id);
-      message.success({ content: '资料问答任务已启动', key: 'document_qa' });
+      await runDocumentQaTask(question, documentIds);
       setInputValue('');
     } catch (error: any) {
       message.error({ content: normalizeUserFacingError(error, '资料问答失败'), key: 'document_qa' });
     }
-  }, [inputValue]);
+  }, [inputValue, runDocumentQaTask]);
 
   const handleExtractPageData = async () => {
     try {
@@ -1445,12 +1473,34 @@ const Chat: React.FC = () => {
       return;
     }
 
+    if (attachedFiles.length === 0 && currentSession?.mode === 'topic') {
+      const question = inputValue.trim();
+      setInputValue('');
+      researchConversation.sendTopicQuestion(question).catch((error) => {
+        message.error(normalizeUserFacingError(error, '专题问答启动失败'));
+      });
+      return;
+    }
+
     if (shouldRouteToDocumentQa(inputValue, attachedFiles.length > 0)) {
       handleAskDocumentsAgent(inputValue.trim());
       return;
     }
 
     const displayContent = inputValue.trim();
+    if (attachedFiles.length === 0) {
+      const modelProfileId = pendingModelProfileIdRef.current;
+      pendingModelProfileIdRef.current = undefined;
+      setInputValue('');
+      researchConversation.sendPageAwareMessage(
+        displayContent,
+        undefined,
+        displayContent,
+        modelProfileId,
+      );
+      return;
+    }
+
     const attachmentItems = attachedFiles.map(attachmentFromFile);
     const fileInfo = attachedFiles.map(file => (
       file.type.startsWith('image/') ? `[图片: ${file.name}]` : `[文件: ${file.name}]`
@@ -1690,6 +1740,28 @@ const Chat: React.FC = () => {
 
      
       <div ref={messagesContainerRef} className={styles.messagesContainer} onScroll={handleMessagesScroll}>
+        {!isSessionLoading && !sessionLoadError && currentSession?.mode === 'topic' && (
+          <TopicSessionHeader
+            session={currentSession}
+            sources={researchConversation.topicSources}
+            loading={researchConversation.isResearchBusy}
+            onExit={() => {
+              researchConversation.exitTopic().catch((error) => {
+                message.error(normalizeUserFacingError(error, '退出专题失败'));
+              });
+            }}
+            onLocate={(source) => {
+              researchConversation.locateTopicSource(source).catch((error) => {
+                message.error(normalizeUserFacingError(error, '无法打开来源'));
+              });
+            }}
+            onRemove={(documentId) => {
+              researchConversation.removeTopicSource(documentId).catch((error) => {
+                message.error(normalizeUserFacingError(error, '移除来源失败'));
+              });
+            }}
+          />
+        )}
         {isSessionLoading ? (
           <div className={styles.sessionLoadingState} role="status" aria-live="polite">
             <Spin size="small" />
@@ -1720,6 +1792,49 @@ const Chat: React.FC = () => {
         ) : (
           <>
             {visibleMessages.map((msg) => {
+              if (msg.kind === 'research_upgrade') {
+                return (
+                  <div key={msg.id} className={`${styles.messageItem} ${styles.messageItemLeft}`}>
+                    <div className={`${styles.messageContent} ${styles.messageContentLeft} ${styles.structuredMessageContent}`}>
+                      <Avatar size={36} icon={<RobotOutlined />} className={`${styles.avatar} ${styles.avatarBot}`} />
+                      <div className={`${styles.messageBubble} ${styles.messageBubbleBot} ${styles.structuredBubble}`}>
+                        <ResearchUpgradeCard
+                          message={msg}
+                          loading={researchConversation.isResearchBusy}
+                          onConfirm={(upgradeMessage) => {
+                            researchConversation.upgradeToTopic(upgradeMessage).catch((error) => {
+                              message.error(normalizeUserFacingError(error, '升级专题失败'));
+                            });
+                          }}
+                        />
+                        <div className={styles.messageTime}>{moment(msg.timestamp).format('HH:mm')}</div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              }
+
+              if (msg.kind === 'topic_source_added') {
+                return (
+                  <div key={msg.id} className={`${styles.messageItem} ${styles.messageItemLeft}`}>
+                    <div className={`${styles.messageContent} ${styles.messageContentLeft} ${styles.structuredMessageContent}`}>
+                      <Avatar size={36} icon={<RobotOutlined />} className={`${styles.avatar} ${styles.avatarBot}`} />
+                      <div className={`${styles.messageBubble} ${styles.messageBubbleBot} ${styles.structuredBubble}`}>
+                        <TopicSourceAddedMessage
+                          message={msg}
+                          onLocate={(source) => {
+                            researchConversation.locateTopicSource(source).catch((error) => {
+                              message.error(normalizeUserFacingError(error, '无法打开来源'));
+                            });
+                          }}
+                        />
+                        <div className={styles.messageTime}>{moment(msg.timestamp).format('HH:mm')}</div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              }
+
               if (msg.kind === 'browser_use_task') {
                 return (
                   <div
@@ -1863,6 +1978,22 @@ const Chat: React.FC = () => {
                       )}
                       {msg.attachments && msg.attachments.length > 0 && (
                         <AttachmentMessageCard attachments={msg.attachments} />
+                      )}
+                      {msg.pageContext && (
+                        <button
+                          type="button"
+                          className={styles.pageContextSource}
+                          onClick={() => {
+                            researchConversation.locatePageContext(msg.pageContext!).catch((error) => {
+                              message.error(normalizeUserFacingError(error, '无法定位网页选区'));
+                            });
+                          }}
+                        >
+                          来源：{msg.pageContext.pageTitle}
+                          {msg.pageContext.headingPath.length
+                            ? ` · ${msg.pageContext.headingPath.slice(-2).join(' > ')}`
+                            : ''}
+                        </button>
                       )}
                       {textContent && (
                         <MarkdownMessage
@@ -2252,11 +2383,32 @@ const Chat: React.FC = () => {
                   <Tooltip key="delete" title="删除">
                     <Button size="small" danger icon={<DeleteOutlined />} onClick={(event) => {
                       event.stopPropagation();
+                      let deleteTopicSources = false;
                       Modal.confirm({
                         title: '删除会话',
-                        content: `确认删除「${session.title}」及其中的聊天记录？长期记忆不会被删除。`,
+                        content: (
+                          <Space direction="vertical" size={8}>
+                            <Text>
+                              确认删除「{session.title}」及其中的聊天记录？长期记忆不会被删除。
+                            </Text>
+                            {session.mode === 'topic' && Boolean(session.sourceDocumentIds?.length) && (
+                              <Checkbox onChange={(changeEvent) => {
+                                deleteTopicSources = changeEvent.target.checked;
+                              }}>
+                                同时删除这个专题引用的资料原件
+                              </Checkbox>
+                            )}
+                          </Space>
+                        ),
                         okButtonProps: { danger: true },
                         onOk: async () => {
+                          if (deleteTopicSources) {
+                            await Promise.all(
+                              (session.sourceDocumentIds || []).map((documentId) => (
+                                deleteDocumentAsset(documentId)
+                              )),
+                            );
+                          }
                           await deleteChatSession(session.id);
                           if (session.id === currentSessionId) await createNewChatSession();
                           await refreshChatSessions();

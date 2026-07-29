@@ -1,5 +1,7 @@
 # Browser Use 可靠性门禁
 
+> 内核模块、单阶段执行时序、语义集合和安全边界见 [Browser Use 技术架构](./browser-use-architecture.md)。
+
 Browser Use 的稳定性不以“代码能运行”或“单个演示成功”为准，而以可重复的真实 Chromium 任务、Observe 质量和严格完成证据共同验收。
 
 ## Observe 质量报告

@@ -10,8 +10,8 @@ import {
   ArrowLeftOutlined,
   PlusOutlined
 } from '@ant-design/icons';
-import { listAutomationWorkflows, type StoredAutomationWorkflow } from '../../../shared/automationWorkflowStore';
-import { createAndRunAutomationTask, stopAutomationTask } from '../../../shared/automationTaskClient';
+import { listAutomationWorkflows, type StoredAutomationWorkflow } from '../../../shared/automation/automationWorkflowStore';
+import { createAndRunAutomationTask, stopAutomationTask } from '../../../shared/automation/automationTaskClient';
 import moment from 'moment';
 
 const { Text, Title } = Typography;

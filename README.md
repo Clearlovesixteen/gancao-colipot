@@ -1,6 +1,6 @@
 # 甘草 Copilot
 
-甘草 Copilot 是一个基于 Chrome Manifest V3 的本地优先 AI 业务助手扩展。它将大模型对话、浏览器自动操作、页面诊断、文件解析、PaddleOCR、资料问答、页面监控和可复用工作流整合在同一个 Side Panel 中，帮助用户直接在业务网页旁完成信息获取、问题分析与跨页面操作。
+甘草 Copilot 是一个基于 Chrome Manifest V3 的本地优先 AI 业务助手扩展。它将页面感知对话、Browser Use、页面诊断、文件解析、PaddleOCR、资料问答、页面监控和可复用工作流整合在同一个 Side Panel 中，帮助用户直接在业务网页旁完成信息获取、问题分析与跨页面操作。
 
 > 项目目前处于 V3.x 持续迭代阶段，适合开发测试和内部业务场景验证。涉及提交、保存、删除、支付、发送等高风险操作时，仍应由用户确认后执行。
 
@@ -12,6 +12,7 @@ GitHub Pages 文档站：[https://clearlovesixteen.github.io/gancao-colipot/](ht
 | --- | --- | --- |
 | [使用与运行文档](https://clearlovesixteen.github.io/gancao-colipot/#develop) | 插件使用者、部署与测试人员 | 环境准备、安装构建、加载扩展、模型配置、权限说明和常见问题排查 |
 | [技术架构文档](https://clearlovesixteen.github.io/gancao-colipot/#architecture) | 开发者、架构师和贡献者 | 总体架构、运行入口、Browser Use 闭环、消息协议、数据存储、模型网关、资料与 OCR、工作流和安全边界 |
+| [Browser Use 专项架构](docs/browser-use-architecture.md) | 自动化内核维护者 | 分层架构、阶段时序、语义集合、目标解析、可靠性保护、错误与发布门禁 |
 | [测试门禁与排障](https://clearlovesixteen.github.io/gancao-colipot/#quality) | 开发与测试人员 | TypeScript、Vitest、扩展 E2E、构建检查和典型故障定位 |
 
 站点源码位于 [`docs/tech-site/`](docs/tech-site/)，GitHub Pages 发布配置位于 [`.github/workflows/pages.yml`](.github/workflows/pages.yml)。推送 `main` 分支且改动命中站点源码或发布 workflow 时，会自动更新在线文档。
@@ -24,6 +25,8 @@ GitHub Pages 文档站：[https://clearlovesixteen.github.io/gancao-colipot/](ht
 - 模型请求统一由后台 `ModelGateway` 处理，支持流式回复、结构化 JSON、工具调用和停止生成。
 - API Key 由用户自行配置，仅保存在本机 `chrome.storage.local`，不会写入源码、任务日志或导出结果。
 - 支持本地聊天历史、长期 Memory、会话搜索、重命名、归档和继续会话。
+- 支持当前页面感知问答：页面摘要、选区解释、选区提问、要点提取和来源定位。
+- 当前页面不足以回答时，可将现有 ChatSession 升级为专题模式，手动收集多个网页来源后继续追问。
 
 ### Browser Use 浏览器智能代理
 
@@ -98,7 +101,14 @@ flowchart LR
 - PaddleOCR.js、ONNX Runtime Web、PDF.js
 - Vitest、Playwright
 
-更详细的模块和调用链请阅读 [docs/architecture.md](docs/architecture.md)，或访问在线技术文档站：[https://clearlovesixteen.github.io/gancao-colipot/](https://clearlovesixteen.github.io/gancao-colipot/)。
+更详细的模块和调用链请阅读：
+
+- [总体技术架构](docs/architecture.md)
+- [Browser Use 技术架构](docs/browser-use-architecture.md)
+- [Browser Use 产品目标](docs/browser-use-goal.md)
+- [Browser Use 可靠性门禁](docs/browser-use-reliability.md)
+
+也可以直接访问在线技术文档站：[https://clearlovesixteen.github.io/gancao-colipot/](https://clearlovesixteen.github.io/gancao-colipot/)。
 
 ## 本地开发
 
@@ -170,9 +180,9 @@ pnpm watch
 当前本地质量基线：
 
 - TypeScript 检查通过
-- `63` 个 Vitest 测试文件、`294` 个测试通过
+- `66` 个 Vitest 测试文件、`305` 个测试通过
 - Vite 生产构建通过
-- Chromium 扩展 E2E：`15` 条通过，`6` 条按环境条件跳过
+- Chromium 扩展 E2E：`17` 条通过，`6` 条按环境条件跳过
 - Browser Use 黄金任务：`3` 个核心场景连续 `5` 轮，共 `15` 次通过
 
 Browser Use 的 Observe 质量指标、黄金任务目录和发布标准见 [Browser Use 可靠性门禁](docs/browser-use-reliability.md)。
@@ -181,19 +191,32 @@ Browser Use 的 Observe 质量指标、黄金任务目录和发布标准见 [Bro
 
 ```text
 src/
-├── background/       # Service Worker、模型网关、任务执行器、Browser Use
-├── content/          # 页面观察、DOM 动作、控制台错误和登录态桥接
+├── background/
+│   ├── browserUse/   # 计划、观察、目标解析、动作、校验和运行时
+│   ├── handlers/     # Runtime 消息路由
+│   ├── tasks/        # 统一任务运行时和执行器
+│   ├── model/        # Background-only 模型网关
+│   ├── ocr/          # OCR Job 调度
+│   └── business/     # 业务工具与资料问答编排
+├── content/
+│   ├── pageTools/    # 页面观察、DOM 动作、提取、错误与登录信号
+│   └── selection/    # 页面选区工具条和结构化选区上下文
 ├── dashboard/        # 任务中心、模型设置和自动化工作台
 ├── offscreen/        # PaddleOCR Offscreen Host
-├── shared/           # 类型、Repository、任务记录、Memory、监控和导出工具
-└── sidePanel/        # Chat、附件、OCR、资料中心、工具箱和任务卡
+├── sandbox/          # PaddleOCR/ONNX 隔离运行时
+├── shared/           # 按自动化、资料、上下文、Memory、模型等领域分类
+└── sidePanel/
+    ├── components/   # Chat、登录、工具箱和结果卡
+    └── utils/        # Chat、认证、资料、集成和运行时客户端
 public/
 ├── manifest.json
 └── ocrHost.html
 tests/e2e/             # Chromium 扩展端到端测试
 docs/
-├── architecture.md    # 架构说明
-├── browser-use-goal.md # Browser Use 产品目标
+├── architecture.md                  # 总体技术架构
+├── browser-use-architecture.md      # Browser Use 专项架构图
+├── browser-use-goal.md              # Browser Use 产品目标
+├── browser-use-reliability.md       # Browser Use 可靠性门禁
 └── tech-site/         # GitHub Pages 技术文档站源码
 .github/workflows/
 └── pages.yml          # GitHub Pages 自动发布流程
@@ -232,6 +255,7 @@ docs/
 
 当前已完成 V3.2 统一底座，并落地失败阶段续跑、监控通知、候选 Memory、资料引用定位、OCR 人工校正、自定义命令表单/版本/模型路由等后续能力。下一阶段重点是：
 
+- **页面感知 Chat**：完善选区问答、当前页引用、专题来源管理和多来源追问体验。
 - **V3.3 稳定版**：补充真实站点 E2E，提升失败断点恢复与下载入库的生产成功率。
 - **V3.4 通知中心**：集中管理通知渠道、投递历史、失败重试和敏感字段脱敏。
 - **V3.5 知识体验**：资料引用正文高亮、OCR 可视化表格校正、候选 Memory 合并与冲突处理。

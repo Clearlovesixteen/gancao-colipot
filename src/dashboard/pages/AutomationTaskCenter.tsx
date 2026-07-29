@@ -39,7 +39,7 @@ import type {
   AutomationRunStatus,
   PageMonitorExtractMode,
   PageMonitorCheckRecord,
-} from '../../shared/automationTypes';
+} from '../../shared/automation/automationTypes';
 import {
   AUTOMATION_TASK_TEMPLATES,
   deleteAutomationRun,
@@ -49,17 +49,17 @@ import {
   patchAutomationRun,
   statusLabel,
   upsertAutomationRun,
-} from '../../shared/automationRunStore';
-import { createWorkflowDraftFromComputerUseRun } from '../../shared/automationWorkflowDraft';
+} from '../../shared/automation/automationRunStore';
+import { createWorkflowDraftFromComputerUseRun } from '../../shared/automation/automationWorkflowDraft';
 import {
   listAutomationWorkflows,
   upsertAutomationWorkflow,
   type StoredAutomationWorkflow,
-} from '../../shared/automationWorkflowStore';
-import { listDocumentAssets } from '../../shared/documentRepository';
-import type { DocumentAsset } from '../../shared/documentTypes';
-import { listPageMonitorChecks } from '../../shared/pageMonitorHistory';
-import { retryAutomationTask, runAutomationTask, stopAutomationTask } from '../../shared/automationTaskClient';
+} from '../../shared/automation/automationWorkflowStore';
+import { listDocumentAssets } from '../../shared/documents/documentRepository';
+import type { DocumentAsset } from '../../shared/documents/documentTypes';
+import { listPageMonitorChecks } from '../../shared/monitoring/pageMonitorHistory';
+import { retryAutomationTask, runAutomationTask, stopAutomationTask } from '../../shared/automation/automationTaskClient';
 
 const { Text, Title, Paragraph } = Typography;
 const { Search } = Input;

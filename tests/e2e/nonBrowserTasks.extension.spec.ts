@@ -106,6 +106,90 @@ test.describe('Non Browser Use extension task gate', () => {
     expect(result.events.some((event: any) => event.delivery === 'final')).toBe(false);
   });
 
+  test('relays a page selection action into page-aware Chat', async () => {
+    harness = await launchExtension();
+    await configureFixtureModel(harness);
+    await harness.fixturePage.bringToFront();
+
+    await harness.fixturePage.evaluate(() => {
+      const target = document.querySelector('#route-label');
+      const textNode = target?.firstChild;
+      if (!target || !textNode) throw new Error('缺少选区测试节点');
+      const range = document.createRange();
+      range.selectNodeContents(textNode);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    });
+
+    const toolbar = harness.fixturePage.locator('#gancao-page-selection-toolbar');
+    await expect(toolbar).toBeVisible();
+    await expect(toolbar.getByRole('button', { name: '问 AI' })).toBeVisible();
+    await toolbar.getByRole('button', { name: '解释', exact: true }).click();
+
+    await expect(harness.extensionPage.getByText(/解释选中内容/)).toBeVisible({ timeout: 8_000 });
+    await expect(harness.extensionPage.getByRole('button', { name: /来源：业务自动化验收页/ }))
+      .toBeVisible({ timeout: 8_000 });
+    await expect(harness.extensionPage.getByText('这是来自 E2E 模型夹具的流式回复。'))
+      .toBeVisible({ timeout: 8_000 });
+  });
+
+  test('upgrades the current ChatSession to a topic and accumulates page sources', async () => {
+    harness = await launchExtension();
+    await configureFixtureModel(harness);
+    await harness.fixturePage.bringToFront();
+
+    const selectElementText = async (selector: string) => {
+      await harness!.fixturePage.evaluate((targetSelector) => {
+        const target = document.querySelector(targetSelector);
+        const textNode = target?.firstChild;
+        if (!target || !textNode) throw new Error(`缺少选区测试节点: ${targetSelector}`);
+        const range = document.createRange();
+        range.selectNodeContents(textNode);
+        const selection = window.getSelection();
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+        target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+      }, selector);
+    };
+
+    await selectElementText('#route-label');
+    let toolbar = harness.fixturePage.locator('#gancao-page-selection-toolbar');
+    await expect(toolbar).toBeVisible();
+    await toolbar.getByRole('button', { name: '加入专题', exact: true }).click();
+
+    const confirmUpgrade = harness.extensionPage.getByRole('button', {
+      name: '确认升级并加入当前页',
+    });
+    await expect(confirmUpgrade).toBeVisible({ timeout: 8_000 });
+    await confirmUpgrade.click();
+    await expect(harness.extensionPage.getByText('来源 1', { exact: true }))
+      .toBeVisible({ timeout: 12_000 });
+    await expect(harness.extensionPage.getByText('已加入专题来源', { exact: true }))
+      .toBeVisible({ timeout: 12_000 });
+
+    await harness.fixturePage.goto('http://127.0.0.1:4173/monitor.html');
+    await harness.fixturePage.bringToFront();
+    await selectElementText('#monitor-value');
+    toolbar = harness.fixturePage.locator('#gancao-page-selection-toolbar');
+    await expect(toolbar).toBeVisible();
+    await toolbar.getByRole('button', { name: '加入专题', exact: true }).click();
+
+    await expect(harness.extensionPage.getByText('来源 2', { exact: true }))
+      .toBeVisible({ timeout: 12_000 });
+
+    const chatInput = harness.extensionPage.getByPlaceholder('输入消息或粘贴文件...');
+    await chatInput.fill('请对比当前专题中的两个来源');
+    await chatInput.press('Enter');
+    await expect(harness.extensionPage.getByText('资料回答', { exact: true }))
+      .toBeVisible({ timeout: 15_000 });
+    await expect(harness.extensionPage.getByText('业务自动化验收页', { exact: true }))
+      .toBeVisible({ timeout: 15_000 });
+    await expect(harness.extensionPage.getByText('库存监控测试页 · 选区', { exact: true }).first())
+      .toBeVisible({ timeout: 15_000 });
+  });
+
   test('runs page diagnosis and persists the diagnosis context', async () => {
     harness = await launchExtension();
     await configureFixtureModel(harness);

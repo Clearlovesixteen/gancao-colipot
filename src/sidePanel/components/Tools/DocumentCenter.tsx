@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Card, Empty, Input, List, Modal, Progress, Select, Space, Table, Tabs, Tag, Tooltip, Typography, message } from 'antd';
 import { CopyOutlined, DeleteOutlined, DownloadOutlined, EyeOutlined, FileSearchOutlined, ReloadOutlined, ScanOutlined } from '@ant-design/icons';
-import type { DocumentAsset, DocumentContent, DocumentResult, DocumentSpace, DocumentTable, PageStructuredData, RequirementTaskResult, StructuredOcrField, StructuredOcrResult } from '../../../shared/documentTypes';
+import type { DocumentAsset, DocumentContent, DocumentResult, DocumentSpace, DocumentTable, PageStructuredData, RequirementTaskResult, StructuredOcrField, StructuredOcrResult } from '../../../shared/documents/documentTypes';
 import {
   deleteDocumentAsset,
   getDocumentContent,
@@ -11,7 +11,7 @@ import {
   rebuildDocumentChunks,
   saveDocumentContent,
   upsertDocumentAsset,
-} from '../../../shared/documentRepository';
+} from '../../../shared/documents/documentRepository';
 import {
   downloadTextFile,
   downloadWorkbook,
@@ -20,14 +20,14 @@ import {
   requirementTasksToRows,
   tableToRows,
   toCsv,
-} from '../../../shared/exporters';
-import { parseUploadedFile, type ParsedUploadedFile } from '../../../shared/fileParser';
-import { structuredOcrToMarkdown } from '../../../shared/ocrStructurer';
-import { listDocumentSpaces, upsertDocumentSpace } from '../../../shared/documentSpaces';
+} from '../../../shared/documents/exporters';
+import { parseUploadedFile, type ParsedUploadedFile } from '../../../shared/documents/fileParser';
+import { structuredOcrToMarkdown } from '../../../shared/ocr/ocrStructurer';
+import { listDocumentSpaces, upsertDocumentSpace } from '../../../shared/documents/documentSpaces';
 import {
   createAndRunAutomationTask,
   createAutomationTaskId,
-} from '../../../shared/automationTaskClient';
+} from '../../../shared/automation/automationTaskClient';
 
 const { Text, Title } = Typography;
 const { TabPane } = Tabs;
