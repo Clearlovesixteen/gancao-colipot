@@ -82,6 +82,7 @@ export function initDingTalkQRCode(
 
     // 存储二次跳转标签页ID
     let authTabId: number | null = null;
+    let authorizationStarted = false;
     
     const handleDingTalkAuthMessage = (message: any) => {
       if (message.type === 'DINGTALK_AUTH_CODE' && message.code) {
@@ -129,6 +130,8 @@ export function initDingTalkQRCode(
        
         
         if (loginTmpCode && typeof loginTmpCode === 'string') {
+          if (authorizationStarted) return;
+          authorizationStarted = true;
           
           const fullAuthUrl = `${goto}&loginTmpCode=${loginTmpCode}`;
         // 插件环境window.location.href 改变不了路由，所以用createTab
@@ -160,6 +163,7 @@ export function initDingTalkQRCode(
 
     // 返回清理函数
     return () => {
+      authorizationStarted = true;
       
       if (typeof window.removeEventListener !== 'undefined') {
         window.removeEventListener('message', handleMessage, false);
@@ -190,4 +194,3 @@ export function initDingTalkQRCode(
     return () => {};
   }
 }
-

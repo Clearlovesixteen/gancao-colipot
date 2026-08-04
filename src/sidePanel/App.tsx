@@ -32,32 +32,31 @@ const App: React.FC = () => {
       return;
     }
 
-    const requestPageAuthSync = () => {
+    const requestPageAuthSync = async (): Promise<void> => {
       if (!chrome?.runtime?.sendMessage) return;
-
-      chrome.runtime.sendMessage({ type: 'REQUEST_PAGE_AUTH_SYNC' }, () => {
-        if (chrome.runtime.lastError) {
-          console.warn('请求页面登录态失败:', chrome.runtime.lastError.message);
-        }
-      });
+      try {
+        await chrome.runtime.sendMessage({ type: 'REQUEST_PAGE_AUTH_SYNC' });
+      } catch (error: any) {
+        console.warn('请求页面登录态失败:', error?.message || error);
+      }
     };
 
     const checkAuth = async () => {
+      await requestPageAuthSync();
       const authStatus = await isAuthenticated();
       setAuthenticated(authStatus);
-      requestPageAuthSync();
     };
     
     checkAuth();
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
-        requestPageAuthSync();
+        requestPageAuthSync().catch(() => {});
       }
     };
 
     const handleWindowFocus = () => {
-      requestPageAuthSync();
+      requestPageAuthSync().catch(() => {});
     };
 
     document.addEventListener('visibilitychange', handleVisibilityChange);

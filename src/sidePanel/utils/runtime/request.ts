@@ -354,6 +354,8 @@ request.addErrorInterceptor(async (error: any) => {
           'pageAuthSnapshot',
           'pageAuthHost',
           'pageAuthLastLogoutReason',
+          'pageAuthTabId',
+          'pageAuthSessionOnly',
         ]);
       });
     }

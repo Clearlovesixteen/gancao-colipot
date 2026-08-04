@@ -7,7 +7,7 @@ export function handleAuthBridgeMessage(
   deps: {
     dingTalkAuthTabs: Set<number>;
     sidePanelOpenState: Map<number, boolean>;
-    savePageAuthState: (snapshot: PageAuthSnapshot, sourceUrl?: string) => Promise<any>;
+    savePageAuthState: (snapshot: PageAuthSnapshot, sourceUrl?: string, senderTabId?: number) => Promise<any>;
     requestPageAuthSync: () => Promise<any>;
   },
 ): boolean {
@@ -25,7 +25,7 @@ export function handleAuthBridgeMessage(
           sendResponse({ success: false, error: '无效的页面登录态数据' });
           return;
         }
-        sendResponse(await deps.savePageAuthState(snapshot, sender.tab?.url));
+        sendResponse(await deps.savePageAuthState(snapshot, sender.tab?.url, sender.tab?.id));
       } catch (error: any) {
         sendResponse({ success: false, error: error?.message || '同步页面登录态失败' });
       }
@@ -47,4 +47,3 @@ export function handleAuthBridgeMessage(
   }
   return false;
 }
-

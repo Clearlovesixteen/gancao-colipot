@@ -51,6 +51,7 @@ export async function saveLoginSession(session: LoginSession): Promise<void> {
       [USERNAME_STORAGE_KEY]: userInfo,
       userInfo,
       authSource: 'plugin',
+      pageAuthSessionOnly: false,
       pageAuthLastLogoutReason: null,
     };
 
@@ -99,6 +100,8 @@ export async function logout(): Promise<void> {
         'pageAuthSnapshot',
         'pageAuthHost',
         'pageAuthLastLogoutReason',
+        'pageAuthTabId',
+        'pageAuthSessionOnly',
       ], () => {
         if (chrome.runtime.lastError) {
           reject(new Error(chrome.runtime.lastError.message));

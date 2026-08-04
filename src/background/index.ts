@@ -49,6 +49,7 @@ import { getAutomationWorkflow } from '../shared/automation/automationWorkflowSt
 import { runOcrTask, stopOcrTask } from './ocr/ocrJobService';
 import { BUSINESS_TOOL_NAMES } from '../shared/tools/businessTools';
 import type { PageAuthSnapshot } from '../shared/auth/authBridge';
+import { decidePageAuthTransition } from './auth/pageAuthDecision';
 import type { DocumentAsset, DocumentContent, PageStructuredData, RequirementTaskResult } from '../shared/documents/documentTypes';
 import {
   extractJsonObject,
@@ -598,6 +599,8 @@ async function clearPageAuthState(snapshot: PageAuthSnapshot, reason = 'page_log
     'authSource',
     'pageAuthSnapshot',
     'pageAuthHost',
+    'pageAuthTabId',
+    'pageAuthSessionOnly',
   ]);
 
   return {
@@ -609,49 +612,63 @@ async function clearPageAuthState(snapshot: PageAuthSnapshot, reason = 'page_log
   };
 }
 
-async function savePageAuthState(snapshot: PageAuthSnapshot, sourceUrl?: string): Promise<any> {
+async function savePageAuthState(snapshot: PageAuthSnapshot, sourceUrl?: string, senderTabId?: number): Promise<any> {
   const trustedUrl = sourceUrl || snapshot.url;
   if (!isTrustedAuthUrl(trustedUrl) || !isTrustedAuthUrl(snapshot.url)) {
     return { success: false, error: '页面域名不在可信登录态同步范围内' };
   }
 
-  if (!snapshot.token) {
-    const current = await chrome.storage.local.get(['user_auth', 'authSource', 'pageAuthHost']);
-    const samePageAuthHost = !current.pageAuthHost || current.pageAuthHost === snapshot.host;
-    const pageLooksLoggedOut = snapshot.pageLooksLoggedOut === true;
+  const current = await chrome.storage.local.get([
+    'user_auth',
+    'authSource',
+    'pageAuthHost',
+    'pageAuthTabId',
+    'plugIn_userInfo',
+    'userInfo',
+  ]);
+  const decision = decidePageAuthTransition({
+    userAuth: current.user_auth === true,
+    authSource: current.authSource,
+    pageAuthHost: current.pageAuthHost,
+    pageAuthTabId: current.pageAuthTabId,
+  }, snapshot, senderTabId);
 
-    if (current.user_auth === true && pageLooksLoggedOut) {
-      return await clearPageAuthState(snapshot, 'trusted_page_login_ui');
-    }
+  if (decision.kind === 'logout') {
+    return await clearPageAuthState(snapshot, decision.reason);
+  }
 
-    if (current.user_auth === true && current.authSource === 'page' && samePageAuthHost) {
-      return await clearPageAuthState(snapshot, 'page_token_missing');
-    }
-
+  if (decision.kind === 'preserve') {
     return {
       success: true,
       loggedOut: false,
       ignored: true,
-      reason: '当前插件登录态不是页面同步来源',
+      reason: decision.reason,
     };
   }
 
-  const userInfo = snapshot.userInfo ?? null;
-  await chrome.storage.local.set({
+  const userInfo = snapshot.userInfo ?? current.plugIn_userInfo ?? current.userInfo ?? null;
+  const nextState: Record<string, unknown> = {
     user_auth: true,
     plugIn_userInfo: userInfo,
     userInfo,
-    authToken: snapshot.token,
-    dingtalkToken: snapshot.token,
     authSource: 'page',
     pageAuthHost: snapshot.host,
+    pageAuthTabId: senderTabId,
+    pageAuthSessionOnly: decision.sessionOnly,
     pageAuthSnapshot: sanitizePageAuthSnapshot(snapshot),
-  });
+    pageAuthLastLogoutReason: null,
+  };
+  if (snapshot.token) {
+    nextState.authToken = snapshot.token;
+    nextState.dingtalkToken = snapshot.token;
+  }
+  await chrome.storage.local.set(nextState);
 
   return {
     success: true,
     authSource: 'page',
     loggedIn: true,
+    sessionOnly: decision.sessionOnly,
     tokenKey: snapshot.tokenKey,
     tokenSource: snapshot.tokenSource,
   };
@@ -669,7 +686,11 @@ async function requestPageAuthSync(): Promise<any> {
   }
 
   await ensureCurrentContentRuntime(tabId);
-  return await chrome.tabs.sendMessage(tabId, { type: 'READ_PAGE_AUTH_STATE' });
+  const response = await chrome.tabs.sendMessage(tabId, { type: 'READ_PAGE_AUTH_STATE' });
+  if (response?.snapshot) {
+    return await savePageAuthState(response.snapshot, tab.url, tabId);
+  }
+  return response;
 }
 
 async function captureVisibleTab(tabId: number, format: 'png' | 'jpeg', quality?: number): Promise<string> {
@@ -1773,7 +1794,8 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     try {
       const url = new URL(tab.url);
       
-      if (url.hostname === 'sso-server-dev.igancao.cn' && 
+      if (dingTalkAuthTabs.has(tabId)
+          && url.hostname === 'sso-server-dev.igancao.cn' &&
           url.pathname === '/auth/oauth2/authorize') {
         const code = url.searchParams.get('code');
         
@@ -1794,6 +1816,10 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
       
     }
   }
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  dingTalkAuthTabs.delete(tabId);
 });
 
 chrome.runtime.onInstalled.addListener(() => {

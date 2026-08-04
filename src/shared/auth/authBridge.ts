@@ -13,6 +13,8 @@ export interface PageAuthSnapshot {
   userInfo?: unknown;
   userInfoKey?: string;
   userInfoSource?: PageAuthStorageSource;
+  pageLooksLoggedIn?: boolean;
+  loginSignals?: string[];
   pageLooksLoggedOut?: boolean;
   logoutSignals?: string[];
   url: string;
@@ -118,6 +120,32 @@ function normalizeToken(value: unknown): string | null {
   return null;
 }
 
+function findNestedToken(value: unknown, depth = 0): string | null {
+  if (depth > 6 || value == null) return null;
+
+  if (typeof value === 'string') {
+    const parsed = parseMaybeJson(value);
+    return parsed === value ? null : findNestedToken(parsed, depth + 1);
+  }
+
+  if (typeof value !== 'object' || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+
+  for (const [key, nestedValue] of Object.entries(record)) {
+    if (keyMatches(key, TOKEN_KEYS)) {
+      const token = normalizeToken(nestedValue);
+      if (token) return token;
+    }
+  }
+
+  for (const nestedValue of Object.values(record)) {
+    const token = findNestedToken(nestedValue, depth + 1);
+    if (token) return token;
+  }
+
+  return null;
+}
+
 function keyMatches(key: string, candidates: string[]): boolean {
   return candidates.some((candidate) => key.toLowerCase() === candidate.toLowerCase());
 }
@@ -134,7 +162,7 @@ function findToken(entries: PageStorageEntry[]) {
   for (const entry of entries) {
     const parsed = parseMaybeJson(entry.value);
     if (parsed && typeof parsed === 'object') {
-      const token = normalizeToken(parsed);
+      const token = findNestedToken(parsed);
       if (token) {
         return { entry, token };
       }

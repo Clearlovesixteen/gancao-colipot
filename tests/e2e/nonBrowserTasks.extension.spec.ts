@@ -354,16 +354,37 @@ test.describe('Non Browser Use extension task gate', () => {
 
     await harness.fixturePage.bringToFront();
     await harness.fixturePage.evaluate(() => {
-      localStorage.setItem('authToken', 'e2e-page-token');
-      localStorage.setItem('userInfo', JSON.stringify({ name: 'E2E 用户' }));
+      localStorage.removeItem('authToken');
+      localStorage.removeItem('userInfo');
       document.body.setAttribute('data-auth-state', 'logged-in');
     });
+    const directPageAuth = await harness.extensionPage.evaluate(async () => {
+      const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      const response = await chrome.tabs.sendMessage(activeTab.id!, { type: 'READ_PAGE_AUTH_STATE' });
+      return { activeTab: { id: activeTab.id, url: activeTab.url }, response };
+    });
+    const pageFacts = await harness.fixturePage.evaluate(() => ({
+      url: window.location.href,
+      bodyLength: document.body?.innerText?.length || 0,
+      hasAppShell: Boolean(document.querySelector('aside, nav, .ant-layout-sider')),
+      hasBusinessContent: Boolean(document.querySelector('main, table, .ant-table')),
+    }));
+    expect(directPageAuth?.response?.snapshot, JSON.stringify({ directPageAuth, pageFacts }, null, 2)).toMatchObject({
+      pageLooksLoggedIn: true,
+      loginSignals: expect.arrayContaining(['authenticated-app-shell']),
+    });
+    const pageAuthSync = await sendRuntimeMessage<any>(harness.extensionPage, {
+      type: 'REQUEST_PAGE_AUTH_SYNC',
+    });
+    expect(pageAuthSync?.success, pageAuthSync?.error).toBe(true);
+    expect(pageAuthSync).toMatchObject({ loggedIn: true, sessionOnly: true });
     await expect.poll(async () => harness!.extensionPage.evaluate(async () => (
-      chrome.storage.local.get(['user_auth', 'authSource', 'pageAuthHost'])
+      chrome.storage.local.get(['user_auth', 'authSource', 'pageAuthHost', 'pageAuthSessionOnly'])
     )), { timeout: 5_000 }).toMatchObject({
       user_auth: true,
       authSource: 'page',
       pageAuthHost: '127.0.0.1',
+      pageAuthSessionOnly: true,
     });
 
     await harness.fixturePage.evaluate(() => {

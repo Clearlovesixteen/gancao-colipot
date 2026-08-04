@@ -199,9 +199,45 @@ function buildAuthSignature(snapshot: PageAuthSnapshot): string {
     snapshot.token || '',
     snapshot.userInfoSource || '',
     snapshot.userInfoKey || '',
+    snapshot.pageLooksLoggedIn ? 'logged-in-ui' : '',
+    (snapshot.loginSignals || []).join(','),
     snapshot.pageLooksLoggedOut ? 'logged-out-ui' : '',
     (snapshot.logoutSignals || []).join(','),
   ].join('|');
+}
+
+function isLoginRoute(): boolean {
+  const route = `${window.location.pathname}${window.location.search}${window.location.hash}`.toLowerCase();
+  return /(^|[\/#?&=_-])(login|signin|oauth2|authorize)([\/#?&=_-]|$)/.test(route);
+}
+
+function detectLoginSignals(snapshot: PageAuthSnapshot, logoutSignals: string[]): string[] {
+  if (logoutSignals.length > 0 || isLoginRoute()) return [];
+
+  const signals: string[] = [];
+  const bodyText = (document.body?.innerText || '').slice(0, 8000);
+  const declaredAuthState = document.body?.getAttribute('data-auth-state')
+    || document.documentElement?.getAttribute('data-auth-state');
+  if (snapshot.userInfo != null) signals.push('user-info-storage');
+  if (declaredAuthState === 'logged-in' || declaredAuthState === 'authenticated') {
+    signals.push('declared-authenticated-state');
+  }
+  if (/退出登录|退出系统|安全退出|注销登录/.test(bodyText)) signals.push('logout-control-visible');
+
+  const appShell = document.querySelector(
+    'aside, nav, .ant-layout-sider, [class*="sidebar" i], [class*="side-menu" i], [class*="sider" i]'
+  );
+  const businessContent = document.querySelector(
+    'main, table, .ant-table, [class*="content" i], [class*="workspace" i]'
+  );
+  // Cookie/session 登录的业务系统通常不会把 token 暴露给 localStorage。
+  // 只要可信域名下同时存在独立导航壳层与业务主区域，且页面不是登录页，
+  // 即可把它视为已建立的页面会话；不能依赖首屏正文长度，因为空状态页同样可能已登录。
+  if (appShell && businessContent) {
+    signals.push('authenticated-app-shell');
+  }
+
+  return Array.from(new Set(signals));
 }
 
 function detectLogoutSignals(): string[] {
@@ -233,8 +269,12 @@ function sendPageAuthState(reason: string, force = false): PageAuthSnapshot | nu
 
   const snapshot = pickPageAuthFromEntries(collectStorageEntries(), window.location.href);
   const logoutSignals = detectLogoutSignals();
+  const loginSignals = detectLoginSignals(snapshot, logoutSignals);
+  const loginRoute = isLoginRoute();
+  snapshot.loginSignals = loginSignals;
+  snapshot.pageLooksLoggedIn = !loginRoute && (Boolean(snapshot.token) || loginSignals.length > 0);
   snapshot.logoutSignals = logoutSignals;
-  snapshot.pageLooksLoggedOut = !snapshot.token && logoutSignals.length > 0;
+  snapshot.pageLooksLoggedOut = !snapshot.pageLooksLoggedIn && (logoutSignals.length > 0 || loginRoute);
 
   const signature = buildAuthSignature(snapshot);
 

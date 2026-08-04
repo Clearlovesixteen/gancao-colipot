@@ -45,6 +45,7 @@ const Login: React.FC = () => {
   const phoneForm = Form.useForm()[0];
   const qrcodeContainerRef = useRef<HTMLDivElement>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
+  const dingTalkLoginInFlightRef = useRef(false);
 
   const completeLogin = async (responseData: any) => {
     const data = responseData?.data || responseData || {};
@@ -122,7 +123,7 @@ const Login: React.FC = () => {
       await new Promise(resolve => setTimeout(resolve, 100));
       await waitForContainer();
 
-      const redirectUri = 'http://sso-server-dev.igancao.cn/auth/oauth2/authorize'
+      const redirectUri = 'https://sso-server-dev.igancao.cn/auth/oauth2/authorize'
       
       // 初始化钉钉二维码
       const cleanup = initDingTalkQRCode(
@@ -291,6 +292,8 @@ const Login: React.FC = () => {
 
   // 钉钉扫码登录
   const handleDingTalkLogin = async (code: string) => {
+    if (dingTalkLoginInFlightRef.current) return;
+    dingTalkLoginInFlightRef.current = true;
     setLoading(true); 
 
     try {
@@ -309,19 +312,14 @@ const Login: React.FC = () => {
       );
 
 
-      if (response.success || response.code === 200 || response.code === 0) {
-
-
-        await completeLogin(response);
-      } else {
-        throw new Error(response.message || response.error || '登录失败');
-      }
+      await completeLogin(response);
     } catch (error: any) {
       console.error('钉钉登录失败:', error);
       message.error(error.message || '登录失败，请重试');
       setQrCodeStatus('expired');
     } finally {
       setLoading(false);
+      dingTalkLoginInFlightRef.current = false;
     }
   };
 
